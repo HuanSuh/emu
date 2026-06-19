@@ -1,0 +1,14 @@
+# Dart / Pub
+.dart_tool/
+.packages
+# pubspec.lock is committed: this is an application/executable, not a library.
+
+# Compiled emu binary (produced by build.sh)
+/emu
+
+# Per-project session state
+.emu/
+
+# Tooling state
+.omc/
+.DS_Store

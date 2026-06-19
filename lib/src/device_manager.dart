@@ -1,0 +1,213 @@
+/// Device discovery and emulator/simulator boot.
+///
+/// Booting is best-effort and platform-gated: Android via the SDK `emulator` +
+/// `adb`, iOS via `xcrun simctl` (macOS only). Parsing is split out as a pure
+/// function so it can be unit-tested against fixtures.
+library;
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'models.dart';
+
+/// Parse the JSON emitted by `flutter devices --machine` into [DeviceInfo]s.
+/// Pure (no IO) for testability.
+List<DeviceInfo> parseFlutterDevices(String jsonText) {
+  final decoded = jsonDecode(jsonText);
+  if (decoded is! List) return const [];
+  return decoded.whereType<Map>().map((raw) {
+    final m = raw.cast<String, dynamic>();
+    final target = m['targetPlatform'] as String?;
+    return DeviceInfo(
+      id: m['id'] as String,
+      name: (m['name'] as String?) ?? m['id'] as String,
+      platform: _platform(m['platformType'] as String?, target),
+      emulator: (m['emulator'] as bool?) ?? false,
+      targetPlatform: target,
+    );
+  }).toList();
+}
+
+String _platform(String? platformType, String? target) {
+  if (platformType != null && platformType.isNotEmpty) return platformType;
+  if (target == null) return 'unknown';
+  if (target.startsWith('android')) return 'android';
+  if (target.startsWith('ios')) return 'ios';
+  if (target.startsWith('darwin')) return 'macos';
+  return target;
+}
+
+class DeviceException implements Exception {
+  DeviceException(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
+class DeviceManager {
+  DeviceManager({this.flutterExecutable = 'flutter'});
+
+  final String flutterExecutable;
+
+  bool get isMacOS => Platform.isMacOS;
+
+  /// List devices known to Flutter (connected/booted/wireless).
+  Future<List<DeviceInfo>> listDevices() async {
+    final res = await Process.run(flutterExecutable, ['devices', '--machine']);
+    if (res.exitCode != 0) {
+      throw DeviceException('flutter devices failed: ${res.stderr}');
+    }
+    final out = (res.stdout as String).trim();
+    // `flutter devices --machine` may print a banner before the JSON array.
+    final start = out.indexOf('[');
+    if (start < 0) return const [];
+    return parseFlutterDevices(out.substring(start));
+  }
+
+  /// Names of installed Android AVDs (`emulator -list-avds`).
+  Future<List<String>> listAndroidAvds() async {
+    if (!await _hasCommand('emulator')) return const [];
+    final res = await Process.run('emulator', ['-list-avds']);
+    if (res.exitCode != 0) return const [];
+    return (res.stdout as String).split('\n').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+  }
+
+  /// Already-running Android emulator device id (e.g. `emulator-5554`), if any.
+  Future<String?> _runningAndroidDevice() async {
+    if (!await _hasCommand('adb')) return null;
+    final res = await Process.run('adb', ['devices']);
+    if (res.exitCode != 0) return null;
+    for (final line in (res.stdout as String).split('\n')) {
+      final t = line.trim();
+      if (t.startsWith('emulator-') && t.endsWith('device')) {
+        return t.split(RegExp(r'\s+')).first;
+      }
+    }
+    return null;
+  }
+
+  /// Boot an Android AVD (or reuse a running one). Returns its flutter device id.
+  Future<String> bootAndroid({String? avd, void Function(String)? onProgress}) async {
+    final running = await _runningAndroidDevice();
+    if (running != null) {
+      onProgress?.call('Android emulator already running: $running');
+      return running;
+    }
+    if (!await _hasCommand('emulator')) {
+      throw DeviceException('Android SDK `emulator` not found on PATH.');
+    }
+    if (!await _hasCommand('adb')) {
+      throw DeviceException('`adb` not found on PATH.');
+    }
+    final avds = await listAndroidAvds();
+    final target = avd ?? (avds.isNotEmpty ? avds.first : null);
+    if (target == null) {
+      throw DeviceException('No Android AVD found. Create one in Android Studio Device Manager.');
+    }
+    onProgress?.call('booting Android AVD: $target');
+    // Detached so the emulator outlives this process.
+    await Process.start(
+      'emulator',
+      ['@$target', '-no-snapshot-save'],
+      mode: ProcessStartMode.detached,
+    );
+    await Process.run('adb', ['wait-for-device']);
+    onProgress?.call('waiting for Android boot to complete...');
+    for (var i = 0; i < 120; i++) {
+      final res = await Process.run('adb', ['shell', 'getprop', 'sys.boot_completed']);
+      if ((res.stdout as String).trim() == '1') {
+        final id = await _runningAndroidDevice();
+        if (id != null) return id;
+      }
+      await Future<void>.delayed(const Duration(seconds: 2));
+    }
+    throw DeviceException('Timed out waiting for Android emulator to boot.');
+  }
+
+  /// Boot an iOS simulator (or reuse a booted one). Returns its udid. macOS only.
+  Future<String> bootIos({String? udid, void Function(String)? onProgress}) async {
+    if (!isMacOS) throw DeviceException('iOS simulators are macOS-only.');
+    if (!await _hasCommand('xcrun')) {
+      throw DeviceException('`xcrun` not found. Install Xcode command line tools.');
+    }
+    final list = await Process.run('xcrun', ['simctl', 'list', 'devices', '-j']);
+    if (list.exitCode != 0) {
+      throw DeviceException(
+          'xcrun simctl failed (is full Xcode installed and selected?): ${list.stderr}');
+    }
+    final data = jsonDecode(list.stdout as String) as Map<String, dynamic>;
+    final devices = (data['devices'] as Map).cast<String, dynamic>();
+
+    String? chosen = udid;
+    String? bootedAlready;
+    for (final entry in devices.entries) {
+      for (final d in (entry.value as List).cast<Map>()) {
+        final m = d.cast<String, dynamic>();
+        final available = (m['isAvailable'] as bool?) ?? false;
+        if (!available) continue;
+        final state = m['state'] as String?;
+        final id = m['udid'] as String;
+        final name = (m['name'] as String?) ?? '';
+        if (state == 'Booted') bootedAlready ??= id;
+        if (chosen == null && name.contains('iPhone')) chosen = id;
+      }
+    }
+    if (udid == null && bootedAlready != null) {
+      onProgress?.call('iOS simulator already booted: $bootedAlready');
+      _openSimulatorApp();
+      return bootedAlready;
+    }
+    if (chosen == null) {
+      throw DeviceException('No available iPhone simulator found (check Xcode > Settings > Platforms).');
+    }
+    onProgress?.call('booting iOS simulator: $chosen');
+    final boot = await Process.run('xcrun', ['simctl', 'boot', chosen]);
+    // "Unable to boot device in current state: Booted" is fine.
+    if (boot.exitCode != 0 && !'${boot.stderr}'.contains('Booted')) {
+      throw DeviceException('Failed to boot iOS simulator: ${boot.stderr}');
+    }
+    _openSimulatorApp();
+    await Process.run('xcrun', ['simctl', 'bootstatus', chosen, '-b']);
+    return chosen;
+  }
+
+  void _openSimulatorApp() {
+    if (isMacOS) {
+      unawaited(Process.run('open', ['-a', 'Simulator']));
+    }
+  }
+
+  /// Power off devices for the given platform (best-effort).
+  Future<void> shutdown(String platform) async {
+    if (platform == 'ios' && isMacOS) {
+      await Process.run('xcrun', ['simctl', 'shutdown', 'all']);
+    } else if (platform == 'android') {
+      await Process.run('adb', ['emu', 'kill']);
+    }
+  }
+
+  /// Capture a screenshot to [outPath]. Picks adb or simctl by platform.
+  Future<void> screenshot(String outPath, {required String platform, String? udid}) async {
+    if (platform == 'ios' && isMacOS) {
+      final res = await Process.run('xcrun', ['simctl', 'io', udid ?? 'booted', 'screenshot', outPath]);
+      if (res.exitCode != 0) throw DeviceException('screenshot failed: ${res.stderr}');
+    } else {
+      // stdoutEncoding: null keeps the PNG bytes raw (default would decode to a
+      // String and corrupt the image).
+      final res = await Process.run('adb', ['exec-out', 'screencap', '-p'],
+          stdoutEncoding: null);
+      if (res.exitCode != 0) throw DeviceException('screenshot failed: ${res.stderr}');
+      await File(outPath).writeAsBytes(res.stdout as List<int>);
+    }
+  }
+
+  Future<bool> _hasCommand(String cmd) async {
+    try {
+      final res = await Process.run('which', [cmd]);
+      return res.exitCode == 0;
+    } catch (_) {
+      return false;
+    }
+  }
+}

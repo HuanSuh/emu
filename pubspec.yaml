@@ -1,0 +1,24 @@
+name: emu
+description: >-
+  Flutter emulator/simulator debug driver. Boots a device, drives
+  hot/cold restart over the Flutter daemon protocol, and exposes searchable
+  debug logs through a CLI and a local web dashboard sharing one engine.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.8.0
+
+dependencies:
+  args: ^2.5.0
+  shelf: ^1.4.0
+  shelf_web_socket: ^2.0.0
+  web_socket_channel: ^3.0.0
+  http: ^1.2.0
+
+dev_dependencies:
+  test: ^1.25.0
+  lints: ^4.0.0
+
+executables:
+  emu: emu
