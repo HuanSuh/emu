@@ -146,7 +146,11 @@ class EmuServer {
   Future<Response> _api(Request req, String path) async {
     switch (path) {
       case '/api/status':
-        return _json({'status': engine.status.toJson(), 'serverPort': port});
+        return _json({
+          'status': engine.status.toJson(),
+          'serverPort': port,
+          'lastSeq': logStore.lastSeq,
+        });
       case '/api/reload':
         return _json((await engine.hotReload()).toJson());
       case '/api/restart':

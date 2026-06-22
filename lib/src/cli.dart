@@ -9,6 +9,7 @@ import 'dart:io';
 import 'package:args/args.dart';
 import 'package:http/http.dart' as http;
 
+import 'assertions.dart';
 import 'device_manager.dart';
 import 'models.dart';
 import 'server.dart';
@@ -38,9 +39,11 @@ Future<int> runCli(List<String> argv) async {
       case 'cold':
         return await _action(rest, '/api/cold', 'cold restart');
       case 'stop':
-        return await _action(rest, '/api/stop', 'stop');
+        return await _action(rest, '/api/stop', 'stop', drain: false);
       case 'logs':
         return await _logs(rest);
+      case 'assert':
+        return await _assert(rest);
       case 'status':
         return await _status(rest);
       case 'shot':
@@ -201,19 +204,53 @@ Future<int> _up(List<String> args) async {
     return 1;
   }
 
-  if (res.flag('json')) {
-    print(jsonEncode({'ok': true, 'port': info.port, 'dashboard': info.baseUrl}));
-  } else {
-    print('✓ session up — dashboard: ${info.baseUrl}');
-    print('  (streaming startup; Ctrl-C to detach, the app keeps running)');
-  }
   if (res.flag('open')) await _openUrl(info.baseUrl);
 
-  // Stream startup logs until running/failed.
-  if (!res.flag('json')) {
-    await _streamUntilReady(info);
+  if (res.flag('json')) {
+    // Wait for the real launch outcome instead of reporting a premature ok:true.
+    final state = await _awaitLaunchState(info);
+    final errors = await _errorsSince(info, 0);
+    print(jsonEncode({
+      'ok': state == 'running',
+      'state': state,
+      'port': info.port,
+      'dashboard': info.baseUrl,
+      'errors': errors,
+    }));
+    return state == 'running' ? 0 : 1;
   }
+
+  print('✓ session up — dashboard: ${info.baseUrl}');
+  print('  (streaming startup; Ctrl-C to detach, the app keeps running)');
+  await _streamUntilReady(info);
   return 0;
+}
+
+/// Poll the server until the app reaches a terminal launch state.
+Future<String> _awaitLaunchState(ServerInfo info) async {
+  for (var i = 0; i < 600; i++) {
+    final st = await _get(info, '/api/status');
+    final state = (st?['status'] as Map?)?['state'] as String?;
+    if (state == 'running' || state == 'failed') return state!;
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+  }
+  return 'starting';
+}
+
+/// Error-level log lines with seq greater than [sinceSeq], as {level, text}.
+Future<List<Map<String, dynamic>>> _errorsSince(ServerInfo info, int sinceSeq) async {
+  final d = await _get(info, '/api/logs?level=error&sinceSeq=$sinceSeq&limit=100');
+  if (d == null) return const [];
+  return (d['logs'] as List)
+      .cast<Map<String, dynamic>>()
+      .map((e) => {'level': e['level'], 'text': e['text']})
+      .toList();
+}
+
+/// The store's current highest seq (a cursor for "logs after now").
+Future<int> _lastSeq(ServerInfo info) async {
+  final st = await _get(info, '/api/status');
+  return (st?['lastSeq'] as int?) ?? 0;
 }
 
 /// How to re-invoke ourselves for the detached server.
@@ -255,21 +292,96 @@ Future<void> _streamUntilReady(ServerInfo info) async {
 // --------------------------------------------------------------------------
 // reload / restart / cold / stop
 // --------------------------------------------------------------------------
-Future<int> _action(List<String> args, String endpoint, String label) async {
+Future<int> _action(List<String> args, String endpoint, String label,
+    {bool drain = true}) async {
   final json = args.contains('--json');
   final info = _requireServer();
+  final before = drain ? await _lastSeq(info) : 0;
   final res = await _post(info, endpoint);
   if (res == null) {
     stderr.writeln('✗ no response from server');
     return 1;
   }
+  // Drain a short window so runtime errors from the reloaded code surface in the
+  // same call — the agent judges "did it actually work?" without a second query.
+  // Best-effort: catches *immediate* errors (build/initState throws). For errors
+  // triggered later (timers, taps), use `emu assert --deny ... --timeout N`.
+  List<Map<String, dynamic>> errors = const [];
+  if (drain) {
+    await Future<void>.delayed(const Duration(milliseconds: 2500));
+    errors = await _errorsSince(info, before);
+    res['errors'] = errors;
+  }
+  final ok = res['ok'] == true && errors.isEmpty;
   if (json) {
     print(jsonEncode(res));
-    return (res['ok'] == true) ? 0 : 1;
+    return ok ? 0 : 1;
   }
-  final ok = res['ok'] == true;
-  print('${ok ? '✓' : '✗'} $label: ${res['message'] ?? ''}');
+  final actionOk = res['ok'] == true;
+  print('${actionOk ? '✓' : '✗'} $label: ${res['message'] ?? ''}');
+  if (errors.isNotEmpty) {
+    stderr.writeln('⚠ ${errors.length} error log(s) after $label:');
+    for (final e in errors.take(10)) {
+      stderr.writeln('   ${e['text']}');
+    }
+  }
   return ok ? 0 : 1;
+}
+
+// --------------------------------------------------------------------------
+// assert — log-pattern oracle for e2e/CI ("after X, log Y must/ must not appear")
+// --------------------------------------------------------------------------
+Future<int> _assert(List<String> args) async {
+  final parser = ArgParser()
+    ..addMultiOption('expect', help: 'pattern that MUST appear')
+    ..addMultiOption('deny', help: 'pattern that must NOT appear')
+    ..addOption('since', help: 'seq cursor (default: now)')
+    ..addOption('timeout', defaultsTo: '5')
+    ..addFlag('json', negatable: false);
+  final res = parser.parse(args);
+  final expect = res.multiOption('expect');
+  final deny = res.multiOption('deny');
+  if (expect.isEmpty && deny.isEmpty) {
+    stderr.writeln('✗ provide at least one --expect or --deny pattern');
+    return 2;
+  }
+  final info = _requireServer();
+  var cursor = int.tryParse(res.option('since') ?? '') ?? await _lastSeq(info);
+  final timeout = Duration(seconds: int.tryParse(res.option('timeout')!) ?? 5);
+  final deadline = DateTime.now().add(timeout);
+
+  final buffer = <LogEntry>[];
+  var outcome = evaluateAssertion(buffer, expect, deny);
+  while (true) {
+    final d = await _get(info, '/api/logs?sinceSeq=$cursor&limit=500');
+    if (d != null) {
+      for (final raw in (d['logs'] as List).cast<Map<String, dynamic>>()) {
+        final e = LogEntry.fromJson(raw);
+        buffer.add(e);
+        cursor = e.seq;
+      }
+    }
+    outcome = evaluateAssertion(buffer, expect, deny);
+    if (!outcome.denyClean) break; // fail fast: a denied pattern appeared
+    if (outcome.expectsMet && deny.isEmpty) break; // pass fast: nothing left to watch
+    if (DateTime.now().isAfter(deadline)) break;
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+  }
+
+  if (res.flag('json')) {
+    print(jsonEncode(outcome.toJson()));
+  } else {
+    print(outcome.pass ? '✓ assert pass' : '✗ assert fail');
+    for (final e in outcome.expected.entries) {
+      if (!e.value) stderr.writeln('   missing: ${e.key}');
+    }
+    for (final e in outcome.denied.entries) {
+      for (final m in e.value) {
+        stderr.writeln('   denied (${e.key}): $m');
+      }
+    }
+  }
+  return outcome.pass ? 0 : 1;
 }
 
 // --------------------------------------------------------------------------
@@ -567,8 +679,8 @@ COMMANDS
      --dart-define K=V     dart-define (repeatable)
      --port <n>            Dashboard port (default 4577)
      --open                Open the dashboard in the browser
-  reload                 Hot reload
-  restart                Hot restart
+  reload                 Hot reload (reports errors logged just after)
+  restart                Hot restart (reports errors logged just after)
   cold                   Cold restart (full relaunch)
   stop                   Stop the app (server stays up)
   logs [opts]            Show/search logs
@@ -577,6 +689,11 @@ COMMANDS
      -n, --lines <N>       Last N lines (default 200)
      -f, --follow          Stream live
      --clear               Clear the log buffer
+  assert [opts]          Assert on the log stream (e2e/CI oracle)
+     --expect <regex>      pattern that MUST appear (repeatable)
+     --deny <regex>        pattern that must NOT appear (repeatable)
+     --since <seq>         seq cursor (default: now)
+     --timeout <s>         wait window (default 5)
   status                 Show session/app state
   shot                   Save a screenshot
   open                   Open the dashboard in the browser

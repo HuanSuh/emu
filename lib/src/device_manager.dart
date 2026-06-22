@@ -106,11 +106,20 @@ class DeviceManager {
       throw DeviceException('No Android AVD found. Create one in Android Studio Device Manager.');
     }
     onProgress?.call('booting Android AVD: $target');
+    // The emulator binary locates its Qt/qemu libs relative to its own
+    // directory, so it must be launched by absolute path AND with that
+    // directory as the working dir — otherwise it fails with
+    // "Qt library not found" when started from an arbitrary cwd.
+    final emuPath = await _resolvePath('emulator') ?? 'emulator';
+    final emuDir = emuPath.contains('/')
+        ? emuPath.substring(0, emuPath.lastIndexOf('/'))
+        : null;
     // Detached so the emulator outlives this process.
     await Process.start(
-      'emulator',
+      emuPath,
       ['@$target', '-no-snapshot-save'],
       mode: ProcessStartMode.detached,
+      workingDirectory: emuDir,
     );
     await Process.run('adb', ['wait-for-device']);
     onProgress?.call('waiting for Android boot to complete...');
@@ -202,12 +211,17 @@ class DeviceManager {
     }
   }
 
-  Future<bool> _hasCommand(String cmd) async {
+  Future<bool> _hasCommand(String cmd) async => (await _resolvePath(cmd)) != null;
+
+  /// Full path of a command via `which`, or null if not found.
+  Future<String?> _resolvePath(String cmd) async {
     try {
       final res = await Process.run('which', [cmd]);
-      return res.exitCode == 0;
+      if (res.exitCode != 0) return null;
+      final path = (res.stdout as String).trim();
+      return path.isEmpty ? null : path;
     } catch (_) {
-      return false;
+      return null;
     }
   }
 }
