@@ -58,6 +58,13 @@ emu logs -n 100                  # last 100 lines
 emu logs --grep "Exception" -f   # live-follow, filtered by regex
 emu logs --level error           # errors only
 
+emu assert --deny "Exception" --expect "checkout done" --timeout 6
+                                 # log-stream oracle: exit 0 if expects appear and
+                                 # denies don't (e2e/CI verification)
+emu probe lib/cart.dart:42 --capture "total,items.length"
+                                 # capture variable values at a line via the VM
+                                 # Service (a level deeper than logs), then resume
+
 emu status                       # session / device / VM Service state
 emu shot                         # screenshot to .emu/
 emu open                         # open the dashboard
@@ -67,6 +74,14 @@ emu down --kill-device           # ...and power off the emulator/simulator
 
 Every command supports `--json` for scripting and agents; `emu logs --json`
 emits one JSON object per line (JSONL).
+
+`reload`/`restart` also report errors logged in the moment right after the
+action, so an agent can judge "did it actually work?" in a single call. That
+window only catches *immediate* errors (a build/initState throw); for errors
+triggered later (timers, taps), use `emu assert --deny ... --timeout N`.
+
+> `emu probe` reads `final`/field/local variables. A `const` local is inlined at
+> compile time and has no runtime slot, so it cannot be evaluated.
 
 ## Web dashboard
 
@@ -97,6 +112,8 @@ lib/src/
   daemon_protocol.dart flutter --machine message encode/decode
   engine.dart          owns the flutter process; reload/restart/cold/stop
   log_store.dart       ring buffer, persistence, filtered queries
+  assertions.dart      pure expect/deny log-assertion logic
+  probe.dart           VM Service logpoint: capture variables at a line
   device_manager.dart  device discovery + emulator/simulator boot
   session.dart         project detection + .emu/ state
   server.dart          REST + WebSocket + static dashboard

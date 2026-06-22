@@ -44,6 +44,8 @@ Future<int> runCli(List<String> argv) async {
         return await _logs(rest);
       case 'assert':
         return await _assert(rest);
+      case 'probe':
+        return await _probe(rest);
       case 'status':
         return await _status(rest);
       case 'shot':
@@ -385,6 +387,73 @@ Future<int> _assert(List<String> args) async {
 }
 
 // --------------------------------------------------------------------------
+// probe — capture variable values at a file:line via the VM Service
+// --------------------------------------------------------------------------
+Future<int> _probe(List<String> args) async {
+  final parser = ArgParser()
+    ..addOption('capture', abbr: 'c', help: 'comma-separated expressions to evaluate')
+    ..addOption('count', defaultsTo: '1', help: 'stop after N hits')
+    ..addOption('timeout', defaultsTo: '10', help: 'seconds to wait for hits')
+    ..addFlag('json', negatable: false);
+  final res = parser.parse(args);
+  if (res.rest.isEmpty) {
+    stderr.writeln('usage: emu probe <file:line> --capture "expr,expr"');
+    return 2;
+  }
+  final loc = res.rest.first;
+  final colon = loc.lastIndexOf(':');
+  final line = colon < 0 ? null : int.tryParse(loc.substring(colon + 1));
+  if (colon < 0 || line == null) {
+    stderr.writeln('✗ location must be <file:line>, e.g. lib/main.dart:42');
+    return 2;
+  }
+  final file = loc.substring(0, colon);
+  final capture = (res.option('capture') ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .where((s) => s.isNotEmpty)
+      .toList();
+  final count = int.tryParse(res.option('count')!) ?? 1;
+  final timeout = int.tryParse(res.option('timeout')!) ?? 10;
+
+  final info = _requireServer();
+  final body = jsonEncode({
+    'file': file,
+    'line': line,
+    'capture': capture,
+    'count': count,
+    'timeoutMs': timeout * 1000,
+  });
+  // Allow the HTTP call a bit longer than the probe's own timeout.
+  final r = await _postJson(info, '/api/probe', body, timeout: Duration(seconds: timeout + 10));
+  if (r == null) {
+    stderr.writeln('✗ no response from server');
+    return 1;
+  }
+  if (r['error'] != null) {
+    stderr.writeln('✗ ${r['error']}');
+    return 1;
+  }
+  final hits = (r['hits'] as List).cast<Map<String, dynamic>>();
+  if (res.flag('json')) {
+    print(jsonEncode(r));
+    return hits.isEmpty ? 1 : 0;
+  }
+  if (hits.isEmpty) {
+    print('✗ no hit within ${timeout}s — was $file:$line reached?');
+    return 1;
+  }
+  for (final h in hits) {
+    final vals = (h['values'] as Map)
+        .entries
+        .map((e) => '${e.key}=${e.value}')
+        .join('   ');
+    print('● ${h['file']}:${h['line']}   ${vals.isEmpty ? '(reached)' : vals}');
+  }
+  return 0;
+}
+
+// --------------------------------------------------------------------------
 // logs
 // --------------------------------------------------------------------------
 Future<int> _logs(List<String> args) async {
@@ -591,6 +660,19 @@ Future<Map<String, dynamic>?> _post(ServerInfo info, String path) async {
   }
 }
 
+Future<Map<String, dynamic>?> _postJson(ServerInfo info, String path, String body,
+    {Duration timeout = const Duration(seconds: 30)}) async {
+  try {
+    final r = await http
+        .post(Uri.parse('${info.baseUrl}$path'),
+            headers: {'Content-Type': 'application/json'}, body: body)
+        .timeout(timeout);
+    return jsonDecode(r.body) as Map<String, dynamic>;
+  } catch (_) {
+    return null;
+  }
+}
+
 Future<void> _openUrl(String url) async {
   if (Platform.isMacOS) {
     await Process.run('open', [url]);
@@ -694,6 +776,10 @@ COMMANDS
      --deny <regex>        pattern that must NOT appear (repeatable)
      --since <seq>         seq cursor (default: now)
      --timeout <s>         wait window (default 5)
+  probe <file:line>      Capture variable values at a line (VM Service logpoint)
+     -c, --capture <e,e>   expressions to evaluate when the line is hit
+     --count <n>           stop after N hits (default 1)
+     --timeout <s>         seconds to wait for a hit (default 10)
   status                 Show session/app state
   shot                   Save a screenshot
   open                   Open the dashboard in the browser

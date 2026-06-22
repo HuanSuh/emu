@@ -16,6 +16,7 @@ import 'device_manager.dart';
 import 'engine.dart';
 import 'log_store.dart';
 import 'models.dart';
+import 'probe.dart';
 import 'session.dart';
 import 'web_assets.g.dart';
 
@@ -181,6 +182,8 @@ class EmuServer {
         return _json({'ok': true});
       case '/api/screenshot':
         return _screenshot();
+      case '/api/probe':
+        return _probe(req);
       case '/api/shutdown':
         // Graceful server shutdown (used by `emu down`).
         scheduleMicrotask(() async {
@@ -203,6 +206,49 @@ class EmuServer {
       return _json({'ok': true, 'path': out});
     } catch (e) {
       return _json({'ok': false, 'error': '$e'}, status: 500);
+    }
+  }
+
+  Future<Response> _probe(Request req) async {
+    final uri = engine.status.vmServiceUri;
+    if (uri == null) {
+      return _json({'error': 'app is not running (no VM service)'}, status: 409);
+    }
+    Map<String, dynamic> body;
+    try {
+      body = jsonDecode(await req.readAsString()) as Map<String, dynamic>;
+    } catch (_) {
+      return _json({'error': 'invalid request body'}, status: 400);
+    }
+    final file = body['file'] as String?;
+    final line = (body['line'] as num?)?.toInt();
+    if (file == null || line == null) {
+      return _json({'error': 'file and line required'}, status: 400);
+    }
+    final capture = (body['capture'] as List?)?.cast<String>() ?? const [];
+    final count = (body['count'] as num?)?.toInt() ?? 1;
+    final timeoutMs = (body['timeoutMs'] as num?)?.toInt() ?? 10000;
+    final pubspec = File('${session.projectRoot.path}/pubspec.yaml');
+    try {
+      final hits = await runProbe(
+        wsUri: uri,
+        pubspecContent: pubspec.existsSync() ? pubspec.readAsStringSync() : '',
+        file: file,
+        line: line,
+        capture: capture,
+        count: count,
+        timeout: Duration(milliseconds: timeoutMs),
+        onHit: (h) => logStore.add(
+          '[probe $file:$line] ${h.values.entries.map((e) => '${e.key}=${e.value}').join(', ')}',
+          level: LogLevel.system,
+          source: 'probe',
+        ),
+      );
+      return _json({'hits': hits.map((h) => h.toJson()).toList()});
+    } on ProbeException catch (e) {
+      return _json({'error': e.message}, status: 422);
+    } catch (e) {
+      return _json({'error': '$e'}, status: 500);
     }
   }
 
