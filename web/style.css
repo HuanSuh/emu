@@ -36,7 +36,8 @@ body { display: flex; flex-direction: column; height: 100vh; }
   border-bottom: 1px solid var(--border);
 }
 
-.brand { font-weight: 700; font-size: 15px; letter-spacing: .5px; }
+.brand { font-weight: 700; font-size: 15px; letter-spacing: .5px; display: flex; align-items: center; gap: 7px; }
+.brand-icon { width: 20px; height: 20px; border-radius: 5px; display: block; }
 .dot {
   display: inline-block; width: 8px; height: 8px; border-radius: 50%;
   background: var(--error); margin-left: 6px; vertical-align: middle;
