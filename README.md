@@ -125,6 +125,7 @@ emu probe lib/cart.dart:42 --capture "total,items.length"
 |------|------|
 | `emu doctor` | 의존성 점검 (flutter / adb / emulator / xcrun) |
 | `emu devices` | `flutter devices` + Android AVD 목록 |
+| `emu configs` | `.vscode/launch.json` 의 실행 구성 목록 (debug만 실행 가능) |
 | `emu up [opts]` | 기기 부팅 + 앱 실행 + 대시보드 기동. `running`/`failed` 확정까지 대기 |
 | `emu down [--kill-device]` | 세션 종료. `--kill-device` 면 기기 전원도 끔 |
 | `emu stop` | 앱만 정지(서버는 유지) |
@@ -138,11 +139,30 @@ emu probe lib/cart.dart:42 --capture "total,items.length"
 |------|------|
 | `--android` / `--ios` | 해당 플랫폼 기본 기기를 부팅 |
 | `-d, --device <id>` | 특정 flutter device id 사용 |
+| `--config <name>` | `.vscode/launch.json` 의 구성을 재현 (개별 플래그가 덮어씀) |
 | `--flavor <name>` | 빌드 flavor |
 | `-t, --target <file>` | 진입점(`lib/main_dev.dart` 등) |
 | `--dart-define K=V` | dart-define (반복 가능) |
 | `--port <n>` | 대시보드 포트(기본 4577, 사용 중이면 자동 폴백) |
 | `--open` | 기동 후 브라우저 열기 |
+
+### configs — `.vscode/launch.json` 재현
+
+IDE 없이도 프로젝트에 이미 설정된 실행 구성(flavor / target / dart-define / device)을
+그대로 쓴다. `emu configs` 로 목록을 보고, `emu up --config "<이름>"` 으로 기동한다.
+
+```bash
+emu configs                          # 구성 목록 (--json 가능)
+emu up --config "myapp (dev)"        # 해당 구성 그대로 실행
+emu up --config "myapp (dev)" --flavor staging   # 개별 플래그가 config 값을 덮어씀
+```
+
+- `launch.json`(JSONC: 주석·후행 쉼표 허용)을 읽어 `type: "dart"` 구성만 추출한다.
+  `flutterMode`·`deviceId`·`program` 및 `args`/`toolArgs` 의 `--flavor`/`-t`/`--dart-define` 를 인식.
+- **debug 구성만 실행 가능**: emu 는 hot reload·VM Service(probe) 때문에 debug 빌드만 구동한다.
+  `profile`/`release` 구성은 `configs` 에서 `⚠ debug-only` 로 표시되고 `up --config` 는 거부한다(exit 1).
+- `--dart-define-from-file` 등 아직 재현하지 못하는 플래그는 목록에서 미지원으로 표시되니
+  필요하면 `--dart-define` 으로 직접 넘긴다.
 
 ### reload / restart / cold
 
