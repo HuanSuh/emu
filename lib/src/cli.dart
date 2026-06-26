@@ -11,6 +11,7 @@ import 'package:http/http.dart' as http;
 
 import 'assertions.dart';
 import 'device_manager.dart';
+import 'launch_config.dart';
 import 'models.dart';
 import 'server.dart';
 import 'session.dart';
@@ -30,6 +31,8 @@ Future<int> runCli(List<String> argv) async {
         return await _doctor(rest);
       case 'devices':
         return await _devices(rest);
+      case 'configs':
+        return await _configs(rest);
       case 'up':
         return await _up(rest);
       case 'reload':
@@ -135,6 +138,43 @@ Future<int> _devices(List<String> args) async {
 }
 
 // --------------------------------------------------------------------------
+// configs (read .vscode/launch.json)
+// --------------------------------------------------------------------------
+Future<int> _configs(List<String> args) async {
+  final json = args.contains('--json');
+  final session = Session.require();
+  final configs = readLaunchConfigs(session.projectRoot.path);
+  if (json) {
+    print(jsonEncode({'configs': configs.map((c) => c.toJson()).toList()}));
+    return 0;
+  }
+  if (configs.isEmpty) {
+    print('(no configs — .vscode/launch.json not found or has no dart entries)');
+    return 0;
+  }
+  print('Launch configs (.vscode/launch.json):');
+  for (final c in configs) {
+    final parts = <String>[
+      if (c.flavor != null) 'flavor=${c.flavor}',
+      if (c.target != null) 'target=${c.target}',
+      if (c.deviceId != null) 'device=${c.deviceId}',
+      for (final d in c.dartDefines) 'define=$d',
+    ];
+    final suffix = parts.isEmpty ? '' : '  (${parts.join(', ')})';
+    if (c.isDebug) {
+      print('  • ${c.name}$suffix');
+    } else {
+      print('  ⚠ ${c.name}  [${c.mode}] — debug-only, not runnable by emu$suffix');
+    }
+    if (c.unsupported.isNotEmpty) {
+      print('      note: ${c.unsupported.join(', ')} not replayed by emu');
+    }
+  }
+  print('\nRun one with:  emu up --config "<name>" [--android|--ios]');
+  return 0;
+}
+
+// --------------------------------------------------------------------------
 // up
 // --------------------------------------------------------------------------
 Future<int> _up(List<String> args) async {
@@ -142,6 +182,7 @@ Future<int> _up(List<String> args) async {
     ..addFlag('android', negatable: false)
     ..addFlag('ios', negatable: false)
     ..addOption('device', abbr: 'd')
+    ..addOption('config', help: 'named config from .vscode/launch.json')
     ..addOption('flavor')
     ..addOption('target', abbr: 't')
     ..addMultiOption('dart-define')
@@ -150,6 +191,42 @@ Future<int> _up(List<String> args) async {
     ..addFlag('json', negatable: false);
   final res = parser.parse(args);
   final session = Session.require();
+
+  // Resolve a named launch.json config (if any). Explicit flags override it.
+  LaunchConfig? cfg;
+  if (res.option('config') != null) {
+    final wanted = res.option('config')!;
+    final configs = readLaunchConfigs(session.projectRoot.path);
+    for (final c in configs) {
+      if (c.name == wanted) {
+        cfg = c;
+        break;
+      }
+    }
+    if (cfg == null) {
+      stderr.writeln('✗ config "$wanted" not found in .vscode/launch.json');
+      if (configs.isNotEmpty) {
+        stderr.writeln('  available: ${configs.map((c) => '"${c.name}"').join(', ')}');
+      }
+      return 1;
+    }
+    if (!cfg.isDebug) {
+      stderr.writeln('✗ config "$wanted" is flutterMode=${cfg.mode}; '
+          'emu drives debug builds only (hot reload + VM Service).');
+      return 1;
+    }
+    if (cfg.unsupported.isNotEmpty) {
+      stderr.writeln('! config "$wanted": ${cfg.unsupported.join(', ')} '
+          'not replayed by emu (pass --dart-define manually if needed).');
+    }
+  }
+  // Effective run settings: explicit flag wins, else config value.
+  final device = res.option('device') ?? cfg?.deviceId;
+  final flavor = res.option('flavor') ?? cfg?.flavor;
+  final target = res.option('target') ?? cfg?.target;
+  final dartDefines = res.multiOption('dart-define').isNotEmpty
+      ? res.multiOption('dart-define')
+      : (cfg?.dartDefines ?? const []);
 
   // Refuse if a healthy server is already running for this project.
   final existing = session.readServerInfo();
@@ -171,10 +248,10 @@ Future<int> _up(List<String> args) async {
     '__serve',
     '--port', res.option('port')!,
     if (platform != null) '--platform=$platform',
-    if (res.option('device') != null) '--device=${res.option('device')}',
-    if (res.option('flavor') != null) '--flavor=${res.option('flavor')}',
-    if (res.option('target') != null) '--target=${res.option('target')}',
-    for (final d in res.multiOption('dart-define')) '--dart-define=$d',
+    if (device != null) '--device=$device',
+    if (flavor != null) '--flavor=$flavor',
+    if (target != null) '--target=$target',
+    for (final d in dartDefines) '--dart-define=$d',
     '--project=${session.projectRoot.path}',
   ];
 
@@ -753,9 +830,11 @@ USAGE
 COMMANDS
   doctor                 Check dependencies (flutter, adb, emulator, xcrun)
   devices                List devices + Android AVDs
+  configs                List run configs from .vscode/launch.json
   up [opts]              Boot device + start the app, launch the dashboard
      --android | --ios     Boot a default device of that platform
      -d, --device <id>     Use a specific flutter device id
+     --config <name>       Use a config from .vscode/launch.json (flags override)
      --flavor <name>       Build flavor
      -t, --target <file>   Entrypoint (lib/main_dev.dart, …)
      --dart-define K=V     dart-define (repeatable)
