@@ -9,6 +9,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'env.dart';
 import 'models.dart';
 
 /// Parse the JSON emitted by `flutter devices --machine` into [DeviceInfo]s.
@@ -140,7 +141,7 @@ class DeviceManager {
     if (!await _hasCommand('xcrun')) {
       throw DeviceException('`xcrun` not found. Install Xcode command line tools.');
     }
-    final list = await Process.run('xcrun', ['simctl', 'list', 'devices', '-j']);
+    final list = await _xcrun(['simctl', 'list', 'devices', '-j']);
     if (list.exitCode != 0) {
       throw DeviceException(
           'xcrun simctl failed (is full Xcode installed and selected?): ${list.stderr}');
@@ -171,13 +172,13 @@ class DeviceManager {
       throw DeviceException('No available iPhone simulator found (check Xcode > Settings > Platforms).');
     }
     onProgress?.call('booting iOS simulator: $chosen');
-    final boot = await Process.run('xcrun', ['simctl', 'boot', chosen]);
+    final boot = await _xcrun(['simctl', 'boot', chosen]);
     // "Unable to boot device in current state: Booted" is fine.
     if (boot.exitCode != 0 && !'${boot.stderr}'.contains('Booted')) {
       throw DeviceException('Failed to boot iOS simulator: ${boot.stderr}');
     }
     _openSimulatorApp();
-    await Process.run('xcrun', ['simctl', 'bootstatus', chosen, '-b']);
+    await _xcrun(['simctl', 'bootstatus', chosen, '-b']);
     return chosen;
   }
 
@@ -190,7 +191,7 @@ class DeviceManager {
   /// Power off devices for the given platform (best-effort).
   Future<void> shutdown(String platform) async {
     if (platform == 'ios' && isMacOS) {
-      await Process.run('xcrun', ['simctl', 'shutdown', 'all']);
+      await _xcrun(['simctl', 'shutdown', 'all']);
     } else if (platform == 'android') {
       await Process.run('adb', ['emu', 'kill']);
     }
@@ -199,7 +200,7 @@ class DeviceManager {
   /// Capture a screenshot to [outPath]. Picks adb or simctl by platform.
   Future<void> screenshot(String outPath, {required String platform, String? udid}) async {
     if (platform == 'ios' && isMacOS) {
-      final res = await Process.run('xcrun', ['simctl', 'io', udid ?? 'booted', 'screenshot', outPath]);
+      final res = await _xcrun(['simctl', 'io', udid ?? 'booted', 'screenshot', outPath]);
       if (res.exitCode != 0) throw DeviceException('screenshot failed: ${res.stderr}');
     } else {
       // stdoutEncoding: null keeps the PNG bytes raw (default would decode to a
@@ -210,6 +211,14 @@ class DeviceManager {
       await File(outPath).writeAsBytes(res.stdout as List<int>);
     }
   }
+
+  /// Run `xcrun` with a sanitized environment (stale SDKROOT/DEVELOPER_DIR
+  /// removed) so simctl works even when the shell points at a deleted Xcode.
+  Future<ProcessResult> _xcrun(List<String> args, {Encoding? stdoutEncoding}) =>
+      Process.run('xcrun', args,
+          environment: spawnEnvironment(),
+          includeParentEnvironment: false,
+          stdoutEncoding: stdoutEncoding ?? systemEncoding);
 
   Future<bool> _hasCommand(String cmd) async => (await _resolvePath(cmd)) != null;
 

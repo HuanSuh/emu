@@ -8,6 +8,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'daemon_protocol.dart';
+import 'env.dart';
 import 'log_store.dart';
 import 'models.dart';
 
@@ -94,6 +95,8 @@ class FlutterEngine {
       flutterExecutable,
       runArgs,
       workingDirectory: projectRoot,
+      environment: spawnEnvironment(),
+      includeParentEnvironment: false,
     );
     _process = proc;
 
