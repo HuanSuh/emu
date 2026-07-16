@@ -14,6 +14,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'device_manager.dart';
 import 'engine.dart';
+import 'frame.dart';
 import 'log_store.dart';
 import 'models.dart';
 import 'probe.dart';
@@ -188,6 +189,8 @@ class EmuServer {
         return _swipe(req);
       case '/api/text':
         return _text(req);
+      case '/api/first-frame':
+        return _firstFrame(req);
       case '/api/probe':
         return _probe(req);
       case '/api/shutdown':
@@ -261,6 +264,17 @@ class EmuServer {
       () => devices.typeText(text, platform: _platform, udid: engine.status.deviceId),
       {'text': text},
     );
+  }
+
+  /// Whether the app has painted yet — `running` alone doesn't mean tappable.
+  Future<Response> _firstFrame(Request req) async {
+    final uri = engine.status.vmServiceUri;
+    if (uri == null) {
+      return _json({'ok': false, 'error': 'app is not running (no VM service)'}, status: 409);
+    }
+    final ms = int.tryParse(req.url.queryParameters['timeoutMs'] ?? '') ?? 20000;
+    final painted = await waitForFirstFrame(uri, timeout: Duration(milliseconds: ms));
+    return _json({'ok': true, 'firstFrame': painted});
   }
 
   /// Run an input injection, reporting the log cursor from *before* it fired.

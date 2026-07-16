@@ -294,10 +294,14 @@ Future<int> _up(List<String> args) async {
   if (res.flag('json')) {
     // Wait for the real launch outcome instead of reporting a premature ok:true.
     final state = await _awaitLaunchState(info);
+    // `running` only means the entrypoint started; input before the first frame
+    // is silently lost, so report whether the app has actually painted.
+    final painted = state == 'running' && await _awaitFirstFrame(info);
     final errors = await _errorsSince(info, 0);
     print(jsonEncode({
       'ok': state == 'running',
       'state': state,
+      'firstFrame': painted,
       'port': info.port,
       'dashboard': info.baseUrl,
       'errors': errors,
@@ -722,6 +726,13 @@ Future<int> _text(List<String> args) async {
     return 2;
   }
   return _inject('/api/text?text=${Uri.encodeQueryComponent(text)}', 'text "$text"', json: json);
+}
+
+/// Block until the app has painted. Returns false on timeout — the app is still
+/// running, it just isn't ready for input yet.
+Future<bool> _awaitFirstFrame(ServerInfo info, {int timeoutMs = 20000}) async {
+  final res = await _post(info, '/api/first-frame?timeoutMs=$timeoutMs');
+  return res?['firstFrame'] == true;
 }
 
 /// POST an input injection and report it. The response's `seq` is the log
