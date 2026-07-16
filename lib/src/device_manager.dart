@@ -226,6 +226,35 @@ class DeviceManager {
     if (res.exitCode != 0) throw DeviceException('tap failed: ${res.stderr}');
   }
 
+  /// Swipe from ([x1], [y1]) to ([x2], [y2]) over [durationMs], in physical
+  /// pixels. Doubles as scrolling; a long [durationMs] on a short distance is
+  /// a drag rather than a fling.
+  Future<void> swipe(int x1, int y1, int x2, int y2,
+      {required String platform, String? udid, int durationMs = 300}) async {
+    if (platform == 'ios') {
+      throw DeviceException('swipe is not supported on iOS — `simctl` has no input command.');
+    }
+    final res = await Process.run('adb',
+        [..._serial(udid), 'shell', 'input', 'swipe', '$x1', '$y1', '$x2', '$y2', '$durationMs']);
+    if (res.exitCode != 0) throw DeviceException('swipe failed: ${res.stderr}');
+  }
+
+  /// Type [text] into the focused field. Tap the field first — this types at
+  /// the current focus and does not target a widget.
+  Future<void> typeText(String text, {required String platform, String? udid}) async {
+    if (platform == 'ios') {
+      throw DeviceException('text input is not supported on iOS — `simctl` has no input command.');
+    }
+    final bad = nonTypableChars(text);
+    if (bad.isNotEmpty) {
+      throw DeviceException(
+          '`adb shell input text` is ASCII-only; cannot type: ${bad.join(' ')}');
+    }
+    final res =
+        await Process.run('adb', [..._serial(udid), 'shell', 'input', 'text', escapeAdbText(text)]);
+    if (res.exitCode != 0) throw DeviceException('text failed: ${res.stderr}');
+  }
+
   /// `-s <serial>` so commands hit the intended device when several are attached.
   List<String> _serial(String? udid) =>
       (udid == null || udid.isEmpty) ? const [] : ['-s', udid];
@@ -263,3 +292,33 @@ final _iosUdid = RegExp(
 /// input/screenshot path works without a UDID.
 String platformForDeviceId(String? deviceId) =>
     _iosUdid.hasMatch(deviceId ?? '') ? 'ios' : 'android';
+
+/// Characters `adb shell input text` cannot type. It speaks ASCII only, so
+/// anything outside printable ASCII (한글, emoji, accents) is rejected up front
+/// rather than silently dropped on the device.
+List<String> nonTypableChars(String text) => text.runes
+    .where((r) => r < 0x20 || r > 0x7E)
+    .map(String.fromCharCode)
+    .toSet()
+    .toList();
+
+/// Shell metacharacters that must survive the device-side shell `adb shell`
+/// hands the command to.
+const _shellMeta = r'''\"'`$&|;<>()*?~#!''';
+
+/// Make [text] survive `adb shell input text`: it is parsed by the device's
+/// shell first (so metacharacters need escaping) and then by `input`, whose own
+/// convention is `%s` for a space.
+String escapeAdbText(String text) {
+  final buf = StringBuffer();
+  for (final rune in text.runes) {
+    final c = String.fromCharCode(rune);
+    if (c == ' ') {
+      buf.write('%s');
+      continue;
+    }
+    if (_shellMeta.contains(c)) buf.write(r'\');
+    buf.write(c);
+  }
+  return buf.toString();
+}

@@ -55,6 +55,10 @@ Future<int> runCli(List<String> argv) async {
         return await _shot(rest);
       case 'tap':
         return await _tap(rest);
+      case 'swipe':
+        return await _swipe(rest);
+      case 'text':
+        return await _text(rest);
       case 'open':
         return await _open(rest);
       case 'down':
@@ -687,19 +691,54 @@ Future<int> _tap(List<String> args) async {
     stderr.writeln('usage: emu tap <x> <y>   # physical pixels, as seen in `emu shot`');
     return 2;
   }
+  return _inject('/api/tap?x=$x&y=$y', 'tap $x,$y', json: json);
+}
+
+/// `emu swipe <x1> <y1> <x2> <y2>` — physical pixels, like `tap`. This is also
+/// how you scroll.
+Future<int> _swipe(List<String> args) async {
+  final parser = ArgParser()
+    ..addOption('duration', defaultsTo: '300', help: 'swipe duration in ms')
+    ..addFlag('json', negatable: false);
+  final res = parser.parse(args);
+  final pos = res.rest.map(int.tryParse).toList();
+  if (pos.length != 4 || pos.any((v) => v == null)) {
+    stderr.writeln('usage: emu swipe <x1> <y1> <x2> <y2> [--duration <ms>]');
+    return 2;
+  }
+  final ms = int.tryParse(res.option('duration')!) ?? 300;
+  final q = 'x1=${pos[0]}&y1=${pos[1]}&x2=${pos[2]}&y2=${pos[3]}&durationMs=$ms';
+  return _inject('/api/swipe?$q', 'swipe ${pos[0]},${pos[1]} → ${pos[2]},${pos[3]} (${ms}ms)',
+      json: res.flag('json'));
+}
+
+/// `emu text <string>` — types into whatever currently has focus, so tap the
+/// field first.
+Future<int> _text(List<String> args) async {
+  final json = args.contains('--json');
+  final text = args.where((a) => a != '--json').join(' ');
+  if (text.isEmpty) {
+    stderr.writeln('usage: emu text <string>   # types into the focused field');
+    return 2;
+  }
+  return _inject('/api/text?text=${Uri.encodeQueryComponent(text)}', 'text "$text"', json: json);
+}
+
+/// POST an input injection and report it. The response's `seq` is the log
+/// cursor from just before the input fired — feed it to `assert --since` to
+/// catch what the input caused.
+Future<int> _inject(String path, String label, {required bool json}) async {
   final info = _requireServer();
-  final res = await _post(info, '/api/tap?x=$x&y=$y');
+  final res = await _post(info, path);
   if (res == null || res['ok'] != true) {
     if (json) {
       print(jsonEncode(res ?? {'ok': false, 'error': 'no response'}));
     } else {
-      stderr.writeln('✗ tap failed: ${res?['error'] ?? 'no response'}');
+      stderr.writeln('✗ $label failed: ${res?['error'] ?? 'no response'}');
     }
     return 1;
   }
-  // `seq` is the log cursor from just before the tap — feed it to
-  // `assert --since` to catch what the tap caused.
-  print(json ? jsonEncode(res) : '✓ tap $x,$y   (seq ${res['seq']})');
+  print(json ? jsonEncode(res) : '✓ $label   (seq ${res['seq']})');
   return 0;
 }
 
@@ -898,6 +937,10 @@ COMMANDS
   status                 Show session/app state
   shot [path]            Save a screenshot (default: .emu/shot-<ts>.png)
   tap <x> <y>            Tap at physical pixels (same space as `shot`; Android only)
+  swipe <x1> <y1> <x2> <y2>
+                         Swipe/scroll between two points (Android only)
+     --duration <ms>       swipe duration (default 300)
+  text <string>          Type into the focused field — tap it first (Android only)
   open                   Open the dashboard in the browser
   down [--kill-device]   Stop the session (optionally power off the device)
 

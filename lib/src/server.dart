@@ -184,6 +184,10 @@ class EmuServer {
         return _screenshot(req);
       case '/api/tap':
         return _tap(req);
+      case '/api/swipe':
+        return _swipe(req);
+      case '/api/text':
+        return _text(req);
       case '/api/probe':
         return _probe(req);
       case '/api/shutdown':
@@ -228,13 +232,47 @@ class EmuServer {
     if (x == null || y == null) {
       return _json({'ok': false, 'error': 'x and y are required integers'}, status: 400);
     }
-    // Capture the cursor *before* injecting, so `assert --since <seq>` sees
-    // everything the tap causes. Without it the natural `tap` then `assert`
-    // order races: assert's default window opens after the effect has landed.
+    return _inject(
+      () => devices.tap(x, y, platform: _platform, udid: engine.status.deviceId),
+      {'x': x, 'y': y},
+    );
+  }
+
+  Future<Response> _swipe(Request req) async {
+    final q = req.url.queryParameters;
+    final c = ['x1', 'y1', 'x2', 'y2'].map((k) => int.tryParse(q[k] ?? '')).toList();
+    if (c.any((v) => v == null)) {
+      return _json({'ok': false, 'error': 'x1, y1, x2, y2 are required integers'}, status: 400);
+    }
+    final ms = int.tryParse(q['durationMs'] ?? '') ?? 300;
+    return _inject(
+      () => devices.swipe(c[0]!, c[1]!, c[2]!, c[3]!,
+          platform: _platform, udid: engine.status.deviceId, durationMs: ms),
+      {'x1': c[0], 'y1': c[1], 'x2': c[2], 'y2': c[3], 'durationMs': ms},
+    );
+  }
+
+  Future<Response> _text(Request req) async {
+    final text = req.url.queryParameters['text'];
+    if (text == null || text.isEmpty) {
+      return _json({'ok': false, 'error': 'text is required'}, status: 400);
+    }
+    return _inject(
+      () => devices.typeText(text, platform: _platform, udid: engine.status.deviceId),
+      {'text': text},
+    );
+  }
+
+  /// Run an input injection, reporting the log cursor from *before* it fired.
+  /// `assert --since <seq>` then sees exactly what the input caused — without
+  /// this, the natural `tap` then `assert` order races, because assert's
+  /// default window only opens once the effect has already been logged.
+  Future<Response> _inject(
+      Future<void> Function() action, Map<String, dynamic> detail) async {
     final seq = logStore.lastSeq;
     try {
-      await devices.tap(x, y, platform: _platform, udid: engine.status.deviceId);
-      return _json({'ok': true, 'x': x, 'y': y, 'seq': seq});
+      await action();
+      return _json({'ok': true, ...detail, 'seq': seq});
     } catch (e) {
       return _json({'ok': false, 'error': '$e'}, status: 500);
     }

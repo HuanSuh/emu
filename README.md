@@ -110,8 +110,11 @@ emu probe lib/cart.dart:42 --capture "total,items.length"
 # → ● lib/cart.dart:42   total=12500   items.length=3
 
 # 6) 화면을 직접 구동 — 스크린샷을 보고 좌표를 찍는다
-emu shot ui.png                                  # 에이전트가 이미지에서 버튼 좌표를 읽고
-SEQ=$(emu tap 670 1486 --json | jq -r .seq)      # 탭 (반환된 seq = 탭 직전 로그 커서)
+emu shot ui.png                                  # 에이전트가 이미지에서 좌표를 읽고
+emu tap 670 436                                  # 필드 포커스 → 입력 → 스크롤
+emu text "sunglasses"
+emu swipe 670 2500 670 1200
+SEQ=$(emu tap 670 1486 --json | jq -r .seq)      # 결제 버튼 탭 (seq = 탭 직전 로그 커서)
 emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 5
 ```
 
@@ -140,6 +143,8 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 | `emu open` | 대시보드를 브라우저로 열기 |
 | `emu shot [path]` | 스크린샷 저장(기본 `.emu/`). 상대 경로는 프로젝트 루트 기준 |
 | `emu tap <x> <y>` | 좌표 탭 (물리 픽셀 — `shot`과 같은 좌표계). **Android 전용** |
+| `emu swipe <x1> <y1> <x2> <y2>` | 스와이프/스크롤. `--duration <ms>`. **Android 전용** |
+| `emu text <string>` | 포커스된 필드에 입력(ASCII만). **Android 전용** |
 
 `emu up` 옵션:
 
@@ -213,11 +218,13 @@ emu assert [opts]
 emu assert --deny "FormatException" --expect "parsed value" --timeout 6
 ```
 
-### tap — 좌표 탭 (에이전트 구동용)
+### tap / swipe / text — 앱 구동 (에이전트용)
 
 ```bash
-emu shot ui.png          # 화면을 캡처하고
-emu tap 670 1486         # 에이전트가 이미지에서 읽은 좌표를 그대로 탭
+emu shot ui.png                      # 화면을 캡처하고
+emu tap 670 1486                     # 에이전트가 이미지에서 읽은 좌표를 그대로 탭
+emu swipe 670 2500 670 1200          # 스크롤 (--duration <ms>, 기본 300)
+emu text "hello world"               # 포커스된 필드에 입력 — 필드를 먼저 탭할 것
 # → ✓ tap 670,1486   (seq 28)
 ```
 
@@ -238,7 +245,22 @@ emu assert --since "$SEQ" --expect "checkout done" --deny "Exception" --timeout 
 `--since` 없이 `tap` 다음에 `assert` 를 부르면 **놓친다**: `assert` 의 기본 창은 "지금부터"라
 이미 발생한 로그를 보지 못한다.
 
-- **Android 전용**: `simctl` 에는 tap 명령이 없어 iOS 시뮬레이터는 아직 미지원.
+**입력은 명령이 끝나도 앱에 아직 도달하지 않았을 수 있다.** `adb` 는 이벤트를 큐에 넣고 반환하며,
+특히 `text` 는 한 글자씩 들어가 눈에 띄게 느리다(실측: 6자에 ~2초). `sleep` 으로 눈치껏 기다리지 말고
+**`assert --since` 로 도달을 확인**하는 게 정확하다. 입력을 연달아 쏘면 서로 경합해 뒤섞인다.
+
+```bash
+emu tap 670 436                                  # 필드를 먼저 탭해 포커스
+SEQ=$(emu text "hello world" --json | jq -r .seq)
+emu assert --since "$SEQ" --expect 'text="hello world"' --timeout 8   # 도달 확인
+```
+
+- **`text` 는 ASCII만 가능하다.** `adb shell input text` 는 비ASCII(한글·이모지·악센트)에서
+  안드로이드 내부 `NullPointerException` 으로 죽는다(실측). emu는 이를 미리 거르고 명확히 알려준다.
+- **`text` 는 포커스된 곳에 칠 뿐** 위젯을 지정하지 않는다. 필드를 먼저 `tap` 할 것.
+- **소프트 키보드가 화면을 가린다.** 필드를 탭하면 키보드가 올라와 하단 위젯을 덮으므로,
+  이후 좌표는 **다시 `shot` 으로 확인**할 것(키보드는 `adb shell input keyevent 4` 로 닫는다).
+- **Android 전용**: `simctl` 에 입력 명령이 없어 iOS 시뮬레이터는 아직 미지원.
 - **UI 단언은 하지 않는다**: emu는 입력만 넣고, 판정은 `assert`(로그)/`probe`(변수)가 한다.
 
 ### probe — 변수 캡처 (VM Service logpoint)
@@ -303,7 +325,8 @@ emu probe lib/cart.dart:42 --capture "total,items.length,coupon" --count 3
 같은 UI 단언은 emu가 하지 않는다(에이전트가 스크린샷을 보고 판단하거나, `assert`/`probe` 로 검증).
 셀렉터 기반의 견고한 UI 단언이 필요하면 `integration_test`(공식)/`patrol`/`maestro` 를 쓰고,
 emu는 그 위에서 **로그·변수 검증**을 더하는 게 맞다.
-`tap` 은 **Android 전용**이다(`simctl` 에 tap 명령이 없다). 스와이프·텍스트 입력도 아직 없다.
+입력(`tap`/`swipe`/`text`)은 **Android 전용**이다 — `simctl` 에 입력 명령이 없어 iOS는 미지원.
+`text` 는 ASCII만 가능하다(안드로이드 `input text` 자체의 한계).
 
 **`up` 이 `running` 을 반환해도 첫 프레임 전일 수 있다.**
 `up` 직후 곧바로 `tap` 하면 화면이 아직 없어 허공을 칠 수 있다(실측 확인). 기동 직후 탭이 필요하면
@@ -360,8 +383,8 @@ EMU_WEB_DIR=web dart run bin/emu.dart up   # 대시보드를 디스크에서 서
 
 - ✅ 에이전트 루프 인체공학(verdict `up`, `reload` 직후 에러, `assert`)
 - ✅ `probe` — VM Service 변수 캡처
-- ✅ `emu tap` — 스크린샷 좌표 기반 구동 (Android)
-- ⬜ iOS 입력 수단 / 스와이프·텍스트 입력
+- ✅ `emu tap` / `swipe` / `text` — 스크린샷 좌표 기반 구동 (Android)
+- ⬜ iOS 입력 수단 (`simctl` 에 입력 명령 없음 — 대안 조사 필요)
 - 🚫 `emu e2e` — 외부 e2e 엔진 구동: 보류(입력 수단 확보로 전제 소멸, [BACKLOG](docs/BACKLOG.md) 참고)
 - ⬜ Tier 2 인터랙티브 디버거(break/inspect/step)
 - ⬜ iOS 시뮬레이터 실기 검증
