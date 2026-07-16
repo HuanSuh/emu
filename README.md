@@ -262,10 +262,12 @@ emu probe lib/cart.dart:42 --capture "total,items.length,coupon" --count 3
 *즉시* 에러(build/initState throw)는 잡지만, *지연·트리거성* 에러(Timer, 탭)는 놓칠 수 있다.
 그 경우 `emu assert --deny ... --timeout N` 이 견고한 길(폴링 기반).
 
-**UI 입력·단언은 emu의 영역이 아니다.**
-`adb shell input tap` 이 Flutter GestureDetector에 안 먹는 경우가 있어, emu는 신뢰할 수 있는
-UI 구동/단언을 제공하지 않는다. 진짜 e2e가 필요하면 `integration_test`(공식)/`patrol`/`maestro`
-를 쓰고, emu는 그 위에서 **로그·변수 검증**을 더하는 식으로 보완하는 게 맞다.
+**UI 입력은 아직 없고, UI 단언은 emu의 영역이 아니다.**
+emu는 현재 입력 명령(`tap` 등)을 제공하지 않는다 — 구현 예정(로드맵). 참고로 흔히 알려진 것과 달리
+`adb shell input tap` 은 Flutter GestureDetector에 **정상적으로 먹는다**(실측: 연타 10/10, 유실 0%).
+스크린샷과 tap이 같은 물리 픽셀 공간을 쓰므로 좌표 변환도 불필요하다.
+다만 **위젯 트리를 질의하는 UI 단언**("이 버튼이 보이나?")은 emu가 하지 않는다. 그게 필요하면
+`integration_test`(공식)/`patrol`/`maestro` 를 쓰고, emu는 그 위에서 **로그·변수 검증**을 더하는 게 맞다.
 
 **e2e 테스트 도구 vs emu.** e2e 도구는 **UI**를 단언하고 emu는 **로그/변수**를 단언한다 —
 서로 다른 버그를 잡는다(예: "UI는 통과인데 로그엔 삼켜진 예외"는 emu가 잡는다).
@@ -318,8 +320,8 @@ EMU_WEB_DIR=web dart run bin/emu.dart up   # 대시보드를 디스크에서 서
 
 - ✅ 에이전트 루프 인체공학(verdict `up`, `reload` 직후 에러, `assert`)
 - ✅ `probe` — VM Service 변수 캡처
-- ⬜ `emu e2e` — 외부 e2e 엔진(maestro/integration_test) 구동 + 로그 동시검증
-- ⬜ `emu tap`/입력 추상화
+- ⬜ `emu tap`/입력 추상화 — 에이전트가 스크린샷 보고 좌표 탭 (**다음 작업**)
+- 🚫 `emu e2e` — 외부 e2e 엔진 구동: 보류(입력 수단 확보로 전제 소멸, [BACKLOG](docs/BACKLOG.md) 참고)
 - ⬜ Tier 2 인터랙티브 디버거(break/inspect/step)
 - ⬜ iOS 시뮬레이터 실기 검증
 - ⬜ AVD 선택 개선
