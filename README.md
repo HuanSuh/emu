@@ -108,12 +108,19 @@ emu assert --deny "Exception" --expect "checkout done" --timeout 6
 # 5) 변수 레벨로 더 깊게 검수
 emu probe lib/cart.dart:42 --capture "total,items.length"
 # → ● lib/cart.dart:42   total=12500   items.length=3
+
+# 6) 화면을 직접 구동 — 스크린샷을 보고 좌표를 찍는다
+emu shot ui.png                                  # 에이전트가 이미지에서 버튼 좌표를 읽고
+SEQ=$(emu tap 670 1486 --json | jq -r .seq)      # 탭 (반환된 seq = 탭 직전 로그 커서)
+emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 5
 ```
 
 이 루프가 에이전트에게 주는 것:
 - **단일 호출 판정** — `up`/`reload`/`restart`가 "실제로 됐는지"를 한 번에 알려준다(아래 참고).
 - **로그 오라클** — `assert` 로 "이 동작 후 이 로그가 나와야/안 나와야 한다"를 단언.
 - **변수 오라클** — `probe` 로 로그에 찍지 않은 변수값을 실행 중에 직접 읽는다.
+- **구동 수단** — `shot` + `tap` 으로 앱을 직접 몬다. emu는 좌표를 넣기만 하고 **판단은 에이전트가**,
+  검증은 `assert`/`probe`가 한다 — 외부 e2e 엔진 없이 구동→검증이 닫힌다.
 
 ## 명령어 레퍼런스
 
@@ -131,7 +138,8 @@ emu probe lib/cart.dart:42 --capture "total,items.length"
 | `emu stop` | 앱만 정지(서버는 유지) |
 | `emu status` | 세션/기기/앱 상태 + VM Service URI |
 | `emu open` | 대시보드를 브라우저로 열기 |
-| `emu shot [path]` | 스크린샷 저장(기본 `.emu/`) |
+| `emu shot [path]` | 스크린샷 저장(기본 `.emu/`). 상대 경로는 프로젝트 루트 기준 |
+| `emu tap <x> <y>` | 좌표 탭 (물리 픽셀 — `shot`과 같은 좌표계). **Android 전용** |
 
 `emu up` 옵션:
 
@@ -205,6 +213,34 @@ emu assert [opts]
 emu assert --deny "FormatException" --expect "parsed value" --timeout 6
 ```
 
+### tap — 좌표 탭 (에이전트 구동용)
+
+```bash
+emu shot ui.png          # 화면을 캡처하고
+emu tap 670 1486         # 에이전트가 이미지에서 읽은 좌표를 그대로 탭
+# → ✓ tap 670,1486   (seq 28)
+```
+
+**좌표계는 물리 픽셀 하나뿐이다.** 스크린샷(`adb screencap`)과 탭(`adb input tap`)이 같은 공간을
+쓰므로 **변환이 필요 없다** — 이미지에서 읽은 픽셀 좌표를 그대로 넘기면 된다.
+
+> ⚠️ **에이전트 주의**: 스크린샷이 축소되어 전달되면(예: 1344×2992 → 898×2000) 이미지에서 읽은
+> 좌표에 **축소 배율을 곱해야** 물리 좌표가 된다. 탭이 엉뚱한 곳에 꽂히는 원인 대부분이 이것이다.
+
+`tap` 이 반환하는 `seq` 는 **탭 직전의 로그 커서**다. 이걸 `assert --since` 에 넘기면
+"이 탭이 무엇을 유발했는지"를 정확한 창으로 단언할 수 있다:
+
+```bash
+SEQ=$(emu tap 670 1486 --json | jq -r .seq)
+emu assert --since "$SEQ" --expect "checkout done" --deny "Exception" --timeout 5
+```
+
+`--since` 없이 `tap` 다음에 `assert` 를 부르면 **놓친다**: `assert` 의 기본 창은 "지금부터"라
+이미 발생한 로그를 보지 못한다.
+
+- **Android 전용**: `simctl` 에는 tap 명령이 없어 iOS 시뮬레이터는 아직 미지원.
+- **UI 단언은 하지 않는다**: emu는 입력만 넣고, 판정은 `assert`(로그)/`probe`(변수)가 한다.
+
 ### probe — 변수 캡처 (VM Service logpoint)
 
 ```bash
@@ -262,12 +298,16 @@ emu probe lib/cart.dart:42 --capture "total,items.length,coupon" --count 3
 *즉시* 에러(build/initState throw)는 잡지만, *지연·트리거성* 에러(Timer, 탭)는 놓칠 수 있다.
 그 경우 `emu assert --deny ... --timeout N` 이 견고한 길(폴링 기반).
 
-**UI 입력은 아직 없고, UI 단언은 emu의 영역이 아니다.**
-emu는 현재 입력 명령(`tap` 등)을 제공하지 않는다 — 구현 예정(로드맵). 참고로 흔히 알려진 것과 달리
-`adb shell input tap` 은 Flutter GestureDetector에 **정상적으로 먹는다**(실측: 연타 10/10, 유실 0%).
-스크린샷과 tap이 같은 물리 픽셀 공간을 쓰므로 좌표 변환도 불필요하다.
-다만 **위젯 트리를 질의하는 UI 단언**("이 버튼이 보이나?")은 emu가 하지 않는다. 그게 필요하면
-`integration_test`(공식)/`patrol`/`maestro` 를 쓰고, emu는 그 위에서 **로그·변수 검증**을 더하는 게 맞다.
+**입력은 좌표 탭까지만. UI 단언은 emu의 영역이 아니다.**
+`emu tap` 은 좌표를 넣을 뿐, **위젯 트리를 질의하지 않는다** — "이 버튼이 보이나?", "텍스트가 뭐지?"
+같은 UI 단언은 emu가 하지 않는다(에이전트가 스크린샷을 보고 판단하거나, `assert`/`probe` 로 검증).
+셀렉터 기반의 견고한 UI 단언이 필요하면 `integration_test`(공식)/`patrol`/`maestro` 를 쓰고,
+emu는 그 위에서 **로그·변수 검증**을 더하는 게 맞다.
+`tap` 은 **Android 전용**이다(`simctl` 에 tap 명령이 없다). 스와이프·텍스트 입력도 아직 없다.
+
+**`up` 이 `running` 을 반환해도 첫 프레임 전일 수 있다.**
+`up` 직후 곧바로 `tap` 하면 화면이 아직 없어 허공을 칠 수 있다(실측 확인). 기동 직후 탭이 필요하면
+`emu assert --expect "<첫 화면의 로그>"` 로 준비를 확인한 뒤 탭하는 게 안전하다.
 
 **e2e 테스트 도구 vs emu.** e2e 도구는 **UI**를 단언하고 emu는 **로그/변수**를 단언한다 —
 서로 다른 버그를 잡는다(예: "UI는 통과인데 로그엔 삼켜진 예외"는 emu가 잡는다).
@@ -320,7 +360,8 @@ EMU_WEB_DIR=web dart run bin/emu.dart up   # 대시보드를 디스크에서 서
 
 - ✅ 에이전트 루프 인체공학(verdict `up`, `reload` 직후 에러, `assert`)
 - ✅ `probe` — VM Service 변수 캡처
-- ⬜ `emu tap`/입력 추상화 — 에이전트가 스크린샷 보고 좌표 탭 (**다음 작업**)
+- ✅ `emu tap` — 스크린샷 좌표 기반 구동 (Android)
+- ⬜ iOS 입력 수단 / 스와이프·텍스트 입력
 - 🚫 `emu e2e` — 외부 e2e 엔진 구동: 보류(입력 수단 확보로 전제 소멸, [BACKLOG](docs/BACKLOG.md) 참고)
 - ⬜ Tier 2 인터랙티브 디버거(break/inspect/step)
 - ⬜ iOS 시뮬레이터 실기 검증

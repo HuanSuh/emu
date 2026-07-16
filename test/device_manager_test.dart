@@ -30,4 +30,26 @@ void main() {
     expect(parseFlutterDevices('[]'), isEmpty);
     expect(parseFlutterDevices('{}'), isEmpty);
   });
+
+  group('platformForDeviceId', () {
+    test('iOS simulator UDIDs are UUIDs', () {
+      expect(platformForDeviceId('A1B2C3D4-1234-5678-9ABC-DEF012345678'), 'ios');
+      // simctl prints them uppercase, but don't depend on that.
+      expect(platformForDeviceId('a1b2c3d4-1234-5678-9abc-def012345678'), 'ios');
+    });
+
+    test('Android emulators and physical serials are android', () {
+      expect(platformForDeviceId('emulator-5554'), 'android');
+      // A physical serial must not be mistaken for iOS — the old
+      // `startsWith('emulator-')` check got this wrong.
+      expect(platformForDeviceId('R5CT30ABCDE'), 'android');
+    });
+
+    test('unknown or absent ids fall back to android', () {
+      expect(platformForDeviceId(null), 'android');
+      expect(platformForDeviceId(''), 'android');
+      // UUID-like but malformed (short final group) is not a simulator udid.
+      expect(platformForDeviceId('A1B2C3D4-1234-5678-9ABC-DEF01234567'), 'android');
+    });
+  });
 }

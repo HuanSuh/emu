@@ -205,12 +205,30 @@ class DeviceManager {
     } else {
       // stdoutEncoding: null keeps the PNG bytes raw (default would decode to a
       // String and corrupt the image).
-      final res = await Process.run('adb', ['exec-out', 'screencap', '-p'],
+      final res = await Process.run('adb', [..._serial(udid), 'exec-out', 'screencap', '-p'],
           stdoutEncoding: null);
       if (res.exitCode != 0) throw DeviceException('screenshot failed: ${res.stderr}');
       await File(outPath).writeAsBytes(res.stdout as List<int>);
     }
   }
+
+  /// Inject a tap at ([x], [y]), in **physical pixels** — the same coordinate
+  /// space [screenshot] writes in, so coordinates read off a screenshot can be
+  /// passed straight through without conversion.
+  Future<void> tap(int x, int y, {required String platform, String? udid}) async {
+    if (platform == 'ios') {
+      // `simctl` exposes no tap; driving the simulator UI needs a different
+      // mechanism entirely (see docs/BACKLOG.md #5).
+      throw DeviceException('tap is not supported on iOS — `simctl` has no tap command.');
+    }
+    final res =
+        await Process.run('adb', [..._serial(udid), 'shell', 'input', 'tap', '$x', '$y']);
+    if (res.exitCode != 0) throw DeviceException('tap failed: ${res.stderr}');
+  }
+
+  /// `-s <serial>` so commands hit the intended device when several are attached.
+  List<String> _serial(String? udid) =>
+      (udid == null || udid.isEmpty) ? const [] : ['-s', udid];
 
   /// Run `xcrun` with a sanitized environment (stale SDKROOT/DEVELOPER_DIR
   /// removed) so simctl works even when the shell points at a deleted Xcode.
@@ -234,3 +252,14 @@ class DeviceManager {
     }
   }
 }
+
+final _iosUdid = RegExp(
+    r'^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$',
+    caseSensitive: false);
+
+/// Which toolchain drives [deviceId]: iOS simulators are identified by a UUID,
+/// everything else (`emulator-5554`, or a physical serial like `R5CT30ABCDE`)
+/// is Android. Unknown ids fall back to Android, the only platform whose
+/// input/screenshot path works without a UDID.
+String platformForDeviceId(String? deviceId) =>
+    _iosUdid.hasMatch(deviceId ?? '') ? 'ios' : 'android';

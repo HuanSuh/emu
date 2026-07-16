@@ -53,6 +53,8 @@ Future<int> runCli(List<String> argv) async {
         return await _status(rest);
       case 'shot':
         return await _shot(rest);
+      case 'tap':
+        return await _tap(rest);
       case 'open':
         return await _open(rest);
       case 'down':
@@ -657,13 +659,47 @@ Future<int> _status(List<String> args) async {
 // shot / open / down
 // --------------------------------------------------------------------------
 Future<int> _shot(List<String> args) async {
+  final json = args.contains('--json');
+  final out = args.firstWhere((a) => !a.startsWith('-'), orElse: () => '');
   final info = _requireServer();
-  final res = await _post(info, '/api/screenshot');
+  final query = out.isEmpty ? '' : '?path=${Uri.encodeQueryComponent(out)}';
+  final res = await _post(info, '/api/screenshot$query');
   if (res == null || res['ok'] != true) {
-    stderr.writeln('✗ screenshot failed: ${res?['error'] ?? 'no response'}');
+    if (json) {
+      print(jsonEncode(res ?? {'ok': false, 'error': 'no response'}));
+    } else {
+      stderr.writeln('✗ screenshot failed: ${res?['error'] ?? 'no response'}');
+    }
     return 1;
   }
-  print('✓ ${res['path']}');
+  print(json ? jsonEncode(res) : '✓ ${res['path']}');
+  return 0;
+}
+
+/// `emu tap <x> <y>` — coordinates are **physical pixels**, the same space
+/// `emu shot` captures in, so values read straight off a screenshot work as-is.
+Future<int> _tap(List<String> args) async {
+  final json = args.contains('--json');
+  final pos = args.where((a) => !a.startsWith('-')).toList();
+  final x = pos.length == 2 ? int.tryParse(pos[0]) : null;
+  final y = pos.length == 2 ? int.tryParse(pos[1]) : null;
+  if (x == null || y == null) {
+    stderr.writeln('usage: emu tap <x> <y>   # physical pixels, as seen in `emu shot`');
+    return 2;
+  }
+  final info = _requireServer();
+  final res = await _post(info, '/api/tap?x=$x&y=$y');
+  if (res == null || res['ok'] != true) {
+    if (json) {
+      print(jsonEncode(res ?? {'ok': false, 'error': 'no response'}));
+    } else {
+      stderr.writeln('✗ tap failed: ${res?['error'] ?? 'no response'}');
+    }
+    return 1;
+  }
+  // `seq` is the log cursor from just before the tap — feed it to
+  // `assert --since` to catch what the tap caused.
+  print(json ? jsonEncode(res) : '✓ tap $x,$y   (seq ${res['seq']})');
   return 0;
 }
 
@@ -860,7 +896,8 @@ COMMANDS
      --count <n>           stop after N hits (default 1)
      --timeout <s>         seconds to wait for a hit (default 10)
   status                 Show session/app state
-  shot                   Save a screenshot
+  shot [path]            Save a screenshot (default: .emu/shot-<ts>.png)
+  tap <x> <y>            Tap at physical pixels (same space as `shot`; Android only)
   open                   Open the dashboard in the browser
   down [--kill-device]   Stop the session (optionally power off the device)
 

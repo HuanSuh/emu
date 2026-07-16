@@ -181,7 +181,9 @@ class EmuServer {
         logStore.clear();
         return _json({'ok': true});
       case '/api/screenshot':
-        return _screenshot();
+        return _screenshot(req);
+      case '/api/tap':
+        return _tap(req);
       case '/api/probe':
         return _probe(req);
       case '/api/shutdown':
@@ -196,14 +198,43 @@ class EmuServer {
     }
   }
 
-  Future<Response> _screenshot() async {
-    final dir = session.stateDir.path;
-    final ts = DateTime.now().toIso8601String().replaceAll(RegExp(r'[:.]'), '-');
-    final out = '$dir/shot-$ts.png';
-    final platform = engine.status.deviceId?.startsWith('emulator-') ?? false ? 'android' : 'ios';
+  String get _platform => platformForDeviceId(engine.status.deviceId);
+
+  Future<Response> _screenshot(Request req) async {
+    // An explicit `path` wins; otherwise timestamp into .emu/.
+    final requested = req.url.queryParameters['path'];
+    final String out;
+    if (requested != null && requested.isNotEmpty) {
+      // Relative paths resolve against the project root, not the server's cwd.
+      final f = File(requested);
+      out = f.isAbsolute ? requested : '${session.projectRoot.path}/$requested';
+      await File(out).parent.create(recursive: true);
+    } else {
+      final ts = DateTime.now().toIso8601String().replaceAll(RegExp(r'[:.]'), '-');
+      out = '${session.stateDir.path}/shot-$ts.png';
+    }
     try {
-      await devices.screenshot(out, platform: platform, udid: engine.status.deviceId);
+      await devices.screenshot(out, platform: _platform, udid: engine.status.deviceId);
       return _json({'ok': true, 'path': out});
+    } catch (e) {
+      return _json({'ok': false, 'error': '$e'}, status: 500);
+    }
+  }
+
+  Future<Response> _tap(Request req) async {
+    final q = req.url.queryParameters;
+    final x = int.tryParse(q['x'] ?? '');
+    final y = int.tryParse(q['y'] ?? '');
+    if (x == null || y == null) {
+      return _json({'ok': false, 'error': 'x and y are required integers'}, status: 400);
+    }
+    // Capture the cursor *before* injecting, so `assert --since <seq>` sees
+    // everything the tap causes. Without it the natural `tap` then `assert`
+    // order races: assert's default window opens after the effect has landed.
+    final seq = logStore.lastSeq;
+    try {
+      await devices.tap(x, y, platform: _platform, udid: engine.status.deviceId);
+      return _json({'ok': true, 'x': x, 'y': y, 'seq': seq});
     } catch (e) {
       return _json({'ok': false, 'error': '$e'}, status: 500);
     }
