@@ -297,7 +297,8 @@ Future<int> _up(List<String> args) async {
     // `running` only means the entrypoint started; input before the first frame
     // is silently lost, so report whether the app has actually painted.
     final painted = state == 'running' && await _awaitFirstFrame(info);
-    final errors = await _errorsSince(info, 0);
+    final errors = await _errorsSince(info, 0); // gather before any teardown
+    if (state == 'failed') await _teardownFailedServer(session, info);
     print(jsonEncode({
       'ok': state == 'running',
       'state': state,
@@ -311,8 +312,21 @@ Future<int> _up(List<String> args) async {
 
   print('✓ session up — dashboard: ${info.baseUrl}');
   print('  (streaming startup; Ctrl-C to detach, the app keeps running)');
-  await _streamUntilReady(info);
+  final state = await _streamUntilReady(info);
+  if (state == 'failed') {
+    await _teardownFailedServer(session, info);
+    return 1;
+  }
   return 0;
+}
+
+/// A launch that ended in `failed` leaves the detached server holding the port,
+/// so the next `up` is rejected with "already running". Shut it down and clear
+/// the stale coordinates. `starting` is left alone — it's still building in the
+/// background and the user is expected to poll `status`.
+Future<void> _teardownFailedServer(Session session, ServerInfo info) async {
+  await _post(info, '/api/shutdown');
+  session.clearServerInfo();
 }
 
 /// Poll the server until the app reaches a terminal launch state.
@@ -353,7 +367,9 @@ Future<int> _lastSeq(ServerInfo info) async {
   return (exe, ['run', Platform.script.toFilePath()]);
 }
 
-Future<void> _streamUntilReady(ServerInfo info) async {
+/// Streams startup logs until the app is `running`/`failed`. Returns the final
+/// state ('starting' if it never settles) so the caller can tear down on failure.
+Future<String> _streamUntilReady(ServerInfo info) async {
   var sinceSeq = 0;
   for (var i = 0; i < 600; i++) {
     final data = await _get(info, '/api/logs?sinceSeq=$sinceSeq&limit=200');
@@ -368,14 +384,15 @@ Future<void> _streamUntilReady(ServerInfo info) async {
     final state = (st?['status'] as Map?)?['state'];
     if (state == 'running') {
       print('✓ app running');
-      return;
+      return 'running';
     }
     if (state == 'failed') {
       stderr.writeln('✗ launch failed (see logs above)');
-      return;
+      return 'failed';
     }
     await Future<void>.delayed(const Duration(milliseconds: 400));
   }
+  return 'starting';
 }
 
 // --------------------------------------------------------------------------

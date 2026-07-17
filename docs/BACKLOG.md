@@ -192,9 +192,11 @@ Pixel_8_Pro_API_34 에뮬레이터, `emu up` → `adb shell input tap` → `emu 
 
 ### 부수 확인 (2026-07-17)
 - ~~🐞 **`emu shot [path]` 인자 무시 재확인**~~ → ✅ **수정됨**(위 #5 항목 참고).
-- 🐞 **실패한 `up` 이 세션을 남긴다**: `state:failed` 로 끝나도 서버가 세션을 붙들고 있어
-  다음 `up` 이 "A session is already running" 으로 거부됨 → `down` 을 수동으로 해야 함.
-  실패 시 자동 정리하거나 `up` 이 failed 세션을 승계하도록 개선 필요(P2).
+- ✅ **실패한 `up` 이 세션을 남긴다 → 수정됨(2026-07-18)**: `up` 이 최종 상태를 확인해
+  `failed` 면 `_teardownFailedServer`(shutdown + clearServerInfo)로 서버를 정리한다. `starting`
+  (콜드부트 진행 중)은 백그라운드 유지가 맞으므로 건드리지 않고, `running` 성공도 물론 유지.
+  실측: 없는 기기로 up 2회 연속 → 2차가 "already running" 거부 없이 같은 포트로 재시도.
+  성공 경로(iOS)에선 서버 유지 확인.
 - 📝 **환경 메모(emu 문제 아님)**: 이 머신은 `adb` 가 PATH에 없다(`~/Library/Android/sdk/platform-tools/adb`).
   또한 구형 프로젝트(`../hello`: Gradle 7.5/AGP 7.3)는 Flutter가 Android Studio 번들 JBR 21을
   `JAVA_HOME` 보다 우선 선택해 `Unsupported class file major version 65` 로 빌드 실패한다
