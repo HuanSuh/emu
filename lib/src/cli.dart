@@ -36,7 +36,7 @@ Future<int> runCli(List<String> argv) async {
       case 'up':
         return await _up(rest);
       case 'reload':
-        return await _action(rest, '/api/reload', 'hot reload');
+        return await _action(rest, '/api/reload', 'hot reload', reloadHint: true);
       case 'restart':
         return await _action(rest, '/api/restart', 'hot restart');
       case 'cold':
@@ -399,10 +399,14 @@ Future<String> _streamUntilReady(ServerInfo info) async {
 // reload / restart / cold / stop
 // --------------------------------------------------------------------------
 Future<int> _action(List<String> args, String endpoint, String label,
-    {bool drain = true}) async {
+    {bool drain = true, bool reloadHint = false}) async {
   final json = args.contains('--json');
   final info = _requireServer();
   final before = drain ? await _lastSeq(info) : 0;
+  // Was the app actively logging right up to the reload? Captured now, compared
+  // to the drain window after — a busy→silent transition is the signal that a
+  // running Timer/loop body didn't get swapped.
+  final wasActive = reloadHint && await _recentlyActive(info);
   final res = await _post(info, endpoint);
   if (res == null) {
     stderr.writeln('✗ no response from server');
@@ -413,10 +417,23 @@ Future<int> _action(List<String> args, String endpoint, String label,
   // Best-effort: catches *immediate* errors (build/initState throws). For errors
   // triggered later (timers, taps), use `emu assert --deny ... --timeout N`.
   List<Map<String, dynamic>> errors = const [];
+  String? hint;
   if (drain) {
     await Future<void>.delayed(const Duration(milliseconds: 2500));
     errors = await _errorsSince(info, before);
     res['errors'] = errors;
+    // If the app was busy before the reload but produced nothing after, the
+    // reloaded code is likely running inside an already-scheduled Timer/loop
+    // whose body hot reload can't swap. Suggest a restart.
+    if (reloadHint) {
+      final produced = await _appLogCountSince(info, before);
+      if (shouldHintRestart(
+          ok: res['ok'] == true, wasActiveBefore: wasActive, producedAfter: produced)) {
+        hint = "no output after reload — hot reload can't replace a running "
+            'Timer/loop body; try `emu restart`';
+        res['hint'] = hint;
+      }
+    }
   }
   final ok = res['ok'] == true && errors.isEmpty;
   if (json) {
@@ -431,7 +448,48 @@ Future<int> _action(List<String> args, String endpoint, String label,
       stderr.writeln('   ${e['text']}');
     }
   }
+  if (hint != null) stderr.writeln('↳ $hint');
   return ok ? 0 : 1;
+}
+
+/// The reload-went-silent heuristic, pure so it can be unit-tested: hint only
+/// when the reload succeeded, the app was logging right before it, and produced
+/// nothing after. Requiring "was active" avoids firing on ordinary silent
+/// reloads (e.g. a pure UI tweak on an idle screen).
+bool shouldHintRestart(
+        {required bool ok, required bool wasActiveBefore, required int producedAfter}) =>
+    ok && wasActiveBefore && producedAfter == 0;
+
+/// Whether an app/stderr log line landed within the last few seconds — used to
+/// tell "the app was busy" from "the app is idle" before a reload.
+Future<bool> _recentlyActive(ServerInfo info) async {
+  final d = await _get(info, '/api/logs?limit=20');
+  final logs = (d?['logs'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
+  for (final raw in logs.reversed) {
+    if (!isAppOutput(raw)) continue; // ignore emu/daemon status lines
+    final ts = DateTime.tryParse('${raw['ts']}'); // LogEntry serializes as 'ts'
+    if (ts == null) continue;
+    return DateTime.now().difference(ts) < const Duration(seconds: 5);
+  }
+  return false;
+}
+
+/// Count of genuine app output after [seq] — excludes emu's own system lines and
+/// the daemon's `Reloaded N libraries` report, which arrives as an `app` line on
+/// every reload and would otherwise make the app never look silent.
+Future<int> _appLogCountSince(ServerInfo info, int seq) async {
+  final d = await _get(info, '/api/logs?sinceSeq=$seq&limit=500');
+  final logs = (d?['logs'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
+  return logs.where(isAppOutput).length;
+}
+
+/// Whether a log entry is real app output (not an emu/daemon status line).
+bool isAppOutput(Map<String, dynamic> entry) {
+  if (entry['source'] == 'system') return false;
+  final text = '${entry['text']}';
+  if (RegExp(r'^Reloaded \d+ librar').hasMatch(text)) return false;
+  if (RegExp(r'^Restarted application').hasMatch(text)) return false;
+  return true;
 }
 
 // --------------------------------------------------------------------------
