@@ -81,6 +81,12 @@ class EmuServer {
         deviceId = await devices.bootAndroid(onProgress: logStore.system);
       } else if (deviceId == null && opts.platform == 'ios') {
         deviceId = await devices.bootIos(onProgress: logStore.system);
+      } else if (deviceId != null && platformForDeviceId(deviceId) == 'ios') {
+        // An explicit iOS simulator udid isn't visible to `flutter run` until
+        // the simulator is booted. `bootIos` is idempotent (a booted device is
+        // a no-op), so ensure it here — otherwise `-d <udid>` fails with
+        // "No supported devices found" when the sim happens to be shut down.
+        deviceId = await devices.bootIos(udid: deviceId, onProgress: logStore.system);
       }
       final args = FlutterEngine.buildRunArgs(
         deviceId: deviceId,

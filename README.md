@@ -151,7 +151,7 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 | 옵션 | 설명 |
 |------|------|
 | `--android` / `--ios` | 해당 플랫폼 기본 기기를 부팅 |
-| `-d, --device <id>` | 특정 flutter device id 사용 |
+| `-d, --device <id>` | 특정 flutter device id 사용. iOS 시뮬레이터 udid면 꺼져 있어도 자동 부팅 |
 | `--config <name>` | `.vscode/launch.json` 의 구성을 재현 (개별 플래그가 덮어씀) |
 | `--flavor <name>` | 빌드 flavor |
 | `-t, --target <file>` | 진입점(`lib/main_dev.dart` 등) |
