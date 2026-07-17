@@ -193,6 +193,7 @@ Future<int> _up(List<String> args) async {
     ..addOption('target', abbr: 't')
     ..addMultiOption('dart-define')
     ..addOption('port', defaultsTo: '$_defaultPort')
+    ..addOption('timeout', help: 'seconds to wait for running/failed (default 240)')
     ..addFlag('open', negatable: false)
     ..addFlag('json', negatable: false);
   final res = parser.parse(args);
@@ -291,9 +292,13 @@ Future<int> _up(List<String> args) async {
 
   if (res.flag('open')) await _openUrl(info.baseUrl);
 
+  // How long to wait for the app to reach running/failed. Cold boot + first
+  // build can exceed the default; raise it with --timeout for slow machines.
+  final timeoutSec = int.tryParse(res.option('timeout') ?? '') ?? 240;
+
   if (res.flag('json')) {
     // Wait for the real launch outcome instead of reporting a premature ok:true.
-    final state = await _awaitLaunchState(info);
+    final state = await _awaitLaunchState(info, timeoutSec);
     // `running` only means the entrypoint started; input before the first frame
     // is silently lost, so report whether the app has actually painted.
     final painted = state == 'running' && await _awaitFirstFrame(info);
@@ -312,7 +317,7 @@ Future<int> _up(List<String> args) async {
 
   print('✓ session up — dashboard: ${info.baseUrl}');
   print('  (streaming startup; Ctrl-C to detach, the app keeps running)');
-  final state = await _streamUntilReady(info);
+  final state = await _streamUntilReady(info, timeoutSec);
   if (state == 'failed') {
     await _teardownFailedServer(session, info);
     return 1;
@@ -330,8 +335,11 @@ Future<void> _teardownFailedServer(Session session, ServerInfo info) async {
 }
 
 /// Poll the server until the app reaches a terminal launch state.
-Future<String> _awaitLaunchState(ServerInfo info) async {
-  for (var i = 0; i < 600; i++) {
+/// Poll iterations for a wait budget, at the fixed 400ms poll interval.
+int _pollIters(int timeoutSec) => (timeoutSec * 1000 / 400).ceil();
+
+Future<String> _awaitLaunchState(ServerInfo info, int timeoutSec) async {
+  for (var i = 0; i < _pollIters(timeoutSec); i++) {
     final st = await _get(info, '/api/status');
     final state = (st?['status'] as Map?)?['state'] as String?;
     if (state == 'running' || state == 'failed') return state!;
@@ -369,9 +377,9 @@ Future<int> _lastSeq(ServerInfo info) async {
 
 /// Streams startup logs until the app is `running`/`failed`. Returns the final
 /// state ('starting' if it never settles) so the caller can tear down on failure.
-Future<String> _streamUntilReady(ServerInfo info) async {
+Future<String> _streamUntilReady(ServerInfo info, int timeoutSec) async {
   var sinceSeq = 0;
-  for (var i = 0; i < 600; i++) {
+  for (var i = 0; i < _pollIters(timeoutSec); i++) {
     final data = await _get(info, '/api/logs?sinceSeq=$sinceSeq&limit=200');
     if (data == null) break;
     final logs = (data['logs'] as List).cast<Map<String, dynamic>>();
@@ -1002,6 +1010,7 @@ COMMANDS
      -t, --target <file>   Entrypoint (lib/main_dev.dart, …)
      --dart-define K=V     dart-define (repeatable)
      --port <n>            Dashboard port (default 4577)
+     --timeout <s>         wait for running/failed before returning (default 240)
      --open                Open the dashboard in the browser
   reload                 Hot reload (reports errors logged just after)
   restart                Hot restart (reports errors logged just after)

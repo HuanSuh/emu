@@ -227,8 +227,9 @@ Pixel_8_Pro_API_34 에뮬레이터, `emu up` → `adb shell input tap` → `emu 
 - ⚠️ **drain 한계(설계상)**: `reload/restart`의 직후 에러 drain(2.5s)은 **즉시 에러**(build/initState throw)만
   잡음. **지연/트리거성 에러**(Timer, 탭)는 놓침 → 그 경우 **`emu assert --deny ... --timeout N`** 가 견고한 길
   (데모에서 timer 2s 지연 예외를 assert가 정확히 잡고 drain은 놓침을 확인).
-- ⚠️ **cold-boot 대기**: `up --json`의 launch 대기(240s)가 콜드부트+첫 빌드보다 짧을 수 있음 → "starting" 반환.
-  서버는 계속 진행하므로 `status` 폴링으로 확인 가능. → #9에 "대기 시간 옵션화/연장" 포함.
+- ✅ **cold-boot 대기 → 옵션화됨(2026-07-18)**: `up --timeout <s>`(기본 240)으로 running/failed
+  대기 창을 조절. `_pollIters`가 초를 400ms 폴링 횟수로 환산. 실측: `--timeout 3` 으로 느린 iOS
+  기동이 240s 대신 ~5s에 `starting` 반환(서버는 백그라운드 계속). 잘못된 값은 기본값 폴백.
 - ✅ **AVD 맹목 선택 → 수정됨(2026-07-18)**: `preferredAvd()` 가 표준 Google 폰 이미지
   (Pixel/gphone/Nexus) 우선, 폴더블·태블릿·웨어러블 후순위(ties는 순서 유지). 보고된 케이스
   `[Galaxy_Z_Flip, Pixel_8_Pro]` → Pixel 선택을 유닛테스트로 고정. (아래는 원래 관찰 기록)
