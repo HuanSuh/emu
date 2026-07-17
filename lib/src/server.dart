@@ -15,6 +15,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'device_manager.dart';
 import 'engine.dart';
 import 'frame.dart';
+import 'input.dart';
 import 'log_store.dart';
 import 'models.dart';
 import 'probe.dart';
@@ -234,6 +235,16 @@ class EmuServer {
     }
   }
 
+  /// The running app's VM Service URI, or null with a 409 response — input goes
+  /// through the framework, so it needs a live VM Service (as `probe` does).
+  String? _vmOr409(void Function(Response) sink) {
+    final uri = engine.status.vmServiceUri;
+    if (uri == null) {
+      sink(_json({'ok': false, 'error': 'app is not running (no VM service)'}, status: 409));
+    }
+    return uri;
+  }
+
   Future<Response> _tap(Request req) async {
     final q = req.url.queryParameters;
     final x = int.tryParse(q['x'] ?? '');
@@ -241,10 +252,10 @@ class EmuServer {
     if (x == null || y == null) {
       return _json({'ok': false, 'error': 'x and y are required integers'}, status: 400);
     }
-    return _inject(
-      () => devices.tap(x, y, platform: _platform, udid: engine.status.deviceId),
-      {'x': x, 'y': y},
-    );
+    Response? early;
+    final uri = _vmOr409((r) => early = r);
+    if (uri == null) return early!;
+    return _inject(() => runTap(uri, x, y), {'x': x, 'y': y});
   }
 
   Future<Response> _swipe(Request req) async {
@@ -254,9 +265,11 @@ class EmuServer {
       return _json({'ok': false, 'error': 'x1, y1, x2, y2 are required integers'}, status: 400);
     }
     final ms = int.tryParse(q['durationMs'] ?? '') ?? 300;
+    Response? early;
+    final uri = _vmOr409((r) => early = r);
+    if (uri == null) return early!;
     return _inject(
-      () => devices.swipe(c[0]!, c[1]!, c[2]!, c[3]!,
-          platform: _platform, udid: engine.status.deviceId, durationMs: ms),
+      () => runSwipe(uri, c[0]!, c[1]!, c[2]!, c[3]!, durationMs: ms),
       {'x1': c[0], 'y1': c[1], 'x2': c[2], 'y2': c[3], 'durationMs': ms},
     );
   }
@@ -266,9 +279,13 @@ class EmuServer {
     if (text == null || text.isEmpty) {
       return _json({'ok': false, 'error': 'text is required'}, status: 400);
     }
+    final append = req.url.queryParameters['append'] == 'true';
+    Response? early;
+    final uri = _vmOr409((r) => early = r);
+    if (uri == null) return early!;
     return _inject(
-      () => devices.typeText(text, platform: _platform, udid: engine.status.deviceId),
-      {'text': text},
+      () => runText(uri, text, append: append),
+      {'text': text, 'append': append},
     );
   }
 

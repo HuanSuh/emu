@@ -52,36 +52,4 @@ void main() {
       expect(platformForDeviceId('A1B2C3D4-1234-5678-9ABC-DEF01234567'), 'android');
     });
   });
-
-  group('escapeAdbText', () {
-    test('spaces become %s — input text\'s own convention', () {
-      expect(escapeAdbText('hello world'), 'hello%sworld');
-      expect(escapeAdbText('a b c'), 'a%sb%sc');
-    });
-
-    test('shell metacharacters are escaped', () {
-      // These reach the device's shell before `input` sees them.
-      expect(escapeAdbText(r'a&b'), r'a\&b');
-      expect(escapeAdbText('a;b'), r'a\;b');
-      expect(escapeAdbText(r'a$b'), r'a\$b');
-      expect(escapeAdbText('"quoted"'), r'\"quoted\"');
-    });
-
-    test('plain text passes through untouched', () {
-      expect(escapeAdbText('hello'), 'hello');
-      expect(escapeAdbText('user@example.com'), 'user@example.com');
-    });
-  });
-
-  group('nonTypableChars', () {
-    test('ASCII is typable', () {
-      expect(nonTypableChars('hello world 123!'), isEmpty);
-    });
-
-    test('non-ASCII is reported, deduplicated', () {
-      expect(nonTypableChars('한글'), ['한', '글']);
-      expect(nonTypableChars('aaa한a한'), ['한']);
-      expect(nonTypableChars('café'), ['é']);
-    });
-  });
 }

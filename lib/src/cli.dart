@@ -717,15 +717,17 @@ Future<int> _swipe(List<String> args) async {
 }
 
 /// `emu text <string>` — types into whatever currently has focus, so tap the
-/// field first.
+/// field first. `--append` adds to the field instead of replacing it.
 Future<int> _text(List<String> args) async {
   final json = args.contains('--json');
-  final text = args.where((a) => a != '--json').join(' ');
+  final append = args.contains('--append');
+  final text = args.where((a) => a != '--json' && a != '--append').join(' ');
   if (text.isEmpty) {
-    stderr.writeln('usage: emu text <string>   # types into the focused field');
+    stderr.writeln('usage: emu text <string> [--append]   # types into the focused field');
     return 2;
   }
-  return _inject('/api/text?text=${Uri.encodeQueryComponent(text)}', 'text "$text"', json: json);
+  final q = 'text=${Uri.encodeQueryComponent(text)}${append ? '&append=true' : ''}';
+  return _inject('/api/text?$q', 'text "$text"${append ? ' (append)' : ''}', json: json);
 }
 
 /// Block until the app has painted. Returns false on timeout — the app is still
@@ -947,11 +949,12 @@ COMMANDS
      --timeout <s>         seconds to wait for a hit (default 10)
   status                 Show session/app state
   shot [path]            Save a screenshot (default: .emu/shot-<ts>.png)
-  tap <x> <y>            Tap at physical pixels (same space as `shot`; Android only)
+  tap <x> <y>            Tap at physical pixels (same space as `shot`)
   swipe <x1> <y1> <x2> <y2>
-                         Swipe/scroll between two points (Android only)
+                         Swipe/scroll between two points
      --duration <ms>       swipe duration (default 300)
-  text <string>          Type into the focused field — tap it first (Android only)
+  text <string> [--append]
+                         Type into the focused field — tap it first. Unicode OK
   open                   Open the dashboard in the browser
   down [--kill-device]   Stop the session (optionally power off the device)
 
