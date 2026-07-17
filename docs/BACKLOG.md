@@ -229,6 +229,9 @@ Pixel_8_Pro_API_34 에뮬레이터, `emu up` → `adb shell input tap` → `emu 
   (데모에서 timer 2s 지연 예외를 assert가 정확히 잡고 drain은 놓침을 확인).
 - ⚠️ **cold-boot 대기**: `up --json`의 launch 대기(240s)가 콜드부트+첫 빌드보다 짧을 수 있음 → "starting" 반환.
   서버는 계속 진행하므로 `status` 폴링으로 확인 가능. → #9에 "대기 시간 옵션화/연장" 포함.
+- ✅ **AVD 맹목 선택 → 수정됨(2026-07-18)**: `preferredAvd()` 가 표준 Google 폰 이미지
+  (Pixel/gphone/Nexus) 우선, 폴더블·태블릿·웨어러블 후순위(ties는 순서 유지). 보고된 케이스
+  `[Galaxy_Z_Flip, Pixel_8_Pro]` → Pixel 선택을 유닛테스트로 고정. (아래는 원래 관찰 기록)
 - ⚠️ **AVD 맹목 선택**: `emulator -list-avds` 첫 항목(알파벳순 `Galaxy_Z_Flip`)을 골라 부팅 실패한 사례.
   → Pixel/gphone 계열 우선 또는 설정 가능하게(#9).
 

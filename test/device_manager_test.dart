@@ -52,4 +52,30 @@ void main() {
       expect(platformForDeviceId('A1B2C3D4-1234-5678-9ABC-DEF01234567'), 'android');
     });
   });
+
+  group('preferredAvd', () {
+    test('empty list yields null', () {
+      expect(preferredAvd([]), isNull);
+    });
+
+    test('the reported case: prefer Pixel over an alphabetically-first foldable', () {
+      // `--android` used to take avds.first (Galaxy_Z_Flip) and fail to boot.
+      expect(preferredAvd(['Galaxy_Z_Flip', 'Pixel_8_Pro_API_34']), 'Pixel_8_Pro_API_34');
+    });
+
+    test('deprioritizes non-phone form factors', () {
+      expect(preferredAvd(['Wear_OS_Round', 'Pixel_7']), 'Pixel_7');
+      expect(preferredAvd(['Foldable_API_34', 'gphone64_arm64']), 'gphone64_arm64');
+    });
+
+    test('ties keep original order', () {
+      expect(preferredAvd(['Pixel_8', 'Pixel_7']), 'Pixel_8');
+      expect(preferredAvd(['Custom_A', 'Custom_B']), 'Custom_A');
+    });
+
+    test('falls back to first when nothing scores higher', () {
+      // All same (unknown) score → first wins.
+      expect(preferredAvd(['My_Device', 'Other_Device']), 'My_Device');
+    });
+  });
 }

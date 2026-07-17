@@ -102,7 +102,7 @@ class DeviceManager {
       throw DeviceException('`adb` not found on PATH.');
     }
     final avds = await listAndroidAvds();
-    final target = avd ?? (avds.isNotEmpty ? avds.first : null);
+    final target = avd ?? preferredAvd(avds);
     if (target == null) {
       throw DeviceException('No Android AVD found. Create one in Android Studio Device Manager.');
     }
@@ -249,3 +249,31 @@ final _iosUdid = RegExp(
 /// input/screenshot path works without a UDID.
 String platformForDeviceId(String? deviceId) =>
     _iosUdid.hasMatch(deviceId ?? '') ? 'ios' : 'android';
+
+/// Pick which AVD `--android` boots when the user didn't name one. Blindly
+/// taking the alphabetically-first AVD once booted a foldable (`Galaxy_Z_Flip`)
+/// that failed to launch. Prefer Google's reference phone images (Pixel/gphone/
+/// Nexus), which are the most reliable under the emulator, and avoid non-phone
+/// form factors (wear/tv/automotive/foldables/tablets). Ties keep list order.
+String? preferredAvd(List<String> avds) {
+  if (avds.isEmpty) return null;
+  var best = avds.first;
+  var bestScore = _avdScore(best);
+  for (final a in avds.skip(1)) {
+    final s = _avdScore(a);
+    if (s > bestScore) {
+      best = a;
+      bestScore = s;
+    }
+  }
+  return best;
+}
+
+int _avdScore(String name) {
+  final n = name.toLowerCase();
+  if (RegExp(r'wear|_tv_|androidtv|automotive|foldable|fold|flip|tablet').hasMatch(n)) {
+    return -1;
+  }
+  if (RegExp(r'pixel|gphone|nexus').hasMatch(n)) return 2;
+  return 1;
+}
