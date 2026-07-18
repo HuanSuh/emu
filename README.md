@@ -391,10 +391,11 @@ EMU_WEB_DIR=web dart run bin/emu.dart up   # 대시보드를 디스크에서 서
 
 진행/예정 항목은 [`docs/BACKLOG.md`](docs/BACKLOG.md) 참고.
 
-- ✅ 에이전트 루프 인체공학(verdict `up`, `reload` 직후 에러, `assert`)
+- ✅ 에이전트 루프 인체공학(verdict `up`, `reload` 직후 에러, `assert`, `up` 첫 프레임 대기)
 - ✅ `probe` — VM Service 변수 캡처
-- ✅ `emu tap` / `swipe` / `text` — VM Service 기반 구동 (Android·iOS, 유니코드 텍스트)
+- ✅ `emu tap` / `swipe` / `text` (`--append`) — VM Service 기반 구동 (Android·iOS, 유니코드 텍스트)
+- ✅ iOS 시뮬레이터 실기 검증 (기동 + tap/swipe/text)
+- ✅ 기동 인체공학 — `-d` iOS 자동 부팅, 실패한 `up` 정리, AVD 선택 개선, `up --timeout`, `reload` restart 힌트
 - 🚫 `emu e2e` — 외부 e2e 엔진 구동: 보류(입력 수단 확보로 전제 소멸, [BACKLOG](docs/BACKLOG.md) 참고)
-- ⬜ Tier 2 인터랙티브 디버거(break/inspect/step)
-- ⬜ iOS 시뮬레이터 실기 검증
-- ✅ AVD 선택 개선 (표준 폰 이미지 우선)
+- ⬜ iOS 텍스트 입력의 IME 우회(현재는 포커스된 Flutter 필드 한정)
+- ⬜ Tier 2 인터랙티브 디버거(break/inspect/step) — probe와 중복이라 수요 보고 결정
