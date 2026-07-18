@@ -200,6 +200,8 @@ class EmuServer {
         return _firstFrame(req);
       case '/api/probe':
         return _probe(req);
+      case '/api/inspect':
+        return _inspect(req);
       case '/api/shutdown':
         // Graceful server shutdown (used by `emu down`).
         scheduleMicrotask(() async {
@@ -366,6 +368,43 @@ class EmuServer {
         ),
       );
       return _json({'hits': hits.map((h) => h.toJson()).toList()});
+    } on ProbeException catch (e) {
+      return _json({'error': e.message}, status: 422);
+    } catch (e) {
+      return _json({'error': '$e'}, status: 500);
+    }
+  }
+
+  Future<Response> _inspect(Request req) async {
+    final uri = engine.status.vmServiceUri;
+    if (uri == null) {
+      return _json({'error': 'app is not running (no VM service)'}, status: 409);
+    }
+    Map<String, dynamic> body;
+    try {
+      body = jsonDecode(await req.readAsString()) as Map<String, dynamic>;
+    } catch (_) {
+      return _json({'error': 'invalid request body'}, status: 400);
+    }
+    final file = body['file'] as String?;
+    final line = (body['line'] as num?)?.toInt();
+    if (file == null || line == null) {
+      return _json({'error': 'file and line required'}, status: 400);
+    }
+    final timeoutMs = (body['timeoutMs'] as num?)?.toInt() ?? 10000;
+    final pubspec = File('${session.projectRoot.path}/pubspec.yaml');
+    try {
+      final r = await runInspect(
+        wsUri: uri,
+        pubspecContent: pubspec.existsSync() ? pubspec.readAsStringSync() : '',
+        file: file,
+        line: line,
+        timeout: Duration(milliseconds: timeoutMs),
+      );
+      if (r == null) return _json({'hit': false});
+      logStore.add('[inspect $file:$line] ${r.locals.length} locals',
+          level: LogLevel.system, source: 'probe');
+      return _json({'hit': true, ...r.toJson()});
     } on ProbeException catch (e) {
       return _json({'error': e.message}, status: 422);
     } catch (e) {

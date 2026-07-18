@@ -49,6 +49,8 @@ Future<int> runCli(List<String> argv) async {
         return await _assert(rest);
       case 'probe':
         return await _probe(rest);
+      case 'inspect':
+        return await _inspect(rest);
       case 'status':
         return await _status(rest);
       case 'shot':
@@ -623,6 +625,67 @@ Future<int> _probe(List<String> args) async {
   return 0;
 }
 
+/// `emu inspect <file:line>` — pause at the line, dump every local + the call
+/// stack, then resume. Like `probe` but you don't name the variables.
+Future<int> _inspect(List<String> args) async {
+  final parser = ArgParser()
+    ..addOption('timeout', defaultsTo: '10', help: 'seconds to wait for a hit')
+    ..addFlag('json', negatable: false);
+  final res = parser.parse(args);
+  if (res.rest.isEmpty) {
+    stderr.writeln('usage: emu inspect <file:line>   # e.g. lib/main.dart:42');
+    return 2;
+  }
+  final loc = res.rest.first;
+  final colon = loc.lastIndexOf(':');
+  final line = colon < 0 ? null : int.tryParse(loc.substring(colon + 1));
+  if (colon < 0 || line == null) {
+    stderr.writeln('✗ location must be <file:line>, e.g. lib/main.dart:42');
+    return 2;
+  }
+  final file = loc.substring(0, colon);
+  final timeout = int.tryParse(res.option('timeout')!) ?? 10;
+
+  final info = _requireServer();
+  final body = jsonEncode({'file': file, 'line': line, 'timeoutMs': timeout * 1000});
+  final r = await _postJson(info, '/api/inspect', body, timeout: Duration(seconds: timeout + 10));
+  if (r == null) {
+    stderr.writeln('✗ no response from server');
+    return 1;
+  }
+  if (r['error'] != null) {
+    stderr.writeln('✗ ${r['error']}');
+    return 1;
+  }
+  if (res.flag('json')) {
+    print(jsonEncode(r));
+    return r['hit'] == true ? 0 : 1;
+  }
+  if (r['hit'] != true) {
+    print('✗ no hit within ${timeout}s — was $file:$line reached?');
+    return 1;
+  }
+  print('● $file:$line');
+  final locals = (r['locals'] as Map).cast<String, dynamic>();
+  if (locals.isEmpty) {
+    // A closure line (e.g. `setState(() => ...)`) has no locals of its own —
+    // the enclosing method's are one frame down, shown in the stack below.
+    print('  (no locals at this frame — try the enclosing statement line)');
+  } else {
+    for (final e in locals.entries) {
+      print('  ${e.key} = ${e.value}');
+    }
+  }
+  final stack = (r['stack'] as List).cast<Map<String, dynamic>>();
+  if (stack.isNotEmpty) {
+    print('  stack:');
+    for (final f in stack.take(8)) {
+      print('    ${f['function']}  (${f['location']})');
+    }
+  }
+  return 0;
+}
+
 // --------------------------------------------------------------------------
 // logs
 // --------------------------------------------------------------------------
@@ -1034,6 +1097,8 @@ COMMANDS
   probe <file:line>      Capture variable values at a line (VM Service logpoint)
      -c, --capture <e,e>   expressions to evaluate when the line is hit
      --count <n>           stop after N hits (default 1)
+     --timeout <s>         seconds to wait for a hit (default 10)
+  inspect <file:line>    Dump all locals + call stack at a line, then resume
      --timeout <s>         seconds to wait for a hit (default 10)
   status                 Show session/app state
   shot [path]            Save a screenshot (default: .emu/shot-<ts>.png)

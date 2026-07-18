@@ -134,6 +134,128 @@ Future<List<ProbeHit>> runProbe({
   }
 }
 
+/// One frame of the paused call stack, for `inspect`.
+class InspectFrame {
+  InspectFrame(this.function, this.location);
+  final String function;
+  final String location; // "scriptBasename:line" (line omitted if unknown)
+  Map<String, dynamic> toJson() => {'function': function, 'location': location};
+}
+
+/// The snapshot `inspect` returns: every local in the top frame plus the call
+/// stack, captured at a line without the caller having to name variables.
+class InspectResult {
+  InspectResult(this.file, this.line, this.locals, this.stack);
+  final String file;
+  final int line;
+  final Map<String, String> locals; // variable name → rendered value
+  final List<InspectFrame> stack;
+  Map<String, dynamic> toJson() => {
+        'file': file,
+        'line': line,
+        'locals': locals,
+        'stack': [for (final f in stack) f.toJson()],
+      };
+}
+
+/// Like `probe`, but on the first hit dump *all* locals of the top frame and the
+/// call stack, then auto-resume. Non-blocking (the app is paused only for the
+/// snapshot) — the interactive break/step/continue variant is deliberately not
+/// built: holding the app paused across commands fights emu's single-shot model
+/// and stops logs/probes (see docs/BACKLOG.md #6).
+Future<InspectResult?> runInspect({
+  required String wsUri,
+  required String pubspecContent,
+  required String file,
+  required int line,
+  Duration timeout = const Duration(seconds: 10),
+}) async {
+  final service = await vmServiceConnectUri(wsUri);
+  try {
+    final vm = await service.getVM();
+    final isolates = vm.isolates ?? const [];
+    if (isolates.isEmpty) throw ProbeException('no isolate available');
+    final isolateId = isolates.first.id!;
+
+    final pkg = packageNameFromPubspec(pubspecContent);
+    final scriptList = await service.getScripts(isolateId);
+    final uris = [for (final s in scriptList.scripts ?? <ScriptRef>[]) s.uri!];
+    final targetUri = matchScriptUri(uris, file, pkg);
+    if (targetUri == null) throw ProbeException('no loaded script matches "$file"');
+    final scriptRef = scriptList.scripts!.firstWhere((s) => s.uri == targetUri);
+
+    final Breakpoint bp;
+    try {
+      bp = await service.addBreakpoint(isolateId, scriptRef.id!, line);
+    } catch (e) {
+      throw ProbeException('could not set breakpoint at $file:$line ($e)');
+    }
+
+    InspectResult? result;
+    final done = Completer<void>();
+    await service.streamListen(EventStreams.kDebug);
+    final sub = service.onDebugEvent.listen((event) async {
+      if (event.kind != EventKind.kPauseBreakpoint) return;
+      if (!(event.pauseBreakpoints?.any((b) => b.id == bp.id) ?? false)) return;
+      final iso = event.isolate?.id ?? isolateId;
+      try {
+        result = await _snapshot(service, iso, file, line);
+      } finally {
+        try {
+          await service.resume(iso); // never leave the app frozen
+        } catch (_) {}
+        if (!done.isCompleted) done.complete();
+      }
+    });
+
+    await done.future.timeout(timeout, onTimeout: () {});
+    await sub.cancel();
+    try {
+      await service.removeBreakpoint(isolateId, bp.id!);
+    } catch (_) {}
+    return result;
+  } finally {
+    await service.dispose();
+  }
+}
+
+Future<InspectResult> _snapshot(
+    VmService service, String isolateId, String file, int line) async {
+  final stack = await service.getStack(isolateId, limit: 16);
+  final frames = stack.frames ?? const <Frame>[];
+  final locals = <String, String>{};
+  if (frames.isNotEmpty) {
+    for (final v in frames.first.vars ?? const <BoundVariable>[]) {
+      locals[v.name ?? '?'] = _renderValue(v.value);
+    }
+  }
+  final trace = <InspectFrame>[];
+  for (final f in frames) {
+    final loc = f.location;
+    final uri = loc?.script?.uri ?? '';
+    final base = uri.isEmpty ? '' : uri.split('/').last;
+    final ln = loc?.line;
+    trace.add(InspectFrame(
+      f.function?.name ?? f.code?.name ?? '<anonymous>',
+      ln != null ? '$base:$ln' : base,
+    ));
+  }
+  return InspectResult(file, line, locals, trace);
+}
+
+/// Render a frame variable's value (an [InstanceRef]/[Sentinel]) to a short
+/// string. Non-primitives show `<ClassName>` — `probe` that field for depth.
+String _renderValue(dynamic v) {
+  if (v is InstanceRef) {
+    if (v.valueAsString != null) {
+      return v.kind == InstanceKind.kString ? '"${v.valueAsString}"' : v.valueAsString!;
+    }
+    return '<${v.classRef?.name ?? v.kind ?? 'object'}>';
+  }
+  if (v is Sentinel) return '<${v.valueAsString ?? 'sentinel'}>';
+  return '$v';
+}
+
 /// Evaluate [expr] in the top frame of the paused [isolateId] and render it.
 Future<String> _evaluate(VmService service, String isolateId, String expr) async {
   try {

@@ -40,4 +40,17 @@ void main() {
       expect(matchScriptUri(uris, 'lib/nope.dart', 'emu_demo'), isNull);
     });
   });
+
+  group('InspectResult.toJson — the contract the CLI reads', () {
+    test('exposes locals and stack with function/location keys', () {
+      final r = InspectResult('lib/main.dart', 34, {'x': '1', 's': '"hi"'},
+          [InspectFrame('_increment', 'main.dart:34')]);
+      final j = r.toJson();
+      expect(j['file'], 'lib/main.dart');
+      expect(j['line'], 34);
+      expect(j['locals'], {'x': '1', 's': '"hi"'});
+      expect((j['stack'] as List).first,
+          {'function': '_increment', 'location': 'main.dart:34'});
+    });
+  });
 }

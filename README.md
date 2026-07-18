@@ -290,6 +290,34 @@ emu probe lib/cart.dart:42 --capture "total,items.length,coupon" --count 3
 > `probe` 는 `final`/필드/일반 지역변수를 읽는다. `const` 지역변수는 컴파일 타임에
 > 인라인되어 런타임 슬롯이 없으므로 평가할 수 없다.
 
+### inspect — 지역변수 전체 + 콜스택 덤프
+
+```bash
+emu inspect <file:line> [--timeout <s>]
+```
+
+`probe` 가 표현식을 **지정해서** 읽는다면, `inspect` 는 그 줄에서 **프레임의 모든 지역변수와
+콜스택을 통째로** 덤프하고 자동 resume한다 — 변수명을 몰라도 되니 낯선 지점/크래시 위치를 훑을 때 좋다.
+
+```bash
+emu inspect lib/main.dart:34
+# ● lib/main.dart:34
+#   this = <_DemoPageState>
+#   before = 1
+#   next = 2
+#   label = "gesture #2"
+#   stack:
+#     _increment  (main.dart:34)
+#     handleTapUp (tap.dart:758)
+#     ...
+```
+
+- 최상위 프레임의 로컬을 보여준다. `setState(() => …)` 같은 **클로저 줄**은 자체 로컬이 없으니
+  (덤프가 비면) 그 메서드 **본문 문장 줄**을 inspect하면 된다.
+- 비-primitive는 `<ClassName>` 로 표시된다 — 더 깊이 보려면 그 필드를 `probe` 로 평가한다.
+- 대화형 `break`/`step`/`continue` 는 **의도적으로 없다**: 앱을 명령 간 멈춰두면 로그·probe가
+  멎고 emu의 단발성 모델과 충돌한다. `inspect` 는 스냅샷만 찍고 즉시 resume한다.
+
 ## 웹 대시보드
 
 `emu up` 이 `http://127.0.0.1:4577` 에 대시보드를 띄운다:
@@ -401,4 +429,5 @@ EMU_WEB_DIR=web dart run bin/emu.dart up   # 대시보드를 디스크에서 서
 - ✅ 기동 인체공학 — `-d` iOS 자동 부팅, 실패한 `up` 정리, AVD 선택 개선, `up --timeout`, `reload` restart 힌트
 - 🚫 `emu e2e` — 외부 e2e 엔진 구동: 보류(입력 수단 확보로 전제 소멸, [BACKLOG](docs/BACKLOG.md) 참고)
 - ⬜ iOS 텍스트 입력의 IME 우회(현재는 포커스된 Flutter 필드 한정)
-- ⬜ Tier 2 인터랙티브 디버거(break/inspect/step) — probe와 중복이라 수요 보고 결정
+- ✅ `emu inspect` — 지역변수 전체 + 콜스택 스냅샷 (단발성, 비차단)
+- ⬜ 대화형 `break`/`step`/`continue` — 앱을 멈춰둬 emu 단발성 모델과 충돌, 수요 보고 결정
