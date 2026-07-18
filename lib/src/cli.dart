@@ -13,6 +13,8 @@ import 'assertions.dart';
 import 'device_manager.dart';
 import 'launch_config.dart';
 import 'models.dart';
+import 'project_config.dart';
+import 'project_memory.dart';
 import 'server.dart';
 import 'session.dart';
 
@@ -33,6 +35,8 @@ Future<int> runCli(List<String> argv) async {
         return await _devices(rest);
       case 'configs':
         return await _configs(rest);
+      case 'config':
+        return await _config(rest);
       case 'up':
         return await _up(rest);
       case 'reload':
@@ -146,6 +150,62 @@ Future<int> _devices(List<String> args) async {
 }
 
 // --------------------------------------------------------------------------
+// config (show resolved layered project config + learned memory)
+// --------------------------------------------------------------------------
+Future<int> _config(List<String> args) async {
+  final json = args.contains('--json');
+  final session = Session.require();
+  final warnings = <String>[];
+  final pc = loadProjectConfig(session.projectRoot.path, onWarn: warnings.add);
+  final mem = ProjectMemory.load(session.stateDir);
+
+  if (json) {
+    print(jsonEncode({
+      'config': {
+        'device': pc.deviceId,
+        'flavor': pc.flavor,
+        'target': pc.target,
+        'dartDefines': pc.dartDefines,
+        'timeout': pc.timeoutSec,
+        'port': pc.port,
+        'platform': pc.platform,
+      },
+      'memory': mem.toJson(),
+      'warnings': warnings,
+    }));
+    return 0;
+  }
+
+  print('Resolved config for ${session.projectRoot.path}');
+  void row(String k, Object? v) {
+    if (v != null && !(v is List && v.isEmpty)) print('  $k: $v');
+  }
+
+  row('device', pc.deviceId);
+  row('flavor', pc.flavor);
+  row('target', pc.target);
+  row('dartDefines', pc.dartDefines.isEmpty ? null : pc.dartDefines.join(', '));
+  row('timeout', pc.timeoutSec);
+  row('port', pc.port);
+  row('platform', pc.platform);
+  if ([pc.deviceId, pc.flavor, pc.target, pc.timeoutSec, pc.port, pc.platform]
+          .every((v) => v == null) &&
+      pc.dartDefines.isEmpty) {
+    print('  (no emu.yaml / emu.local.yaml / ~/.emu/config.yaml — built-in defaults apply)');
+  }
+
+  final m = mem.toJson();
+  if (m.isNotEmpty) {
+    print('Learned memory (.emu/memory.json):');
+    m.forEach((k, v) => print('  $k: $v'));
+  }
+  for (final w in warnings) {
+    stderr.writeln('! $w');
+  }
+  return 0;
+}
+
+// --------------------------------------------------------------------------
 // configs (read .vscode/launch.json)
 // --------------------------------------------------------------------------
 Future<int> _configs(List<String> args) async {
@@ -229,13 +289,20 @@ Future<int> _up(List<String> args) async {
           'not replayed by emu (pass --dart-define manually if needed).');
     }
   }
-  // Effective run settings: explicit flag wins, else config value.
-  final device = res.option('device') ?? cfg?.deviceId;
-  final flavor = res.option('flavor') ?? cfg?.flavor;
-  final target = res.option('target') ?? cfg?.target;
+  // Layered project config (emu.yaml / emu.local.yaml / ~/.emu/config.yaml),
+  // lower precedence than an explicit flag or a named launch.json config.
+  final pc = loadProjectConfig(session.projectRoot.path,
+      onWarn: (w) => stderr.writeln('! emu config: $w'));
+
+  // Effective run settings: explicit flag wins, else launch.json, else config.
+  final device = res.option('device') ?? cfg?.deviceId ?? pc.deviceId;
+  final flavor = res.option('flavor') ?? cfg?.flavor ?? pc.flavor;
+  final target = res.option('target') ?? cfg?.target ?? pc.target;
   final dartDefines = res.multiOption('dart-define').isNotEmpty
       ? res.multiOption('dart-define')
-      : (cfg?.dartDefines ?? const []);
+      : (cfg?.dartDefines.isNotEmpty ?? false)
+          ? cfg!.dartDefines
+          : pc.dartDefines;
 
   // Refuse if a healthy server is already running for this project.
   final existing = session.readServerInfo();
@@ -250,12 +317,13 @@ Future<int> _up(List<String> args) async {
       ? 'android'
       : res.flag('ios')
           ? 'ios'
-          : null;
+          : pc.platform;
+  final port = res.wasParsed('port') ? res.option('port')! : '${pc.port ?? _defaultPort}';
 
   // Build the __serve invocation, re-using how we were launched.
   final serveArgs = <String>[
     '__serve',
-    '--port', res.option('port')!,
+    '--port', port,
     if (platform != null) '--platform=$platform',
     if (device != null) '--device=$device',
     if (flavor != null) '--flavor=$flavor',
@@ -296,7 +364,7 @@ Future<int> _up(List<String> args) async {
 
   // How long to wait for the app to reach running/failed. Cold boot + first
   // build can exceed the default; raise it with --timeout for slow machines.
-  final timeoutSec = int.tryParse(res.option('timeout') ?? '') ?? 240;
+  final timeoutSec = int.tryParse(res.option('timeout') ?? '') ?? pc.timeoutSec ?? 240;
 
   if (res.flag('json')) {
     // Wait for the real launch outcome instead of reporting a premature ok:true.
@@ -665,6 +733,7 @@ Future<int> _inspect(List<String> args) async {
     print('✗ no hit within ${timeout}s — was $file:$line reached?');
     return 1;
   }
+  _rememberProject((m) => m.lastInspect = '$file:$line');
   print('● $file:$line');
   final locals = (r['locals'] as Map).cast<String, dynamic>();
   if (locals.isEmpty) {
@@ -826,8 +895,42 @@ Future<int> _shot(List<String> args) async {
     }
     return 1;
   }
+  final path = res['path'] as String?;
+  if (path != null) {
+    final size = _pngSize(File(path));
+    if (size != null) _rememberProject((m) => m.lastScreen = size);
+  }
   print(json ? jsonEncode(res) : '✓ ${res['path']}');
   return 0;
+}
+
+/// Read a PNG's [width, height] from its IHDR chunk without a decoder: the
+/// dimensions are two big-endian uint32s at byte offset 16. Null if the file
+/// isn't a readable PNG.
+List<int>? _pngSize(File f) {
+  try {
+    final b = f.openSync()..setPositionSync(16);
+    final head = b.readSync(8);
+    b.closeSync();
+    if (head.length < 8) return null;
+    int u32(int o) => (head[o] << 24) | (head[o + 1] << 16) | (head[o + 2] << 8) | head[o + 3];
+    return [u32(0), u32(4)];
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Load, mutate, and persist per-project memory. Silent no-op if we're not
+/// inside a project — memory is a convenience, never load-bearing.
+void _rememberProject(void Function(ProjectMemory) mutate) {
+  final session = Session.find();
+  if (session == null) return;
+  try {
+    final mem = ProjectMemory.load(session.stateDir);
+    mutate(mem);
+    session.ensureState();
+    mem.save();
+  } catch (_) {/* memory is disposable; never fail a command over it */}
 }
 
 /// `emu tap <x> <y>` — coordinates are **physical pixels**, the same space
@@ -1069,6 +1172,7 @@ COMMANDS
   doctor                 Check dependencies (flutter, adb, emulator, xcrun)
   devices                List devices + Android AVDs
   configs                List run configs from .vscode/launch.json
+  config                 Show resolved emu.yaml config + learned memory
   up [opts]              Boot device + start the app, launch the dashboard
      --android | --ios     Boot a default device of that platform
      -d, --device <id>     Use a specific flutter device id
