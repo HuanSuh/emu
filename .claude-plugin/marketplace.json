@@ -1,0 +1,14 @@
+{
+  "name": "emu",
+  "owner": { "name": "HuanSuh" },
+  "metadata": {
+    "description": "emu 플러그인을 배포하는 셀프 마켓플레이스."
+  },
+  "plugins": [
+    {
+      "name": "emu",
+      "source": "./",
+      "description": "IDE 없이 Flutter 앱을 기동·조작·검증하는 emu CLI 구동 스킬 + 셋업 명령."
+    }
+  ]
+}

@@ -63,6 +63,21 @@ ln -sf "$PWD/emu" /usr/local/bin/emu   # PATH에 등록
 dart run bin/emu.dart <command>
 ```
 
+### Claude Code 플러그인으로 설치 (전역)
+
+이 리포는 Claude Code 플러그인 겸 셀프 마켓플레이스다. 설치하면 Claude가
+emu 사용법(스킬)과 `/emu-setup` 명령을 어느 프로젝트에서든 쓸 수 있다.
+
+```
+/plugin marketplace add HuanSuh/emu   # 또는 로컬 경로: /plugin marketplace add <이 리포 경로>
+/plugin install emu@emu
+/emu-setup                            # 바이너리 빌드 + PATH 심링크 자동화
+```
+
+- `skills/emu/SKILL.md` — Claude에게 기동→관찰→조작→검증 루프를 가르친다.
+- `commands/emu-setup.md` — `emu` 바이너리를 빌드해 PATH에 심링크한다.
+- 스킬은 `emu` 바이너리가 PATH에 있어야 동작한다(`/emu-setup` 이 처리).
+
 ## 빠른 시작
 
 Flutter 프로젝트 안에서 실행하면 `pubspec.yaml` 로 루트를 자동 탐지한다.
