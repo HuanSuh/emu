@@ -301,7 +301,7 @@ Future<int> _up(List<String> args) async {
     final state = await _awaitLaunchState(info, timeoutSec);
     // `running` only means the entrypoint started; input before the first frame
     // is silently lost, so report whether the app has actually painted.
-    final painted = state == 'running' && await _awaitFirstFrame(info);
+    final painted = state == 'running' && await _awaitFirstFrame(info, timeoutSec);
     final errors = await _errorsSince(info, 0); // gather before any teardown
     if (state == 'failed') await _teardownFailedServer(session, info);
     print(jsonEncode({
@@ -814,8 +814,12 @@ Future<int> _text(List<String> args) async {
 }
 
 /// Block until the app has painted. Returns false on timeout — the app is still
-/// running, it just isn't ready for input yet.
-Future<bool> _awaitFirstFrame(ServerInfo info, {int timeoutMs = 20000}) async {
+/// running, it just isn't ready for input yet. The budget tracks the launch
+/// `--timeout` (so a slow machine gets more), clamped to [1, 60]s: the first
+/// frame follows shortly after `running`, and the cap stays under the HTTP
+/// client's own timeout while bounding the wait when an app never paints.
+Future<bool> _awaitFirstFrame(ServerInfo info, int launchTimeoutSec) async {
+  final timeoutMs = launchTimeoutSec.clamp(1, 60) * 1000;
   final res = await _post(info, '/api/first-frame?timeoutMs=$timeoutMs');
   return res?['firstFrame'] == true;
 }

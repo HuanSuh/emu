@@ -36,39 +36,15 @@ const _dpr = 'WidgetsBinding.instance.platformDispatcher.views.first.devicePixel
 /// Tap at physical ([x], [y]). Dispatches a down/up pair at the logical point.
 Future<void> runTap(String wsUri, int x, int y) async {
   await _withFramework(wsUri, (s, iso, fw) async {
-    await _eval(s, iso, fw,
-        'WidgetsBinding.instance'
-        '..handlePointerEvent(PointerDownEvent(position: ${_offset(x, y)}))'
-        '..handlePointerEvent(PointerUpEvent(position: ${_offset(x, y)}))');
+    await _eval(s, iso, fw, tapExpr(x, y));
   });
 }
 
 /// Swipe/scroll from physical ([x1],[y1]) to ([x2],[y2]) over [durationMs].
-/// Move events carry delta + a stable pointer id + timestamps, all of which the
-/// scroll gesture recognizer needs — position alone does not scroll.
 Future<void> runSwipe(String wsUri, int x1, int y1, int x2, int y2,
     {int durationMs = 300}) async {
-  const steps = 10;
-  final dxStep = (x2 - x1) / steps;
-  final dyStep = (y2 - y1) / steps;
-  final tStep = (durationMs / steps).round();
-  final moves = StringBuffer();
-  for (var i = 1; i <= steps; i++) {
-    final px = x1 + dxStep * i;
-    final py = y1 + dyStep * i;
-    moves.write(
-        '..handlePointerEvent(PointerMoveEvent(pointer: 1, '
-        'timeStamp: Duration(milliseconds: ${tStep * i}), '
-        'position: ${_offsetD(px, py)}, delta: ${_offsetD(dxStep, dyStep)}))');
-  }
   await _withFramework(wsUri, (s, iso, fw) async {
-    await _eval(s, iso, fw,
-        'WidgetsBinding.instance'
-        '..handlePointerEvent(PointerDownEvent(pointer: 1, '
-        'timeStamp: Duration.zero, position: ${_offset(x1, y1)}))'
-        '$moves'
-        '..handlePointerEvent(PointerUpEvent(pointer: 1, '
-        'timeStamp: Duration(milliseconds: $durationMs), position: ${_offset(x2, y2)}))');
+    await _eval(s, iso, fw, swipeExpr(x1, y1, x2, y2, durationMs: durationMs));
   });
 }
 
@@ -80,22 +56,54 @@ Future<void> runText(String wsUri, String text, {bool append = false}) async {
     if (!await _hasFocusedField(s, iso, ed)) {
       throw InputException('no focused text field — tap a field first');
     }
-    final String full;
-    if (append) {
-      final current = await _focusedText(s, iso, ed);
-      full = current + text;
-    } else {
-      full = text;
-    }
-    final lit = dartStringLiteral(full);
-    final offset = full.length; // UTF-16 units, matching on-device text.length
-    final r = await _eval(s, iso, ed,
-        '(FocusManager.instance.primaryFocus!.context!'
-        '.findAncestorStateOfType<EditableTextState>()!'
-        '..updateEditingValue(TextEditingValue(text: $lit, '
-        'selection: TextSelection.collapsed(offset: $offset)))).runtimeType.toString()');
+    final full = append ? (await _focusedText(s, iso, ed)) + text : text;
+    final r = await _eval(s, iso, ed, textExpr(full));
     if (r == null) throw InputException('text injection failed');
   });
+}
+
+// --- expression builders (pure, unit-tested) --------------------------------
+
+/// Evaluatable expression that dispatches a down/up tap at physical ([x], [y]).
+String tapExpr(int x, int y) =>
+    'WidgetsBinding.instance'
+    '..handlePointerEvent(PointerDownEvent(position: ${_offset(x, y)}))'
+    '..handlePointerEvent(PointerUpEvent(position: ${_offset(x, y)}))';
+
+/// Evaluatable expression for a swipe. Move events carry delta + a stable
+/// pointer id + timestamps, all of which the scroll gesture recognizer needs —
+/// position alone does not scroll.
+String swipeExpr(int x1, int y1, int x2, int y2,
+    {int durationMs = 300, int steps = 10}) {
+  final dxStep = (x2 - x1) / steps;
+  final dyStep = (y2 - y1) / steps;
+  final tStep = (durationMs / steps).round();
+  final moves = StringBuffer();
+  for (var i = 1; i <= steps; i++) {
+    moves.write(
+        '..handlePointerEvent(PointerMoveEvent(pointer: 1, '
+        'timeStamp: Duration(milliseconds: ${tStep * i}), '
+        'position: ${_offsetD(x1 + dxStep * i, y1 + dyStep * i)}, '
+        'delta: ${_offsetD(dxStep, dyStep)}))');
+  }
+  return 'WidgetsBinding.instance'
+      '..handlePointerEvent(PointerDownEvent(pointer: 1, '
+      'timeStamp: Duration.zero, position: ${_offset(x1, y1)}))'
+      '$moves'
+      '..handlePointerEvent(PointerUpEvent(pointer: 1, '
+      'timeStamp: Duration(milliseconds: $durationMs), position: ${_offset(x2, y2)}))';
+}
+
+/// Evaluatable expression that sets the focused field's value to [full].
+/// Cascade (`..`) returns the target so the trailing `.runtimeType` compiles —
+/// `updateEditingValue` returns void, so a direct `.toString()` would not.
+String textExpr(String full) {
+  final lit = dartStringLiteral(full);
+  final offset = full.length; // UTF-16 units, matching on-device String.length
+  return '(FocusManager.instance.primaryFocus!.context!'
+      '.findAncestorStateOfType<EditableTextState>()!'
+      '..updateEditingValue(TextEditingValue(text: $lit, '
+      'selection: TextSelection.collapsed(offset: $offset)))).runtimeType.toString()';
 }
 
 // --- helpers ---------------------------------------------------------------
