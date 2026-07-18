@@ -105,6 +105,36 @@ EmuConfig loadProjectConfig(
   return EmuConfig.fromMap(mergeConfigMaps(layers));
 }
 
+/// If `<root>/emu.local.yaml` exists, make sure the project `.gitignore` ignores
+/// it — machine-specific values (a running device id) must never be committed
+/// (invariant B4). Idempotent: does nothing if the file is absent or already
+/// ignored. Returns true only when it just added the entry (so the caller can
+/// tell the user once). Best-effort — a write failure is swallowed, never fatal.
+bool ensureLocalConfigIgnored(String projectRoot) {
+  const entry = 'emu.local.yaml';
+  final local = File('$projectRoot/$entry');
+  if (!local.existsSync()) return false;
+  final gi = File('$projectRoot/.gitignore');
+  try {
+    final lines = gi.existsSync() ? gi.readAsLinesSync() : const <String>[];
+    // Match a bare line for the file (ignore comments / inline whitespace).
+    final already = lines.any((l) {
+      final t = l.trim();
+      return t == entry || t == '/$entry';
+    });
+    if (already) return false;
+    final existing = gi.existsSync() ? gi.readAsStringSync() : '';
+    final needsNl = existing.isNotEmpty && !existing.endsWith('\n');
+    gi.writeAsStringSync(
+      '${needsNl ? '\n' : ''}# emu machine-specific config (do not commit)\n$entry\n',
+      mode: FileMode.append,
+    );
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 Map<String, dynamic>? _readYamlMap(String path, void Function(String)? onWarn) {
   final f = File(path);
   if (!f.existsSync()) return null;

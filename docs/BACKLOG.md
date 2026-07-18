@@ -356,6 +356,8 @@ Flutter 디버깅에서 웹뷰/네이티브 폼 입력은 드물다. **실수요
   재계산용 힌트. **좌표는 저장 안 함**(부팅마다 썩음) — `lastScreen`(PNG IHDR 직접 파싱)·`lastInspect`
   만 실제 기록. **권위 아님**: 다음 실행이 이걸 믿고 shot 없이 탭하는 뒷문을 막았다.
 - ✅ **`emu config`** — 병합 결과 + 메모리 표시(`--json`).
+- ✅ **`.gitignore` 자동 가드**: `emu up` 이 `emu.local.yaml` 을 처음 보면 프로젝트 `.gitignore` 에
+  자동 추가(멱등, 파일 있을 때만). 머신 종속값 커밋을 구조적으로 방지(불변식 B4). 유닛테스트 4종.
 - ✅ 실측(바이너리 end-to-end): 계층 병합·local override(`LOCAL_WINS` > `PROJECT_DEVICE`)·깨진 yaml
   한 층은 경고만 내고 나머지 층 생존 확인. 유닛테스트 9개(병합 우선순위/override/malformed/roundtrip).
 - 📌 **설계 원칙**: 추적/휘발의 기준은 "머신·시간을 넘어 참인가". 기기·플래그는 참 → commit,

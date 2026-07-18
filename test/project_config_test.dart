@@ -90,6 +90,41 @@ void main() {
     });
   });
 
+  group('ensureLocalConfigIgnored', () {
+    late Directory root;
+    setUp(() => root = Directory.systemTemp.createTempSync('emu_gi'));
+    tearDown(() => root.deleteSync(recursive: true));
+
+    test('no-op when emu.local.yaml is absent', () {
+      expect(ensureLocalConfigIgnored(root.path), isFalse);
+      expect(File('${root.path}/.gitignore').existsSync(), isFalse);
+    });
+
+    test('creates .gitignore and adds entry when file exists', () {
+      File('${root.path}/emu.local.yaml').writeAsStringSync('device: x\n');
+      expect(ensureLocalConfigIgnored(root.path), isTrue);
+      expect(File('${root.path}/.gitignore').readAsStringSync(), contains('emu.local.yaml'));
+    });
+
+    test('idempotent — already ignored returns false, no duplicate', () {
+      File('${root.path}/emu.local.yaml').writeAsStringSync('device: x\n');
+      File('${root.path}/.gitignore').writeAsStringSync('build/\nemu.local.yaml\n');
+      expect(ensureLocalConfigIgnored(root.path), isFalse);
+      final count = 'emu.local.yaml'
+          .allMatches(File('${root.path}/.gitignore').readAsStringSync())
+          .length;
+      expect(count, 1);
+    });
+
+    test('appends with a newline when existing .gitignore lacks a trailing one', () {
+      File('${root.path}/emu.local.yaml').writeAsStringSync('device: x\n');
+      File('${root.path}/.gitignore').writeAsStringSync('build/'); // no trailing \n
+      expect(ensureLocalConfigIgnored(root.path), isTrue);
+      final gi = File('${root.path}/.gitignore').readAsLinesSync();
+      expect(gi, containsAll(['build/', 'emu.local.yaml']));
+    });
+  });
+
   group('ProjectMemory roundtrip', () {
     late Directory dir;
     setUp(() => dir = Directory.systemTemp.createTempSync('emu_mem'));

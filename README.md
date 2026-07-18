@@ -245,8 +245,9 @@ emu up              # the values above apply as defaults (flags still override)
 - Scalars are overridden by higher layers; a list (`dartDefines`) is replaced
   wholesale (no accumulation).
 - A malformed layer only warns and is skipped — one bad config file won't kill `up`.
-- Add `emu.local.yaml` to your `.gitignore` yourself (it holds machine-specific
-  values, so don't commit it).
+- `emu.local.yaml` holds machine-specific values, so it must not be committed —
+  `emu up` auto-adds it to the project `.gitignore` the first time it sees the
+  file (idempotent; only when the file exists).
 
 **Learned memory (`.emu/memory.json`, git-ignored)** — recomputation hints the
 tool picks up while running (`lastScreen`, `lastDpr`, `lastInspect`, `seenKeys`).

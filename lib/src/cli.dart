@@ -293,6 +293,9 @@ Future<int> _up(List<String> args) async {
   // lower precedence than an explicit flag or a named launch.json config.
   final pc = loadProjectConfig(session.projectRoot.path,
       onWarn: (w) => stderr.writeln('! emu config: $w'));
+  if (ensureLocalConfigIgnored(session.projectRoot.path)) {
+    stderr.writeln('+ added emu.local.yaml to .gitignore (machine-specific config)');
+  }
 
   // Effective run settings: explicit flag wins, else launch.json, else config.
   final device = res.option('device') ?? cfg?.deviceId ?? pc.deviceId;
