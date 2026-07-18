@@ -80,11 +80,41 @@ button.danger:hover { background: #8b2c28; border-color: var(--error); }
 .grow { flex: 1; }
 .count { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 40px; text-align: right; }
 
+.workspace { flex: 1; display: flex; min-height: 0; }
+
 .log {
   flex: 1; overflow-y: auto; padding: 6px 0;
   font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   font-size: 12px; line-height: 1.5;
 }
+
+/* Interactive screenshot panel — the driving surface. */
+.screen {
+  width: 340px; flex: 0 0 auto; display: flex; flex-direction: column;
+  background: var(--bg-alt); border-left: 1px solid var(--border);
+}
+.screen-head {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  border-bottom: 1px solid var(--border); color: var(--muted); font-size: 12px;
+}
+.screen-head #shot-refresh { margin-left: auto; padding: 3px 9px; }
+.screen-view {
+  flex: 1; overflow: auto; padding: 10px; display: flex;
+  align-items: flex-start; justify-content: center;
+}
+#shot-img {
+  max-width: 100%; height: auto; display: block; cursor: crosshair;
+  border: 1px solid var(--border); border-radius: 6px; touch-action: none;
+  user-select: none; -webkit-user-drag: none;
+}
+.screen-empty { color: var(--muted); font-size: 12px; text-align: center; margin: auto; padding: 20px; }
+.screen-hint { color: var(--muted); font-size: 11px; text-align: center; padding: 4px; border-top: 1px solid var(--border); }
+.screen-input { display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border); }
+#text-input {
+  flex: 1; background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 12px;
+}
+#text-input:focus { outline: none; border-color: var(--accent); }
 .row {
   display: flex; gap: 8px; padding: 1px 12px; white-space: pre-wrap; word-break: break-word;
 }

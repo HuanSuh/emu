@@ -42,7 +42,25 @@
     <span class="count" id="count">0</span>
   </div>
 
-  <main id="log" class="log"></main>
+  <div class="workspace">
+    <main id="log" class="log"></main>
+    <aside class="screen" id="screen">
+      <div class="screen-head">
+        <span>screen</span>
+        <label class="chk"><input type="checkbox" id="shot-auto" /> auto</label>
+        <button id="shot-refresh" title="Refresh screenshot">↻</button>
+      </div>
+      <div class="screen-view" id="screen-view">
+        <img id="shot-img" alt="device screen" hidden />
+        <div class="screen-empty" id="screen-empty">no screen yet — press ↻ (needs a running app)</div>
+      </div>
+      <div class="screen-hint">click to tap · drag to swipe</div>
+      <div class="screen-input">
+        <input id="text-input" type="text" placeholder="type into focused field…" autocomplete="off" />
+        <button id="text-send" title="Send text (tap a field first)">send</button>
+      </div>
+    </aside>
+  </div>
 
   <div class="actionbar" id="toast" hidden></div>
 

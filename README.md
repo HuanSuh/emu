@@ -296,7 +296,10 @@ emu probe lib/cart.dart:42 --capture "total,items.length,coupon" --count 3
 
 - 실시간 로그 스트림 — **정규식 검색**, **레벨 필터**(debug/info/warn/error), 매치 하이라이트, copy, clear
 - 버튼: **Hot reload / Hot restart / Cold restart / Stop** (`r` / `R` 키도 지원)
-- 상태바 — 기기, 앱 상태, DevTools 링크
+- **인터랙티브 스크린샷 패널** — 기기 화면을 표시하고 **클릭=탭 / 드래그=스와이프**로 직접 몬다.
+  하단 입력창으로 포커스된 필드에 텍스트 입력(유니코드). 좌표 변환은 대시보드가 알아서 한다
+  (에이전트가 겪는 스크린샷 배율 함정이 사람에겐 없다). `auto` 체크 시 주기적으로 새로고침.
+- 상태바 — 기기, 앱 상태, **DevTools 링크**(`devtools.serve` 로 띄운 실제 DevTools)
 
 ## 동작 원리
 

@@ -156,6 +156,7 @@ class FlutterEngine {
         if (ws != null) {
           _setStatus(_status.copyWith(vmServiceUri: ws));
           logStore.system('VM Service: $ws');
+          unawaited(_serveDevTools(ws)); // best-effort browsable DevTools URL
         }
       case 'app.started':
         _setStatus(_status.copyWith(state: AppRunState.running, message: ''));
@@ -186,6 +187,25 @@ class FlutterEngine {
       default:
         // Unhandled events are ignored on purpose.
         break;
+    }
+  }
+
+  /// Ask the daemon to serve DevTools, then record a browsable URL already
+  /// pointed at this app's VM Service. Best-effort: some setups don't ship
+  /// DevTools, so a failure just leaves `devToolsUri` null (link stays hidden).
+  Future<void> _serveDevTools(String wsUri) async {
+    try {
+      final resp = await _request('devtools.serve');
+      final result = resp.result;
+      if (result is! Map) return;
+      final host = result['host'] as String?;
+      final port = result['port'];
+      if (host == null || port == null) return;
+      final uri = 'http://$host:$port/?uri=${Uri.encodeQueryComponent(wsUri)}';
+      _setStatus(_status.copyWith(devToolsUri: uri));
+      logStore.system('DevTools: $uri');
+    } catch (_) {
+      // best-effort — leave devToolsUri null
     }
   }
 

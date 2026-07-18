@@ -215,6 +215,21 @@ class EmuServer {
   String get _platform => platformForDeviceId(engine.status.deviceId);
 
   Future<Response> _screenshot(Request req) async {
+    // Inline mode (dashboard): return the PNG bytes directly instead of saving a
+    // timestamped file, reusing one temp path so refreshes don't clutter .emu/.
+    if (req.url.queryParameters['inline'] == '1') {
+      final tmp = '${session.stateDir.path}/_dashboard-shot.png';
+      try {
+        await devices.screenshot(tmp, platform: _platform, udid: engine.status.deviceId);
+        final bytes = await File(tmp).readAsBytes();
+        return Response.ok(bytes, headers: {
+          'content-type': 'image/png',
+          'cache-control': 'no-store',
+        });
+      } catch (e) {
+        return _json({'ok': false, 'error': '$e'}, status: 500);
+      }
+    }
     // An explicit `path` wins; otherwise timestamp into .emu/.
     final requested = req.url.queryParameters['path'];
     final String out;

@@ -24,6 +24,10 @@ const els = {
   devtools: document.getElementById('devtools'),
   connDot: document.getElementById('conn-dot'),
   toast: document.getElementById('toast'),
+  shotImg: document.getElementById('shot-img'),
+  screenEmpty: document.getElementById('screen-empty'),
+  shotAuto: document.getElementById('shot-auto'),
+  textInput: document.getElementById('text-input'),
 };
 
 const LEVEL_RANK = { debug: 0, info: 1, system: 1, warn: 2, error: 3 };
@@ -94,9 +98,11 @@ function setStatus(s) {
   els.statePill.textContent = st;
   els.statePill.className = 'pill ' + st;
   els.deviceName.textContent = s.deviceName || '';
-  if (s.vmServiceUri) {
+  // Real DevTools URL from the daemon (devtools.serve), already aimed at this
+  // app's VM Service. Hidden until DevTools is actually being served.
+  if (s.devToolsUri) {
     els.devtools.hidden = false;
-    els.devtools.href = s.vmServiceUri.replace(/^ws/, 'http');
+    els.devtools.href = s.devToolsUri;
   } else {
     els.devtools.hidden = true;
   }
@@ -130,6 +136,79 @@ async function action(path, label) {
     toast(`${label} failed: ${e}`);
   }
 }
+
+// ---- interactive screen -----------------------------------------------------
+
+// Refresh the screenshot. Bytes come inline (?inline=1); cache-bust each load.
+function refreshShot() {
+  const img = els.shotImg;
+  img.onload = () => { img.hidden = false; els.screenEmpty.hidden = true; };
+  img.onerror = () => {
+    img.hidden = true;
+    els.screenEmpty.hidden = false;
+    els.screenEmpty.textContent = 'screen unavailable (app not running?)';
+  };
+  img.src = `/api/screenshot?inline=1&t=${Date.now()}`;
+}
+// After an input action, show its effect shortly after it lands.
+function scheduleRefresh() { setTimeout(refreshShot, 350); }
+
+// Map a pointer event on the (scaled) image to physical device pixels — the
+// same space `emu tap`/`swipe` expect, so the ratio is naturalSize/displayedSize.
+function toPhysical(e) {
+  const img = els.shotImg;
+  const rect = img.getBoundingClientRect();
+  return {
+    x: Math.round((e.clientX - rect.left) / rect.width * img.naturalWidth),
+    y: Math.round((e.clientY - rect.top) / rect.height * img.naturalHeight),
+    cx: e.clientX, cy: e.clientY,
+  };
+}
+
+let pointerStart = null;
+els.shotImg.addEventListener('pointerdown', (e) => { pointerStart = toPhysical(e); });
+els.shotImg.addEventListener('pointerup', (e) => {
+  if (!pointerStart) return;
+  const end = toPhysical(e);
+  const movedPx = Math.hypot(end.cx - pointerStart.cx, end.cy - pointerStart.cy);
+  if (movedPx < 8) tapAt(pointerStart.x, pointerStart.y);            // a click is a tap
+  else swipeAt(pointerStart.x, pointerStart.y, end.x, end.y);        // a drag is a swipe
+  pointerStart = null;
+});
+
+async function tapAt(x, y) {
+  toast(`tap ${x},${y}`);
+  try { await fetch(`/api/tap?x=${x}&y=${y}`, { method: 'POST' }); } catch (_) {}
+  scheduleRefresh();
+}
+async function swipeAt(x1, y1, x2, y2) {
+  toast(`swipe → ${x2},${y2}`);
+  try {
+    await fetch(`/api/swipe?x1=${x1}&y1=${y1}&x2=${x2}&y2=${y2}`, { method: 'POST' });
+  } catch (_) {}
+  scheduleRefresh();
+}
+async function sendText() {
+  const t = els.textInput.value;
+  if (!t) return;
+  toast('text →');
+  try {
+    const r = await fetch(`/api/text?text=${encodeURIComponent(t)}`, { method: 'POST' });
+    const j = await r.json();
+    toast(j.ok ? 'text sent' : `text: ${j.error || 'failed'}`);
+  } catch (e) { toast(`text failed: ${e}`); }
+  els.textInput.value = '';
+  scheduleRefresh();
+}
+
+let autoTimer = null;
+els.shotAuto.addEventListener('change', () => {
+  clearInterval(autoTimer);
+  if (els.shotAuto.checked) { refreshShot(); autoTimer = setInterval(refreshShot, 1500); }
+});
+document.getElementById('shot-refresh').onclick = refreshShot;
+document.getElementById('text-send').onclick = sendText;
+els.textInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendText(); });
 
 let toastTimer;
 function toast(text) {
@@ -181,7 +260,7 @@ document.querySelectorAll('.lvl').forEach(btn => {
 
 // Keyboard: r = reload, R = restart (when not typing in the search box).
 document.addEventListener('keydown', (e) => {
-  if (e.target === els.search) return;
+  if (e.target.tagName === 'INPUT') return; // don't hijack typing in any field
   if (e.key === 'r') action('reload', 'hot reload');
   else if (e.key === 'R') action('restart', 'hot restart');
 });

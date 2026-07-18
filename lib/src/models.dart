@@ -98,6 +98,7 @@ class AppStatus {
     this.deviceName,
     this.appId,
     this.vmServiceUri,
+    this.devToolsUri,
     this.startedAt,
     this.lastReloadAt,
     this.message,
@@ -110,8 +111,12 @@ class AppStatus {
   /// The Flutter daemon's app id, needed to issue restart requests.
   final String? appId;
 
-  /// Dart VM Service URI (also the base for DevTools).
+  /// Dart VM Service URI (the endpoint DevTools/probe connect to).
   final String? vmServiceUri;
+
+  /// Browsable Flutter DevTools URL (from the daemon's `devtools.serve`),
+  /// already pointed at this app's VM Service. Null until DevTools is served.
+  final String? devToolsUri;
 
   final DateTime? startedAt;
   final DateTime? lastReloadAt;
@@ -125,6 +130,7 @@ class AppStatus {
     String? deviceName,
     String? appId,
     String? vmServiceUri,
+    String? devToolsUri,
     DateTime? startedAt,
     DateTime? lastReloadAt,
     String? message,
@@ -135,6 +141,7 @@ class AppStatus {
         deviceName: deviceName ?? this.deviceName,
         appId: appId ?? this.appId,
         vmServiceUri: vmServiceUri ?? this.vmServiceUri,
+        devToolsUri: devToolsUri ?? this.devToolsUri,
         startedAt: startedAt ?? this.startedAt,
         lastReloadAt: lastReloadAt ?? this.lastReloadAt,
         message: message ?? this.message,
@@ -146,6 +153,7 @@ class AppStatus {
         'deviceName': deviceName,
         'appId': appId,
         'vmServiceUri': vmServiceUri,
+        'devToolsUri': devToolsUri,
         'startedAt': startedAt?.toIso8601String(),
         'lastReloadAt': lastReloadAt?.toIso8601String(),
         'message': message,
@@ -158,6 +166,7 @@ class AppStatus {
         deviceName: json['deviceName'] as String?,
         appId: json['appId'] as String?,
         vmServiceUri: json['vmServiceUri'] as String?,
+        devToolsUri: json['devToolsUri'] as String?,
         startedAt: _parseDate(json['startedAt']),
         lastReloadAt: _parseDate(json['lastReloadAt']),
         message: json['message'] as String?,
