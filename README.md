@@ -503,6 +503,7 @@ lib/src/
   cli.dart             command parsing + server client
 web/                   dashboard (vanilla HTML/JS/CSS, no build step)
 tool/bundle_web.dart   embeds web/ into the binary
+docs/DESIGN.md         design invariants (the lines changes must not cross)
 docs/BACKLOG.md        improvement backlog + priorities
 ```
 

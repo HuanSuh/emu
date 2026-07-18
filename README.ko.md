@@ -463,6 +463,7 @@ lib/src/
   cli.dart             명령 파싱 + 서버 클라이언트
 web/                   대시보드 (바닐라 HTML/JS/CSS, 빌드 스텝 없음)
 tool/bundle_web.dart   web/ 를 바이너리에 임베드
+docs/DESIGN.md         설계 불변식 (변경이 넘어선 안 되는 선)
 docs/BACKLOG.md        개선 백로그 + 우선순위
 ```
 
