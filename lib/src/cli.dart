@@ -65,6 +65,8 @@ Future<int> runCli(List<String> argv) async {
         return await _swipe(rest);
       case 'text':
         return await _text(rest);
+      case 'settle':
+        return await _settleCmd(rest);
       case 'open':
         return await _open(rest);
       case 'down':
@@ -886,8 +888,10 @@ Future<int> _status(List<String> args) async {
 // --------------------------------------------------------------------------
 Future<int> _shot(List<String> args) async {
   final json = args.contains('--json');
+  final settle = args.contains('--settle');
   final out = args.firstWhere((a) => !a.startsWith('-'), orElse: () => '');
   final info = _requireServer();
+  if (settle) await _post(info, '/api/settle');
   final query = out.isEmpty ? '' : '?path=${Uri.encodeQueryComponent(out)}';
   final res = await _post(info, '/api/screenshot$query');
   if (res == null || res['ok'] != true) {
@@ -940,14 +944,17 @@ void _rememberProject(void Function(ProjectMemory) mutate) {
 /// `emu shot` captures in, so values read straight off a screenshot work as-is.
 Future<int> _tap(List<String> args) async {
   final json = args.contains('--json');
+  final settle = args.contains('--settle');
   final pos = args.where((a) => !a.startsWith('-')).toList();
   final x = pos.length == 2 ? int.tryParse(pos[0]) : null;
   final y = pos.length == 2 ? int.tryParse(pos[1]) : null;
   if (x == null || y == null) {
-    stderr.writeln('usage: emu tap <x> <y>   # physical pixels, as seen in `emu shot`');
+    stderr.writeln('usage: emu tap <x> <y> [--settle]   # physical pixels, as seen in `emu shot`');
     return 2;
   }
-  return _inject('/api/tap?x=$x&y=$y', 'tap $x,$y', json: json);
+  final code = await _inject('/api/tap?x=$x&y=$y', 'tap $x,$y', json: json);
+  if (code == 0 && settle) await _post(_requireServer(), '/api/settle');
+  return code;
 }
 
 /// `emu swipe <x1> <y1> <x2> <y2>` — physical pixels, like `tap`. This is also
@@ -980,6 +987,30 @@ Future<int> _text(List<String> args) async {
   }
   final q = 'text=${Uri.encodeQueryComponent(text)}${append ? '&append=true' : ''}';
   return _inject('/api/text?$q', 'text "$text"${append ? ' (append)' : ''}', json: json);
+}
+
+/// `emu settle [opts]` — block until the app has stopped animating/rebuilding,
+/// e.g. after a `tap` that triggers a route transition. Unlike `--settle` on
+/// `tap`/`shot`, this can be run standalone between two other commands.
+Future<int> _settleCmd(List<String> args) async {
+  final parser = ArgParser()
+    ..addOption('timeout', defaultsTo: '10', help: 'seconds to wait for quiet')
+    ..addOption('quiet', defaultsTo: '150', help: 'ms of no scheduled frames to call it settled')
+    ..addFlag('json', negatable: false);
+  final res = parser.parse(args);
+  final timeoutMs = ((double.tryParse(res.option('timeout')!) ?? 10) * 1000).round();
+  final quietMs = int.tryParse(res.option('quiet')!) ?? 150;
+  final info = _requireServer();
+  final r = await _post(info, '/api/settle?timeoutMs=$timeoutMs&quietMs=$quietMs');
+  final settled = r?['settled'] == true;
+  if (res.flag('json')) {
+    print(jsonEncode(r ?? {'ok': false, 'settled': false, 'error': 'no response'}));
+  } else if (settled) {
+    print('✓ settled');
+  } else {
+    stderr.writeln('✗ did not settle within ${res.option('timeout')}s${r == null ? ' (no response)' : ''}');
+  }
+  return settled ? 0 : 1;
 }
 
 /// Block until the app has painted. Returns false on timeout — the app is still
@@ -1208,13 +1239,18 @@ COMMANDS
   inspect <file:line>    Dump all locals + call stack at a line, then resume
      --timeout <s>         seconds to wait for a hit (default 10)
   status                 Show session/app state
-  shot [path]            Save a screenshot (default: .emu/shot-<ts>.png)
-  tap <x> <y>            Tap at physical pixels (same space as `shot`)
+  shot [path] [--settle] Save a screenshot (default: .emu/shot-<ts>.png)
+                         --settle waits for animations/rebuilds to stop first
+  tap <x> <y> [--settle] Tap at physical pixels (same space as `shot`)
+                         --settle waits for the resulting transition to finish
   swipe <x1> <y1> <x2> <y2>
                          Swipe/scroll between two points
      --duration <ms>       swipe duration (default 300)
   text <string> [--append]
                          Type into the focused field — tap it first. Unicode OK
+  settle [opts]          Wait for animations/rebuilds to stop (post-tap, pre-shot)
+     --timeout <s>         max time to wait (default 10)
+     --quiet <ms>          quiet window with no scheduled frames (default 150)
   open                   Open the dashboard in the browser
   down [--kill-device]   Stop the session (optionally power off the device)
 

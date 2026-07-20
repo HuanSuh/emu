@@ -20,6 +20,7 @@ import 'log_store.dart';
 import 'models.dart';
 import 'probe.dart';
 import 'session.dart';
+import 'settle.dart';
 import 'web_assets.g.dart';
 
 /// Options for launching the app, passed from `up`.
@@ -198,6 +199,8 @@ class EmuServer {
         return _text(req);
       case '/api/first-frame':
         return _firstFrame(req);
+      case '/api/settle':
+        return _settle(req);
       case '/api/probe':
         return _probe(req);
       case '/api/inspect':
@@ -315,6 +318,25 @@ class EmuServer {
     final ms = int.tryParse(req.url.queryParameters['timeoutMs'] ?? '') ?? 20000;
     final painted = await waitForFirstFrame(uri, timeout: Duration(milliseconds: ms));
     return _json({'ok': true, 'firstFrame': painted});
+  }
+
+  /// Whether the app has stopped animating/rebuilding since the last input —
+  /// `tap`/`swipe` return as soon as the event is dispatched, not once the
+  /// resulting transition or animation has finished.
+  Future<Response> _settle(Request req) async {
+    final uri = engine.status.vmServiceUri;
+    if (uri == null) {
+      return _json({'ok': false, 'error': 'app is not running (no VM service)'}, status: 409);
+    }
+    final q = req.url.queryParameters;
+    final timeoutMs = int.tryParse(q['timeoutMs'] ?? '') ?? 10000;
+    final quietMs = int.tryParse(q['quietMs'] ?? '') ?? 150;
+    final settled = await waitForSettle(
+      uri,
+      timeout: Duration(milliseconds: timeoutMs),
+      quiet: Duration(milliseconds: quietMs),
+    );
+    return _json({'ok': true, 'settled': settled});
   }
 
   /// Run an input injection, reporting the log cursor from *before* it fired.

@@ -167,10 +167,11 @@ What this loop gives an agent:
 | `emu stop` | Stop only the app (server stays up) |
 | `emu status` | Session/device/app status + VM Service URI |
 | `emu open` | Open the dashboard in a browser |
-| `emu shot [path]` | Save a screenshot (default `.emu/`). Relative paths resolve to the project root |
-| `emu tap <x> <y>` | Tap a coordinate (physical pixels — same space as `shot`). Android & iOS |
+| `emu shot [path] [--settle]` | Save a screenshot (default `.emu/`). Relative paths resolve to the project root. `--settle` waits for animations/rebuilds to stop first |
+| `emu tap <x> <y> [--settle]` | Tap a coordinate (physical pixels — same space as `shot`). Android & iOS. `--settle` waits for the resulting transition to finish before returning |
 | `emu swipe <x1> <y1> <x2> <y2>` | Swipe/scroll. `--duration <ms>`. Android & iOS |
 | `emu text <string> [--append]` | Type into the focused field (unicode OK). Android & iOS |
+| `emu settle [--timeout <s>] [--quiet <ms>]` | Wait for animations/rebuilds to stop (no scheduled frame, `--quiet` window held stable) |
 
 `emu up` options:
 
@@ -356,6 +357,35 @@ emu text " more" --append                          # append after the current va
   webview text fields (fine, since emu is for driving Flutter apps).
 - **It does not assert on UI**: emu only injects input; judgment is done by
   `assert` (logs) / `probe` (variables).
+
+### settle — wait out animations/rebuilds before capturing
+
+A `tap` that triggers a route transition, a network-backed rebuild, or an
+animation returns as soon as the pointer event is dispatched — not once the
+screen has actually stopped changing. `shot` fired right after often captures
+a mid-transition frame or a loading spinner instead of the settled UI, which
+trips up agents that `tap` then immediately `shot` to inspect the result.
+
+```bash
+emu tap 670 1486 --settle             # tap, then block until the UI stops changing
+emu shot ui.png                       # now safe to capture
+
+# equivalent, as separate steps:
+emu tap 670 1486
+emu settle --timeout 10 --quiet 150   # or standalone between any two commands
+emu shot ui.png --settle              # shot can also wait first, on its own
+```
+
+**Implementation**: polls `SchedulerBinding.instance.schedulerPhase` /
+`hasScheduledFrame` over the VM Service (the same connection `tap`/`probe` use)
+until no frame is scheduled and the scheduler is idle, held stable for
+`--quiet` (default 150ms) so a gap *between* two animation frames isn't
+mistaken for the end of the animation — the same idea behind `flutter_test`'s
+`pumpAndSettle` and `flutter_driver`'s `waitUntilNoTransientCallbacks`. Like
+`up`'s first-frame wait, this **never throws**: on timeout or a VM Service
+that isn't reachable yet it reports `settled: false` rather than failing the
+command, so a slow or perpetually-animating screen degrades your confidence in
+the capture instead of blocking the workflow.
 
 ### probe — capture variables (VM Service logpoint)
 
