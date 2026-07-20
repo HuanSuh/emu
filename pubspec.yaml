@@ -3,7 +3,7 @@ description: >-
   Flutter emulator/simulator debug driver. Boots a device, drives
   hot/cold restart over the Flutter daemon protocol, and exposes searchable
   debug logs through a CLI and a local web dashboard sharing one engine.
-version: 0.1.0
+version: 0.2.0
 publish_to: none
 
 environment:

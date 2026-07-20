@@ -1,7 +1,7 @@
 {
   "name": "emu",
   "description": "IDE 없이 Flutter 앱을 기동·조작·검증하는 CLI를 Claude가 구동하도록 가르치는 플러그인. up/shot/tap/text/swipe/reload/logs/inspect 루프.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": { "name": "HuanSuh" },
   "homepage": "https://github.com/HuanSuh/emu",
   "keywords": ["flutter", "debug", "emulator", "cli", "dart"]
