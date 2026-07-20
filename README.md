@@ -167,11 +167,11 @@ What this loop gives an agent:
 | `emu stop` | Stop only the app (server stays up) |
 | `emu status` | Session/device/app status + VM Service URI |
 | `emu open` | Open the dashboard in a browser |
-| `emu shot [path] [--settle]` | Save a screenshot (default `.emu/`). Relative paths resolve to the project root. `--settle` waits for animations/rebuilds to stop first |
-| `emu tap <x> <y> [--settle]` | Tap a coordinate (physical pixels — same space as `shot`). Android & iOS. `--settle` waits for the resulting transition to finish before returning |
+| `emu shot [path] [--no-settle]` | Save a screenshot (default `.emu/`). Relative paths resolve to the project root. Waits for animations/rebuilds to stop first by default |
+| `emu tap <x> <y> [--no-settle]` | Tap a coordinate (physical pixels — same space as `shot`). Android & iOS. Waits for the resulting transition to finish before returning by default |
 | `emu swipe <x1> <y1> <x2> <y2>` | Swipe/scroll. `--duration <ms>`. Android & iOS |
 | `emu text <string> [--append]` | Type into the focused field (unicode OK). Android & iOS |
-| `emu settle [--timeout <s>] [--quiet <ms>]` | Wait for animations/rebuilds to stop (no scheduled frame, `--quiet` window held stable) |
+| `emu settle [--timeout <s>] [--quiet <ms>]` | Wait for animations/rebuilds to stop (no scheduled frame, `--quiet` window held stable) — `tap`/`shot` already do this by default |
 
 `emu up` options:
 
@@ -366,14 +366,30 @@ screen has actually stopped changing. `shot` fired right after often captures
 a mid-transition frame or a loading spinner instead of the settled UI, which
 trips up agents that `tap` then immediately `shot` to inspect the result.
 
-```bash
-emu tap 670 1486 --settle             # tap, then block until the UI stops changing
-emu shot ui.png                       # now safe to capture
+**`tap` and `shot` wait for settle by default** — no flag needed:
 
-# equivalent, as separate steps:
-emu tap 670 1486
-emu settle --timeout 10 --quiet 150   # or standalone between any two commands
-emu shot ui.png --settle              # shot can also wait first, on its own
+```bash
+emu tap 670 1486                      # waits for the UI to stop changing, then returns
+emu shot ui.png                       # also waits first, then captures
+```
+
+Pass `--no-settle` to skip the wait and get the old immediate-return behavior
+(e.g. you already know the tap doesn't trigger any transition, or you're about
+to `assert --since` on the log anyway):
+
+```bash
+emu tap 670 1486 --no-settle
+emu shot ui.png --no-settle
+```
+
+`emu settle [--timeout <s>] [--quiet <ms>]` is also available standalone, for
+waiting between two other commands or tuning the timeout/quiet window beyond
+`tap`/`shot`'s built-in defaults:
+
+```bash
+emu tap 670 1486 --no-settle
+emu settle --timeout 10 --quiet 150
+emu shot ui.png --no-settle
 ```
 
 **Implementation**: polls `SchedulerBinding.instance.schedulerPhase` /
@@ -385,7 +401,8 @@ mistaken for the end of the animation — the same idea behind `flutter_test`'s
 `up`'s first-frame wait, this **never throws**: on timeout or a VM Service
 that isn't reachable yet it reports `settled: false` rather than failing the
 command, so a slow or perpetually-animating screen degrades your confidence in
-the capture instead of blocking the workflow.
+the capture instead of blocking the workflow — `tap`/`shot` still return
+normally even when settle times out.
 
 ### probe — capture variables (VM Service logpoint)
 

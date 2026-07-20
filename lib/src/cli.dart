@@ -888,7 +888,7 @@ Future<int> _status(List<String> args) async {
 // --------------------------------------------------------------------------
 Future<int> _shot(List<String> args) async {
   final json = args.contains('--json');
-  final settle = args.contains('--settle');
+  final settle = !args.contains('--no-settle');
   final out = args.firstWhere((a) => !a.startsWith('-'), orElse: () => '');
   final info = _requireServer();
   if (settle) await _post(info, '/api/settle');
@@ -942,14 +942,17 @@ void _rememberProject(void Function(ProjectMemory) mutate) {
 
 /// `emu tap <x> <y>` — coordinates are **physical pixels**, the same space
 /// `emu shot` captures in, so values read straight off a screenshot work as-is.
+/// Waits for the resulting transition/animation to settle before returning
+/// unless `--no-settle` is passed — a bare `tap` immediately followed by
+/// `shot` is the exact trap this defaults to guarding against.
 Future<int> _tap(List<String> args) async {
   final json = args.contains('--json');
-  final settle = args.contains('--settle');
+  final settle = !args.contains('--no-settle');
   final pos = args.where((a) => !a.startsWith('-')).toList();
   final x = pos.length == 2 ? int.tryParse(pos[0]) : null;
   final y = pos.length == 2 ? int.tryParse(pos[1]) : null;
   if (x == null || y == null) {
-    stderr.writeln('usage: emu tap <x> <y> [--settle]   # physical pixels, as seen in `emu shot`');
+    stderr.writeln('usage: emu tap <x> <y> [--no-settle]   # physical pixels, as seen in `emu shot`');
     return 2;
   }
   final code = await _inject('/api/tap?x=$x&y=$y', 'tap $x,$y', json: json);
@@ -990,8 +993,9 @@ Future<int> _text(List<String> args) async {
 }
 
 /// `emu settle [opts]` — block until the app has stopped animating/rebuilding,
-/// e.g. after a `tap` that triggers a route transition. Unlike `--settle` on
-/// `tap`/`shot`, this can be run standalone between two other commands.
+/// e.g. after a `tap` that triggers a route transition. `tap`/`shot` already do
+/// this by default; this exists to run it standalone between two other
+/// commands, or to tune `--timeout`/`--quiet` beyond their built-in defaults.
 Future<int> _settleCmd(List<String> args) async {
   final parser = ArgParser()
     ..addOption('timeout', defaultsTo: '10', help: 'seconds to wait for quiet')
@@ -1239,16 +1243,18 @@ COMMANDS
   inspect <file:line>    Dump all locals + call stack at a line, then resume
      --timeout <s>         seconds to wait for a hit (default 10)
   status                 Show session/app state
-  shot [path] [--settle] Save a screenshot (default: .emu/shot-<ts>.png)
-                         --settle waits for animations/rebuilds to stop first
-  tap <x> <y> [--settle] Tap at physical pixels (same space as `shot`)
-                         --settle waits for the resulting transition to finish
+  shot [path] [--no-settle]
+                         Save a screenshot (default: .emu/shot-<ts>.png)
+                         Waits for animations/rebuilds to stop first (skip with --no-settle)
+  tap <x> <y> [--no-settle]
+                         Tap at physical pixels (same space as `shot`)
+                         Waits for the resulting transition to finish (skip with --no-settle)
   swipe <x1> <y1> <x2> <y2>
                          Swipe/scroll between two points
      --duration <ms>       swipe duration (default 300)
   text <string> [--append]
                          Type into the focused field — tap it first. Unicode OK
-  settle [opts]          Wait for animations/rebuilds to stop (post-tap, pre-shot)
+  settle [opts]          Wait for animations/rebuilds to stop (tap/shot already do this by default)
      --timeout <s>         max time to wait (default 10)
      --quiet <ms>          quiet window with no scheduled frames (default 150)
   open                   Open the dashboard in the browser
