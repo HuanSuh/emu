@@ -175,6 +175,11 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 | `-t, --target <file>` | 진입점(`lib/main_dev.dart` 등) |
 | `--dart-define K=V` | dart-define (반복 가능) |
 | `--dart-define-from-file <path>` | dart-define-from-file (반복 가능) |
+| `-a, --dart-entrypoint-args <arg>` | `main(List<String> args)` 에 전달할 인자 (반복 가능) |
+| `--device-timeout <s>` | 기기 연결을 기다리는 시간(초) |
+| `--device-connection <both\|attached\|wireless>` | 기기 탐색 방식 |
+| `--dds-port <n>` | Dart Developer Service 바인딩 포트 |
+| `--no-dds` | Dart Developer Service 비활성화 |
 | `--port <n>` | 대시보드 포트(기본 4577, 사용 중이면 자동 폴백) |
 | `--timeout <s>` | `running`/`failed` 도달까지 대기하는 창(기본 240). 콜드부트가 길면 늘린다 |
 | `--open` | 기동 후 브라우저 열기 |

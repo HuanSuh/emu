@@ -183,6 +183,11 @@ What this loop gives an agent:
 | `-t, --target <file>` | Entry point (e.g. `lib/main_dev.dart`) |
 | `--dart-define K=V` | dart-define (repeatable) |
 | `--dart-define-from-file <path>` | dart-define-from-file (repeatable) |
+| `-a, --dart-entrypoint-args <arg>` | arg passed to `main(List<String> args)` (repeatable) |
+| `--device-timeout <s>` | seconds to wait for devices to attach |
+| `--device-connection <both\|attached\|wireless>` | device discovery mode |
+| `--dds-port <n>` | bind the Dart Developer Service to this port |
+| `--no-dds` | disable the Dart Developer Service |
 | `--port <n>` | Dashboard port (default 4577, auto-falls back if in use) |
 | `--timeout <s>` | Window to wait for `running`/`failed` (default 240). Raise it for long cold boots |
 | `--open` | Open a browser after launch |

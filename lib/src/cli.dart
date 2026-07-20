@@ -260,6 +260,11 @@ Future<int> _up(List<String> args) async {
     ..addOption('target', abbr: 't')
     ..addMultiOption('dart-define')
     ..addMultiOption('dart-define-from-file')
+    ..addMultiOption('dart-entrypoint-args', abbr: 'a')
+    ..addOption('device-timeout', help: 'seconds to wait for devices to attach')
+    ..addOption('device-connection', allowed: ['both', 'attached', 'wireless'])
+    ..addOption('dds-port')
+    ..addFlag('dds', defaultsTo: true, help: 'Dart Developer Service (use --no-dds to disable)')
     ..addOption('port', defaultsTo: '$_defaultPort')
     ..addOption('timeout', help: 'seconds to wait for running/failed (default 240)')
     ..addFlag('open', negatable: false)
@@ -344,6 +349,13 @@ Future<int> _up(List<String> args) async {
     if (target != null) '--target=$target',
     for (final d in dartDefines) '--dart-define=$d',
     for (final f in dartDefineFromFile) '--dart-define-from-file=$f',
+    for (final a in res.multiOption('dart-entrypoint-args')) '--dart-entrypoint-args=$a',
+    if (res.option('device-timeout') != null)
+      '--device-timeout=${res.option('device-timeout')}',
+    if (res.option('device-connection') != null)
+      '--device-connection=${res.option('device-connection')}',
+    if (res.option('dds-port') != null) '--dds-port=${res.option('dds-port')}',
+    if (!res.flag('dds')) '--no-dds',
     '--project=${session.projectRoot.path}',
   ];
 
@@ -1150,7 +1162,12 @@ Future<int> runServe(List<String> args) async {
     ..addOption('target')
     ..addOption('project')
     ..addMultiOption('dart-define')
-    ..addMultiOption('dart-define-from-file');
+    ..addMultiOption('dart-define-from-file')
+    ..addMultiOption('dart-entrypoint-args')
+    ..addOption('device-timeout')
+    ..addOption('device-connection')
+    ..addOption('dds-port')
+    ..addFlag('dds', defaultsTo: true);
   final res = parser.parse(args);
   final session = Session.require(start: res.option('project'));
   final server = EmuServer(session: session);
@@ -1167,6 +1184,11 @@ Future<int> runServe(List<String> args) async {
         target: res.option('target'),
         dartDefines: res.multiOption('dart-define'),
         dartDefineFromFile: res.multiOption('dart-define-from-file'),
+        dartEntrypointArgs: res.multiOption('dart-entrypoint-args'),
+        deviceTimeoutSec: int.tryParse(res.option('device-timeout') ?? ''),
+        deviceConnection: res.option('device-connection'),
+        ddsPort: int.tryParse(res.option('dds-port') ?? ''),
+        noDds: !res.flag('dds'),
       ),
     );
   } catch (e, st) {
@@ -1199,6 +1221,13 @@ COMMANDS
      --dart-define K=V     dart-define (repeatable)
      --dart-define-from-file <path>
                             dart-define-from-file (repeatable)
+     -a, --dart-entrypoint-args <arg>
+                            arg passed to main(List<String> args) (repeatable)
+     --device-timeout <s>  seconds to wait for devices to attach
+     --device-connection <both|attached|wireless>
+                            device discovery mode
+     --dds-port <n>        bind the Dart Developer Service to this port
+     --no-dds              disable the Dart Developer Service
      --port <n>            Dashboard port (default 4577)
      --timeout <s>         wait for running/failed before returning (default 240)
      --open                Open the dashboard in the browser

@@ -31,6 +31,11 @@ class LaunchOptions {
     this.target,
     this.dartDefines = const [],
     this.dartDefineFromFile = const [],
+    this.dartEntrypointArgs = const [],
+    this.deviceTimeoutSec,
+    this.deviceConnection,
+    this.ddsPort,
+    this.noDds = false,
     this.extra = const [],
   });
 
@@ -41,6 +46,21 @@ class LaunchOptions {
   final String? target;
   final List<String> dartDefines;
   final List<String> dartDefineFromFile;
+
+  /// Passed to the Dart entrypoint's `main(List<String> args)` (`-a`).
+  final List<String> dartEntrypointArgs;
+
+  /// Seconds to wait for devices to attach (`--device-timeout`).
+  final int? deviceTimeoutSec;
+
+  /// `both` | `attached` | `wireless` (`--device-connection`).
+  final String? deviceConnection;
+
+  /// Bind the Dart Developer Service to this port (`--dds-port`).
+  final int? ddsPort;
+
+  /// Disable the Dart Developer Service (`--no-dds`).
+  final bool noDds;
   final List<String> extra;
 }
 
@@ -97,6 +117,11 @@ class EmuServer {
         target: opts.target,
         dartDefines: opts.dartDefines,
         dartDefineFromFile: opts.dartDefineFromFile,
+        dartEntrypointArgs: opts.dartEntrypointArgs,
+        deviceTimeoutSec: opts.deviceTimeoutSec,
+        deviceConnection: opts.deviceConnection,
+        ddsPort: opts.ddsPort,
+        noDds: opts.noDds,
         extra: opts.extra,
       );
       await engine.start(args, deviceName: deviceName ?? deviceId);
