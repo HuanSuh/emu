@@ -182,6 +182,12 @@ What this loop gives an agent:
 | `--flavor <name>` | Build flavor |
 | `-t, --target <file>` | Entry point (e.g. `lib/main_dev.dart`) |
 | `--dart-define K=V` | dart-define (repeatable) |
+| `--dart-define-from-file <path>` | dart-define-from-file (repeatable) |
+| `-a, --dart-entrypoint-args <arg>` | arg passed to `main(List<String> args)` (repeatable) |
+| `--device-timeout <s>` | seconds to wait for devices to attach |
+| `--device-connection <both\|attached\|wireless>` | device discovery mode |
+| `--dds-port <n>` | bind the Dart Developer Service to this port |
+| `--no-dds` | disable the Dart Developer Service |
 | `--port <n>` | Dashboard port (default 4577, auto-falls back if in use) |
 | `--timeout <s>` | Window to wait for `running`/`failed` (default 240). Raise it for long cold boots |
 | `--open` | Open a browser after launch |
@@ -200,12 +206,13 @@ emu up --config "myapp (dev)" --flavor staging   # individual flags override con
 
 - Reads `launch.json` (JSONC: comments and trailing commas allowed) and extracts
   only `type: "dart"` configs. Recognizes `flutterMode`/`deviceId`/`program` and
-  `--flavor`/`-t`/`--dart-define` in `args`/`toolArgs`.
+  `--flavor`/`-t`/`--dart-define`/`--dart-define-from-file` in `args`/`toolArgs`.
 - **Debug configs only**: emu drives debug builds only, because of hot reload and
   the VM Service (`probe`). `profile`/`release` configs are shown as `⚠ debug-only`
   in `configs` and `up --config` rejects them (exit 1).
-- Flags it can't yet replay (e.g. `--dart-define-from-file`) are marked as
-  unsupported in the listing — pass `--dart-define` manually if needed.
+- `--dart-define-from-file` is passed straight through to `flutter run` as-is
+  (emu doesn't parse the file), so relative paths are resolved against the
+  project root the same way VS Code resolves them.
 
 ### config — per-project layered config + memory
 

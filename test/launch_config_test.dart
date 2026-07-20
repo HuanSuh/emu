@@ -70,14 +70,48 @@ void main() {
       expect(c.isDebug, isFalse);
     });
 
-    test('flags dart-define-from-file as unsupported', () {
+    test('extracts dart-define-from-file paths (space and = form)', () {
+      const src = '''
+{ "configurations": [
+  { "name": "x", "type": "dart", "args": [
+      "--dart-define-from-file", "secret.json",
+      "--dart-define-from-file=other.json"
+  ] }
+] }''';
+      final c = parseLaunchJson(src).single;
+      expect(c.dartDefineFromFile, ['secret.json', 'other.json']);
+      expect(c.unsupported, isEmpty);
+    });
+
+    test('resolves relative dart-define-from-file paths against projectRoot', () {
       const src = '''
 { "configurations": [
   { "name": "x", "type": "dart", "args": ["--dart-define-from-file", "secret.json"] }
 ] }''';
+      final c = parseLaunchJson(src, projectRoot: '/proj').single;
+      expect(c.dartDefineFromFile, ['/proj/secret.json']);
+    });
+
+    test('leaves absolute dart-define-from-file paths untouched', () {
+      const src = '''
+{ "configurations": [
+  { "name": "x", "type": "dart", "args": ["--dart-define-from-file", "/etc/secret.json"] }
+] }''';
+      final c = parseLaunchJson(src, projectRoot: '/proj').single;
+      expect(c.dartDefineFromFile, ['/etc/secret.json']);
+    });
+
+    test('dart-define and dart-define-from-file coexist', () {
+      const src = '''
+{ "configurations": [
+  { "name": "x", "type": "dart", "args": [
+      "--dart-define", "ENV=dev",
+      "--dart-define-from-file", "secret.json"
+  ] }
+] }''';
       final c = parseLaunchJson(src).single;
-      expect(c.unsupported, contains('--dart-define-from-file'));
-      expect(c.dartDefines, isEmpty);
+      expect(c.dartDefines, ['ENV=dev']);
+      expect(c.dartDefineFromFile, ['secret.json']);
     });
 
     test('skips non-dart and unnamed entries', () {

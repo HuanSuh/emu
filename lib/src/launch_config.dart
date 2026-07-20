@@ -9,6 +9,8 @@ library;
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:path/path.dart' as p;
+
 /// A single runnable configuration distilled from a `launch.json` entry.
 class LaunchConfig {
   LaunchConfig({
@@ -18,6 +20,7 @@ class LaunchConfig {
     this.flavor,
     this.target,
     this.dartDefines = const [],
+    this.dartDefineFromFile = const [],
     this.unsupported = const [],
   });
 
@@ -30,8 +33,12 @@ class LaunchConfig {
   final String? target;
   final List<String> dartDefines;
 
-  /// Flags we recognized but cannot replay yet (e.g. `--dart-define-from-file`),
-  /// surfaced so the user knows the replay is incomplete.
+  /// Paths from `--dart-define-from-file`, resolved to absolute (relative to
+  /// the project root) when a project root was available while parsing.
+  final List<String> dartDefineFromFile;
+
+  /// Flags we recognized but cannot replay yet, surfaced so the user knows
+  /// the replay is incomplete.
   final List<String> unsupported;
 
   /// emu only drives debug builds (hot reload + VM Service depend on it).
@@ -44,6 +51,7 @@ class LaunchConfig {
         if (flavor != null) 'flavor': flavor,
         if (target != null) 'target': target,
         'dartDefines': dartDefines,
+        'dartDefineFromFile': dartDefineFromFile,
         'unsupported': unsupported,
         'runnable': isDebug,
       };
@@ -53,11 +61,14 @@ class LaunchConfig {
 List<LaunchConfig> readLaunchConfigs(String projectRoot) {
   final f = File('$projectRoot/.vscode/launch.json');
   if (!f.existsSync()) return const [];
-  return parseLaunchJson(f.readAsStringSync());
+  return parseLaunchJson(f.readAsStringSync(), projectRoot: projectRoot);
 }
 
 /// Parse the text of a `launch.json`, returning Dart/Flutter configs only.
-List<LaunchConfig> parseLaunchJson(String text) {
+/// [projectRoot], when given, is used to resolve relative
+/// `--dart-define-from-file` paths (VS Code resolves them against the
+/// workspace root, not `.vscode/`).
+List<LaunchConfig> parseLaunchJson(String text, {String? projectRoot}) {
   final decoded = jsonDecode(stripJsonc(text));
   if (decoded is! Map) return const [];
   final configs = decoded['configurations'];
@@ -70,16 +81,17 @@ List<LaunchConfig> parseLaunchJson(String text) {
     if (m['type'] != 'dart') continue;
     final name = m['name'] as String?;
     if (name == null || name.isEmpty) continue;
-    out.add(_fromEntry(name, m));
+    out.add(_fromEntry(name, m, projectRoot: projectRoot));
   }
   return out;
 }
 
-LaunchConfig _fromEntry(String name, Map<String, dynamic> m) {
+LaunchConfig _fromEntry(String name, Map<String, dynamic> m, {String? projectRoot}) {
   final mode = (m['flutterMode'] as String?)?.toLowerCase() ?? 'debug';
   String? target = m['program'] as String?;
   String? flavor;
   final defines = <String>[];
+  final defineFiles = <String>[];
   final unsupported = <String>[];
 
   // The Dart extension accepts run flags in either `args` or `toolArgs`.
@@ -105,15 +117,15 @@ LaunchConfig _fromEntry(String name, Map<String, dynamic> m) {
       target = targetV;
       continue;
     }
+    final defineFileV = inlineValue('--dart-define-from-file');
+    if (defineFileV != null) {
+      defineFiles.add(_resolveDefineFilePath(defineFileV, projectRoot));
+      continue;
+    }
     final defineV = inlineValue('--dart-define');
     if (defineV != null) {
       defines.add(defineV);
       continue;
-    }
-    if (t == '--dart-define-from-file' || t.startsWith('--dart-define-from-file=')) {
-      unsupported.add('--dart-define-from-file');
-      // skip its value if separate
-      if (t == '--dart-define-from-file' && i + 1 < tokens.length) i++;
     }
   }
 
@@ -124,8 +136,17 @@ LaunchConfig _fromEntry(String name, Map<String, dynamic> m) {
     flavor: flavor,
     target: target,
     dartDefines: defines,
+    dartDefineFromFile: defineFiles,
     unsupported: unsupported,
   );
+}
+
+/// Resolve a `--dart-define-from-file` path relative to [projectRoot] (VS
+/// Code's workspace root), matching how the Dart extension resolves it.
+/// Absolute paths, or no known project root, pass through unchanged.
+String _resolveDefineFilePath(String path, String? projectRoot) {
+  if (projectRoot == null || p.isAbsolute(path)) return path;
+  return p.normalize(p.join(projectRoot, path));
 }
 
 List<String> _stringList(Object? v) =>

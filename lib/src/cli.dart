@@ -166,6 +166,7 @@ Future<int> _config(List<String> args) async {
         'flavor': pc.flavor,
         'target': pc.target,
         'dartDefines': pc.dartDefines,
+        'dartDefineFromFile': pc.dartDefineFromFile,
         'timeout': pc.timeoutSec,
         'port': pc.port,
         'platform': pc.platform,
@@ -185,12 +186,15 @@ Future<int> _config(List<String> args) async {
   row('flavor', pc.flavor);
   row('target', pc.target);
   row('dartDefines', pc.dartDefines.isEmpty ? null : pc.dartDefines.join(', '));
+  row('dartDefineFromFile',
+      pc.dartDefineFromFile.isEmpty ? null : pc.dartDefineFromFile.join(', '));
   row('timeout', pc.timeoutSec);
   row('port', pc.port);
   row('platform', pc.platform);
   if ([pc.deviceId, pc.flavor, pc.target, pc.timeoutSec, pc.port, pc.platform]
           .every((v) => v == null) &&
-      pc.dartDefines.isEmpty) {
+      pc.dartDefines.isEmpty &&
+      pc.dartDefineFromFile.isEmpty) {
     print('  (no emu.yaml / emu.local.yaml / ~/.emu/config.yaml — built-in defaults apply)');
   }
 
@@ -227,6 +231,7 @@ Future<int> _configs(List<String> args) async {
       if (c.target != null) 'target=${c.target}',
       if (c.deviceId != null) 'device=${c.deviceId}',
       for (final d in c.dartDefines) 'define=$d',
+      for (final f in c.dartDefineFromFile) 'define-from-file=$f',
     ];
     final suffix = parts.isEmpty ? '' : '  (${parts.join(', ')})';
     if (c.isDebug) {
@@ -254,6 +259,12 @@ Future<int> _up(List<String> args) async {
     ..addOption('flavor')
     ..addOption('target', abbr: 't')
     ..addMultiOption('dart-define')
+    ..addMultiOption('dart-define-from-file')
+    ..addMultiOption('dart-entrypoint-args', abbr: 'a')
+    ..addOption('device-timeout', help: 'seconds to wait for devices to attach')
+    ..addOption('device-connection', allowed: ['both', 'attached', 'wireless'])
+    ..addOption('dds-port')
+    ..addFlag('dds', defaultsTo: true, help: 'Dart Developer Service (use --no-dds to disable)')
     ..addOption('port', defaultsTo: '$_defaultPort')
     ..addOption('timeout', help: 'seconds to wait for running/failed (default 240)')
     ..addFlag('open', negatable: false)
@@ -286,7 +297,7 @@ Future<int> _up(List<String> args) async {
     }
     if (cfg.unsupported.isNotEmpty) {
       stderr.writeln('! config "$wanted": ${cfg.unsupported.join(', ')} '
-          'not replayed by emu (pass --dart-define manually if needed).');
+          'not replayed by emu (pass it manually if needed).');
     }
   }
   // Layered project config (emu.yaml / emu.local.yaml / ~/.emu/config.yaml),
@@ -306,6 +317,11 @@ Future<int> _up(List<String> args) async {
       : (cfg?.dartDefines.isNotEmpty ?? false)
           ? cfg!.dartDefines
           : pc.dartDefines;
+  final dartDefineFromFile = res.multiOption('dart-define-from-file').isNotEmpty
+      ? res.multiOption('dart-define-from-file')
+      : (cfg?.dartDefineFromFile.isNotEmpty ?? false)
+          ? cfg!.dartDefineFromFile
+          : pc.dartDefineFromFile;
 
   // Refuse if a healthy server is already running for this project.
   final existing = session.readServerInfo();
@@ -332,6 +348,14 @@ Future<int> _up(List<String> args) async {
     if (flavor != null) '--flavor=$flavor',
     if (target != null) '--target=$target',
     for (final d in dartDefines) '--dart-define=$d',
+    for (final f in dartDefineFromFile) '--dart-define-from-file=$f',
+    for (final a in res.multiOption('dart-entrypoint-args')) '--dart-entrypoint-args=$a',
+    if (res.option('device-timeout') != null)
+      '--device-timeout=${res.option('device-timeout')}',
+    if (res.option('device-connection') != null)
+      '--device-connection=${res.option('device-connection')}',
+    if (res.option('dds-port') != null) '--dds-port=${res.option('dds-port')}',
+    if (!res.flag('dds')) '--no-dds',
     '--project=${session.projectRoot.path}',
   ];
 
@@ -1137,7 +1161,13 @@ Future<int> runServe(List<String> args) async {
     ..addOption('flavor')
     ..addOption('target')
     ..addOption('project')
-    ..addMultiOption('dart-define');
+    ..addMultiOption('dart-define')
+    ..addMultiOption('dart-define-from-file')
+    ..addMultiOption('dart-entrypoint-args')
+    ..addOption('device-timeout')
+    ..addOption('device-connection')
+    ..addOption('dds-port')
+    ..addFlag('dds', defaultsTo: true);
   final res = parser.parse(args);
   final session = Session.require(start: res.option('project'));
   final server = EmuServer(session: session);
@@ -1153,6 +1183,12 @@ Future<int> runServe(List<String> args) async {
         flavor: res.option('flavor'),
         target: res.option('target'),
         dartDefines: res.multiOption('dart-define'),
+        dartDefineFromFile: res.multiOption('dart-define-from-file'),
+        dartEntrypointArgs: res.multiOption('dart-entrypoint-args'),
+        deviceTimeoutSec: int.tryParse(res.option('device-timeout') ?? ''),
+        deviceConnection: res.option('device-connection'),
+        ddsPort: int.tryParse(res.option('dds-port') ?? ''),
+        noDds: !res.flag('dds'),
       ),
     );
   } catch (e, st) {
@@ -1183,6 +1219,15 @@ COMMANDS
      --flavor <name>       Build flavor
      -t, --target <file>   Entrypoint (lib/main_dev.dart, …)
      --dart-define K=V     dart-define (repeatable)
+     --dart-define-from-file <path>
+                            dart-define-from-file (repeatable)
+     -a, --dart-entrypoint-args <arg>
+                            arg passed to main(List<String> args) (repeatable)
+     --device-timeout <s>  seconds to wait for devices to attach
+     --device-connection <both|attached|wireless>
+                            device discovery mode
+     --dds-port <n>        bind the Dart Developer Service to this port
+     --no-dds              disable the Dart Developer Service
      --port <n>            Dashboard port (default 4577)
      --timeout <s>         wait for running/failed before returning (default 240)
      --open                Open the dashboard in the browser

@@ -64,6 +64,12 @@ class FlutterEngine {
     String? flavor,
     String? target,
     List<String> dartDefines = const [],
+    List<String> dartDefineFromFile = const [],
+    List<String> dartEntrypointArgs = const [],
+    int? deviceTimeoutSec,
+    String? deviceConnection,
+    int? ddsPort,
+    bool noDds = false,
     List<String> extra = const [],
   }) {
     return [
@@ -73,6 +79,12 @@ class FlutterEngine {
       if (flavor != null) ...['--flavor', flavor],
       if (target != null) ...['-t', target],
       for (final d in dartDefines) '--dart-define=$d',
+      for (final f in dartDefineFromFile) '--dart-define-from-file=$f',
+      for (final a in dartEntrypointArgs) ...['-a', a],
+      if (deviceTimeoutSec != null) '--device-timeout=$deviceTimeoutSec',
+      if (deviceConnection != null) '--device-connection=$deviceConnection',
+      if (ddsPort != null) '--dds-port=$ddsPort',
+      if (noDds) '--no-dds',
       ...extra,
     ];
   }
