@@ -28,6 +28,7 @@ class EmuConfig {
     this.flavor,
     this.target,
     this.dartDefines = const [],
+    this.dartDefineFromFile = const [],
     this.timeoutSec,
     this.port,
     this.platform,
@@ -37,6 +38,7 @@ class EmuConfig {
   final String? flavor;
   final String? target;
   final List<String> dartDefines;
+  final List<String> dartDefineFromFile;
   final int? timeoutSec;
   final int? port;
 
@@ -46,8 +48,7 @@ class EmuConfig {
   static const empty = EmuConfig();
 
   factory EmuConfig.fromMap(Map<String, dynamic> m) {
-    List<String> defines() {
-      final v = m['dartDefines'] ?? m['dart-defines'] ?? m['dartDefine'];
+    List<String> stringList(Object? v) {
       if (v is List) return v.map((e) => '$e').toList();
       if (v is String && v.isNotEmpty) return [v];
       return const [];
@@ -59,7 +60,9 @@ class EmuConfig {
       deviceId: m['device'] as String?,
       flavor: m['flavor'] as String?,
       target: (m['target'] ?? m['entry']) as String?,
-      dartDefines: defines(),
+      dartDefines: stringList(m['dartDefines'] ?? m['dart-defines'] ?? m['dartDefine']),
+      dartDefineFromFile:
+          stringList(m['dartDefineFromFile'] ?? m['dart-define-from-file']),
       timeoutSec: asInt(m['timeout']),
       port: asInt(m['port']),
       platform: m['platform'] as String?,

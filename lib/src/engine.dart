@@ -64,6 +64,7 @@ class FlutterEngine {
     String? flavor,
     String? target,
     List<String> dartDefines = const [],
+    List<String> dartDefineFromFile = const [],
     List<String> extra = const [],
   }) {
     return [
@@ -73,6 +74,7 @@ class FlutterEngine {
       if (flavor != null) ...['--flavor', flavor],
       if (target != null) ...['-t', target],
       for (final d in dartDefines) '--dart-define=$d',
+      for (final f in dartDefineFromFile) '--dart-define-from-file=$f',
       ...extra,
     ];
   }

@@ -30,6 +30,7 @@ class LaunchOptions {
     this.flavor,
     this.target,
     this.dartDefines = const [],
+    this.dartDefineFromFile = const [],
     this.extra = const [],
   });
 
@@ -39,6 +40,7 @@ class LaunchOptions {
   final String? flavor;
   final String? target;
   final List<String> dartDefines;
+  final List<String> dartDefineFromFile;
   final List<String> extra;
 }
 
@@ -94,6 +96,7 @@ class EmuServer {
         flavor: opts.flavor,
         target: opts.target,
         dartDefines: opts.dartDefines,
+        dartDefineFromFile: opts.dartDefineFromFile,
         extra: opts.extra,
       );
       await engine.start(args, deviceName: deviceName ?? deviceId);
