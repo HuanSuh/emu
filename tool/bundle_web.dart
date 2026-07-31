@@ -11,8 +11,13 @@ void main() {
     stderr.writeln('web/ not found; run from the package root.');
     exit(1);
   }
+  // Sort by relative path so the generated output is deterministic regardless
+  // of filesystem listing order (macOS vs Linux differ) — otherwise CI's
+  // regeneration drifts from a locally-generated file.
+  final files = webDir.listSync(recursive: true).whereType<File>().toList()
+    ..sort((a, b) => a.path.compareTo(b.path));
   final entries = <String, String>{};
-  for (final f in webDir.listSync(recursive: true).whereType<File>()) {
+  for (final f in files) {
     final rel = f.path.substring(webDir.path.length + 1).replaceAll('\\', '/');
     entries[rel] = base64Encode(f.readAsBytesSync());
   }
