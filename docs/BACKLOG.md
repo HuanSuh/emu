@@ -33,6 +33,8 @@ DevTools/IDE/e2e 도구의 경쟁자가 아니라, 그들이 못 하는 *비대�
 | 11 | iOS/비-Flutter 텍스트 입력(웹뷰·네이티브 필드) | 낮음 | M | P3 | 🚫 보류(조사 완료) |
 | 12 | 프로젝트별 계층 설정(`emu.yaml`) + 학습 메모리(`.emu/memory.json`) | 중 | S | P2 | ✅ 완료 |
 | 13 | Claude Code 플러그인 패키징(스킬 + `/emu-setup` 명령) | 중 | S | P3 | ✅ 완료 |
+| 14 | tap/swipe/shot의 settle 대기(애니메이션·리빌드 가라앉음 판정) | **높음** | M | P1 | ✅ 완료 (v0.2.0, 개밥먹기 피드백) |
+| 15 | flutter run 플래그 패리티(`--dart-define-from-file`, `--dart-entrypoint-args`, `--device-timeout/-connection`, `--dds-port/--no-dds`) | 중 | S | P2 | ✅ 완료 (v0.2.0, 개밥먹기 피드백) |
 
 ### P2-#5 `emu tap` 구현 완료 (2026-07-17)
 - ✅ `emu tap <x> <y>` — 물리 픽셀 좌표 탭(Android). 실기 검증: GESTURE/BUTTON 탭 → 로그 확인,
@@ -375,6 +377,33 @@ emu 리포를 플러그인 겸 셀프 마켓플레이스로 구성해 전역 설
   사용자가 `/emu-setup` 으로 각 머신에서 빌드(pre-built 배포보다 안전).
 - ✅ README를 영/국문 분리(`README.md`/`README.ko.md`, 상단 상호 링크).
 
+### 14. tap/swipe/shot의 settle 대기 → **구현 완료 (v0.2.0, 개밥먹기 피드백)**
+`tap`/`swipe` 는 포인터 이벤트를 dispatch하면 바로 반환한다 — 그 결과 리빌드·라우트 전환·
+애니메이션이 끝났는지는 말해주지 않는다. **탭 직후 바로 `shot` 을 찍는 흔한 패턴**에서
+로딩 스피너나 전환 중간 프레임이 잡히는 게 실앱에서 실제로 걸린 함정이었다.
+
+- ✅ **신규 `settle.dart`** — first-frame처럼 조회 가능한 서비스 확장이 없어서(애니메이션 중인가?),
+  VM Service `evaluate` 로 `SchedulerBinding` 을 직접 폴링한다(input.dart와 같은 메커니즘).
+  `flutter_test` 의 `pumpAndSettle` / `flutter_driver` 의 `waitUntilNoTransientCallbacks` 가
+  "settled"로 보는 것과 동일: **대기 중인 프레임 콜백 없음 + 스케줄된 프레임 없음**을, 애니메이션
+  프레임 *사이의* 틈을 끝으로 오인하지 않도록 **짧은 정적 창(quiet window)** 동안 유지될 때 판정.
+- ✅ **기본 on, `--no-settle` 로 opt-out.** 안전한 쪽(결과를 관찰할 준비가 됐을 때 반환)을 기본값으로.
+  `emu settle` 단독 명령도 있음.
+- 📌 **설계적 의미**: first-frame이 "탭 가능한가"를 판정했다면 settle은 "**결과를 관찰할 준비가
+  됐는가**"를 판정한다 — 두 번째 관측 프리미티브. 불변식 I5(에이전트 우선 verdict)를 강화한다.
+  [`DESIGN.md`](DESIGN.md) 관측 프리미티브 참고.
+
+### 15. flutter run 플래그 패리티 → **구현 완료 (v0.2.0, 개밥먹기 피드백)**
+실앱의 launch.json / 실행 구성이 쓰는 `flutter run` 옵션들을 `emu up` / `__serve` 가 그대로
+전달하게 했다. 개밥먹기에서 실제 프로젝트를 붙이며 드러난 호환성 요구.
+
+- ✅ **`--dart-define-from-file`** — flutter가 네이티브 지원하므로 파싱하지 않고 그대로 전달.
+  launch.json의 상대 경로는 VS Code와 동일하게 프로젝트 루트 기준 resolve. `emu.yaml` 에서도 설정 가능.
+  이전엔 "미지원"으로 표시만 하던 플래그(#configs 절)가 실제 동작으로 승격.
+- ✅ **`--dart-entrypoint-args`(`-a`), `--device-timeout`/`--device-connection`, `--dds-port`/`--no-dds`**
+  — `engine.buildRunArgs` / `server.LaunchOptions` 에 필드 추가, CLI 양쪽(up/__serve) 노출.
+- ✅ `test/engine_test.dart` — `buildRunArgs` 신규 옵션 조합 테스트. README(영/국문) 옵션 표 갱신.
+
 ## 알려진 동작 메모 (버그 아님)
 
 - **hot reload는 이미 떠 있는 `Timer.periodic`의 콜백 본문을 갈아끼우지 못할 수 있음** → 출력이 멎으면
@@ -387,15 +416,19 @@ emu 리포를 플러그인 겸 셀프 마켓플레이스로 구성해 전역 설
 
 ---
 
-## 현재 상태 (2026-07-18)
+## 현재 상태 (v0.2.0, 2026-07-31)
 
 핵심 루프는 완성됐다: **기동(verdict + 첫 프레임 대기) → 구동(tap/swipe/text, Android·iOS)
-→ 검증(assert 로그 / probe 변수)** 이 전부 단발성 `--json` CLI로 닫힌다.
-완료: #1·#2·#3·#5·#7·#8·#9·#10·#12·#13, #6은 `inspect` 슬라이스 구현
-(대시보드는 인터랙티브 스크린샷으로 차별화 결론). 여기에 반복 검증 인체공학(#12 계층 설정 +
-학습 메모리)과 배포(#13 Claude Code 플러그인 패키징, README 영/국문 분리)가 더해졌다.
+→ 관찰 준비(settle) → 검증(assert 로그 / probe 변수)** 이 전부 단발성 `--json` CLI로 닫힌다.
+완료: #1·#2·#3·#5·#7·#8·#9·#10·#12·#13·#14·#15, #6은 `inspect` 슬라이스 구현
+(대시보드는 인터랙티브 스크린샷으로 차별화 결론).
 보류(전부 조사 후 근거 있는 보류): #4(e2e — 전제 소멸), #6 대화형 break·step(앱 정지 → 모델 충돌),
 #11(비-Flutter 텍스트 입력 — 견고+무의존 경로 없음).
 
-**남은 것**: 정식 백로그 항목은 모두 완료 또는 근거 있는 보류. 새 작업은 실수요에서 나온다
-(예: 실앱 개밥먹기 결과, 웹뷰 폼 입력 요구 → #11의 idb 경로, probe 한계 신호 → #6).
+**개밥먹기가 되돌려준 것(v0.2.0)**: 실앱을 붙이며 실수요가 드러났고, 설계 예상대로
+"새 작업은 실수요에서 나온다"가 현실이 됐다 — settle 대기(#14, 탭 직후 shot이 로딩 화면을 찍는
+함정 차단)와 flutter run 플래그 패리티(#15, 실앱 launch.json 호환). settle은 first-frame과
+나란히 **두 번째 관측 프리미티브**(관찰 준비 완료 판정)로 자리잡았다.
+
+**남은 것**: 정식 백로그 항목은 모두 완료 또는 근거 있는 보류. 다음 작업도 실수요에서 나온다
+(웹뷰 폼 입력 요구 → #11의 idb 경로, probe 한계 신호 → #6, 추가 개밥먹기 피드백).
