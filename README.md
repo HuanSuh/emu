@@ -158,7 +158,10 @@ What this loop gives an agent:
 
 | Command | Description |
 |---------|-------------|
-| `emu doctor` | Check dependencies (flutter / adb / emulator / xcrun) |
+| `emu --version` / `-v` | Show the installed version + whether a newer release is available |
+| `emu doctor` | Check dependencies (flutter / adb / emulator / xcrun) + update status |
+| `emu update [-y]` | Pull + rebuild the latest release (only works when `emu` runs from a git checkout, e.g. after `emu-setup`) |
+| `emu uninstall [-y]` | Remove the PATH symlink(s) pointing at the running binary |
 | `emu devices` | `flutter devices` + Android AVD list |
 | `emu configs` | List run configs from `.vscode/launch.json` (debug only) |
 | `emu config` | Show the merged `emu.yaml` config + learned memory |

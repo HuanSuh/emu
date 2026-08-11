@@ -9,8 +9,10 @@ dart pub get >/dev/null
 echo "» bundling web assets"
 dart run tool/bundle_web.dart
 
-echo "» compiling"
-dart compile exe bin/emu.dart -o emu
+VERSION=$(grep '^version:' pubspec.yaml | head -1 | sed 's/version: *//' | tr -d '[:space:]')
+
+echo "» compiling (v$VERSION)"
+dart compile exe bin/emu.dart -o emu --define=EMU_VERSION="$VERSION"
 
 echo "✓ built ./emu"
 echo "  install with: ln -sf \"$(pwd)/emu\" /usr/local/bin/emu"

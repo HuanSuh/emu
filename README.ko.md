@@ -150,7 +150,10 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 
 | 명령 | 설명 |
 |------|------|
-| `emu doctor` | 의존성 점검 (flutter / adb / emulator / xcrun) |
+| `emu --version` / `-v` | 설치된 버전 표시 + 최신 릴리스 존재 여부 확인 |
+| `emu doctor` | 의존성 점검 (flutter / adb / emulator / xcrun) + 업데이트 상태 |
+| `emu update [-y]` | 최신 릴리스를 pull + 재빌드 (`emu`가 git 체크아웃에서 실행 중일 때만 동작 — 예: `emu-setup` 이후) |
+| `emu uninstall [-y]` | 현재 실행 중인 바이너리를 가리키는 PATH 심링크 제거 |
 | `emu devices` | `flutter devices` + Android AVD 목록 |
 | `emu configs` | `.vscode/launch.json` 의 실행 구성 목록 (debug만 실행 가능) |
 | `emu config` | `emu.yaml` 계층 병합 결과 + 학습된 메모리 표시 |

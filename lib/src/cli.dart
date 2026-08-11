@@ -17,6 +17,7 @@ import 'project_config.dart';
 import 'project_memory.dart';
 import 'server.dart';
 import 'session.dart';
+import 'version.dart';
 
 const _defaultPort = 4577;
 
@@ -29,8 +30,16 @@ Future<int> runCli(List<String> argv) async {
   final rest = argv.sublist(1);
   try {
     switch (command) {
+      case '--version':
+      case '-v':
+      case 'version':
+        return await _version(rest);
       case 'doctor':
         return await _doctor(rest);
+      case 'update':
+        return await _update(rest);
+      case 'uninstall':
+        return await _uninstall(rest);
       case 'devices':
         return await _devices(rest);
       case 'configs':
@@ -88,6 +97,32 @@ Future<int> runCli(List<String> argv) async {
 }
 
 // --------------------------------------------------------------------------
+// version
+// --------------------------------------------------------------------------
+Future<int> _version(List<String> args) async {
+  final json = args.contains('--json');
+  final latest = await latestReleaseVersion();
+  final updateAvailable = latest != null && isNewer(latest, kEmuVersion);
+
+  if (json) {
+    print(jsonEncode({
+      'version': kEmuVersion,
+      'latestVersion': latest,
+      'updateAvailable': updateAvailable,
+    }));
+    return 0;
+  }
+  if (latest == null) {
+    print('emu $kEmuVersion (update check unavailable — offline?)');
+  } else if (updateAvailable) {
+    print('emu $kEmuVersion (v$latest available — run `emu update`)');
+  } else {
+    print('emu $kEmuVersion (up to date)');
+  }
+  return 0;
+}
+
+// --------------------------------------------------------------------------
 // doctor
 // --------------------------------------------------------------------------
 Future<int> _doctor(List<String> args) async {
@@ -99,8 +134,17 @@ Future<int> _doctor(List<String> args) async {
   if (Platform.isMacOS) checks['xcrun'] = await _hasCommand('xcrun');
 
   final coreOk = checks['flutter'] == true;
+  final latest = await latestReleaseVersion();
+  final updateAvailable = latest != null && isNewer(latest, kEmuVersion);
+
   if (json) {
-    print(jsonEncode({'checks': checks, 'ok': coreOk}));
+    print(jsonEncode({
+      'checks': checks,
+      'ok': coreOk,
+      'version': kEmuVersion,
+      'latestVersion': latest,
+      'updateAvailable': updateAvailable,
+    }));
     return coreOk ? 0 : 1;
   }
   for (final e in checks.entries) {
@@ -116,6 +160,207 @@ Future<int> _doctor(List<String> args) async {
     return 1;
   }
   print('✓ core dependencies satisfied');
+  if (latest == null) {
+    print('  version $kEmuVersion (update check unavailable — offline?)');
+  } else if (updateAvailable) {
+    print('! version $kEmuVersion → v$latest available  (run `emu update`)');
+  } else {
+    print('✓ version $kEmuVersion (up to date)');
+  }
+  return 0;
+}
+
+// --------------------------------------------------------------------------
+// update
+// --------------------------------------------------------------------------
+Future<int> _update(List<String> args) async {
+  final json = args.contains('--json');
+  final yes = args.contains('--yes') || args.contains('-y');
+
+  void fail(String msg) {
+    if (json) {
+      print(jsonEncode({'ok': false, 'error': msg}));
+    } else {
+      stderr.writeln('✗ $msg');
+    }
+  }
+
+  final self = File(Platform.resolvedExecutable).path;
+  final repo = emuRepoRoot();
+  if (repo == null) {
+    if (self.contains('.claude/plugins/cache/')) {
+      fail('this emu was installed as a Claude Code plugin (no git checkout next to the '
+          'binary), so `emu update` can\'t pull+rebuild it directly. Update the plugin from '
+          'Claude Code (e.g. `/plugin update emu`), then re-run the `/emu-setup` command to '
+          'rebuild the binary and refresh the PATH symlink.');
+    } else {
+      fail('cannot locate the emu source checkout next to the running binary '
+          '(expected the PATH symlink from `emu-setup` to point into a git checkout).');
+    }
+    return 1;
+  }
+
+  final latest = await latestReleaseVersion();
+  if (latest == null) {
+    fail('could not reach GitHub to check for updates.');
+    return 1;
+  }
+
+  if (!isNewer(latest, kEmuVersion)) {
+    if (json) {
+      print(jsonEncode({'ok': true, 'updated': false, 'current': kEmuVersion, 'latest': latest}));
+    } else {
+      print('✓ up to date (v$kEmuVersion)');
+    }
+    return 0;
+  }
+
+  final dirty = await Process.run('git', ['-C', repo.path, 'status', '--porcelain']);
+  if (dirty.exitCode == 0 && (dirty.stdout as String).trim().isNotEmpty) {
+    fail('refusing to update: uncommitted changes in ${repo.path} — commit or stash first.');
+    return 1;
+  }
+
+  if (!yes) {
+    if (json) {
+      // Don't block on stdin in machine-readable mode — surface the choice instead.
+      print(jsonEncode({
+        'ok': false,
+        'updateAvailable': true,
+        'current': kEmuVersion,
+        'latest': latest,
+        'hint': 're-run with --yes to apply',
+      }));
+      return 1;
+    }
+    print('update available: v$kEmuVersion → v$latest');
+    stdout.write('Proceed? [y/N] ');
+    final answer = stdin.readLineSync()?.trim().toLowerCase();
+    if (answer != 'y' && answer != 'yes') {
+      print('cancelled');
+      return 0;
+    }
+  }
+
+  if (!json) print('» git pull');
+  final pull = await Process.run('git', ['-C', repo.path, 'pull', '--ff-only']);
+  if (pull.exitCode != 0) {
+    fail('git pull failed: ${pull.stderr}');
+    return 1;
+  }
+
+  if (!json) print('» rebuilding');
+  final build = await Process.run('bash', ['build.sh'], workingDirectory: repo.path);
+  if (build.exitCode != 0) {
+    fail('build failed: ${build.stderr}\n${build.stdout}');
+    return 1;
+  }
+
+  if (json) {
+    print(jsonEncode({'ok': true, 'updated': true, 'from': kEmuVersion, 'to': latest}));
+  } else {
+    print('✓ updated to v$latest — restart any running `emu up` session to pick it up.');
+  }
+  return 0;
+}
+
+// --------------------------------------------------------------------------
+// uninstall
+// --------------------------------------------------------------------------
+Future<int> _uninstall(List<String> args) async {
+  final json = args.contains('--json');
+  final yes = args.contains('--yes') || args.contains('-y');
+
+  void fail(String msg) {
+    if (json) {
+      print(jsonEncode({'ok': false, 'error': msg}));
+    } else {
+      stderr.writeln('✗ $msg');
+    }
+  }
+
+  final self = File(Platform.resolvedExecutable).path;
+
+  // Every `emu` on PATH that resolves to the binary we're running as —
+  // covers both the /usr/local/bin and ~/.local/bin symlink targets
+  // `emu-setup` creates, without hardcoding either.
+  final which = await Process.run('which', ['-a', 'emu']);
+  final onPath = (which.stdout as String? ?? '')
+      .split('\n')
+      .map((s) => s.trim())
+      .where((s) => s.isNotEmpty)
+      .toSet();
+  final links = <String>[];
+  for (final p in onPath) {
+    try {
+      if (File(p).resolveSymbolicLinksSync() == self) links.add(p);
+    } catch (_) {}
+  }
+
+  if (links.isEmpty) {
+    fail('no PATH entry pointing at the running binary ($self) was found — '
+        'nothing to remove. If emu is still on PATH, remove it manually.');
+    return 1;
+  }
+
+  final isPlugin = self.contains('.claude/plugins/cache/');
+
+  if (!json) {
+    print('will remove:');
+    for (final l in links) {
+      print('  $l');
+    }
+    if (isPlugin) {
+      print('note: this emu was installed as a Claude Code plugin — the plugin itself\n'
+          '      (skills, commands, cached build) stays installed. Remove it separately\n'
+          '      with `/plugin uninstall emu@emu` if you want it fully gone.');
+    }
+  }
+
+  if (!yes) {
+    if (json) {
+      print(jsonEncode({
+        'ok': false,
+        'wouldRemove': links,
+        'pluginInstall': isPlugin,
+        'hint': 're-run with --yes to apply',
+      }));
+      return 1;
+    }
+    stdout.write('Proceed? [y/N] ');
+    final answer = stdin.readLineSync()?.trim().toLowerCase();
+    if (answer != 'y' && answer != 'yes') {
+      print('cancelled');
+      return 0;
+    }
+  }
+
+  final removed = <String>[];
+  final errors = <String>[];
+  for (final l in links) {
+    try {
+      final link = Link(l);
+      if (link.existsSync()) {
+        link.deleteSync();
+      } else {
+        File(l).deleteSync();
+      }
+      removed.add(l);
+    } catch (e) {
+      errors.add('$l: $e');
+    }
+  }
+
+  if (errors.isNotEmpty) {
+    fail('removed ${removed.length}/${links.length}; failed: ${errors.join('; ')}');
+    return 1;
+  }
+
+  if (json) {
+    print(jsonEncode({'ok': true, 'removed': removed, 'pluginInstall': isPlugin}));
+  } else {
+    print('✓ removed ${removed.join(', ')}');
+  }
   return 0;
 }
 
@@ -1243,7 +1488,12 @@ USAGE
   emu <command> [options]            (every command supports --json)
 
 COMMANDS
-  doctor                 Check dependencies (flutter, adb, emulator, xcrun)
+  --version, -v           Show the emu version + whether an update is available
+  doctor                 Check dependencies (flutter, adb, emulator, xcrun) + update status
+  update                 Check GitHub for a newer emu release and install it
+     -y, --yes              skip the confirmation prompt
+  uninstall              Remove the emu PATH symlink(s) for this binary
+     -y, --yes              skip the confirmation prompt
   devices                List devices + Android AVDs
   configs                List run configs from .vscode/launch.json
   config                 Show resolved emu.yaml config + learned memory
