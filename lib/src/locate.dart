@@ -161,6 +161,10 @@ String locateExpr({String? text, String? key, String? type, bool dump = false}) 
       'try {'
       'final c = ro.localToGlobal(ro.size.center(Offset.zero));'
       'final dpr = WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio;'
+      // Computed before any `out.write` for this match: if `w.toString()`
+      // throws, the catch below discards the whole record cleanly instead of
+      // leaving a partial write in `out` for a match that never completes.
+      '${dump ? _dumpVarSrc : ''}'
       'if (out.isNotEmpty) out.write(";");'
       'out.write((c.dx * dpr).toString());'
       'out.write("|");'
@@ -183,16 +187,23 @@ String locateExpr({String? text, String? key, String? type, bool dump = false}) 
       '})()';
 }
 
-/// The extra `|<widget.toString()>` field appended per match under `--dump`.
-/// `toString()` is free text, so the record/field delimiters (and newlines,
-/// which would wreck the one-line-per-match rendering) are squashed to spaces
-/// on-device, before they can be mistaken for framing.
-const _dumpFieldSrc = 'out.write("|");'
-    'out.write(w.toString()'
+/// Evaluates `w.toString()` into a local var, under `--dump`, before any part
+/// of the match record is written — so a throwing `toString()` override is
+/// caught before `out` holds any partial data for this match (see
+/// `_dumpFieldSrc`, which writes this value). `toString()` is free text, so
+/// the record/field delimiters (and newlines, which would wreck the
+/// one-line-per-match rendering) are squashed to spaces on-device, before
+/// they can be mistaken for framing.
+const _dumpVarSrc = 'final dumpStr = w.toString()'
     '.replaceAll("|", " ")'
     '.replaceAll(";", " ")'
     '.replaceAll("\\n", " ")'
-    '.replaceAll("\\r", " "));';
+    '.replaceAll("\\r", " ");';
+
+/// The extra `|<dumpStr>` field appended per match under `--dump`, using the
+/// value `_dumpVarSrc` already computed and validated.
+const _dumpFieldSrc = 'out.write("|");'
+    'out.write(dumpStr);';
 
 /// Parse the `x|y|width|height|widgetType[|dump]` records `locateExpr` returns.
 /// Pure, unit-tested against malformed/empty input separately from any live

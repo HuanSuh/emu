@@ -48,6 +48,16 @@ void main() {
       expect(e, contains(r'.replaceAll("\n", " ")'));
     });
 
+    test('--dump computes toString() before any part of the record is written, '
+        'so a throwing toString() drops the whole match instead of leaving a '
+        'partial record for the next match to corrupt', () {
+      final e = locateExpr(text: 'x', dump: true);
+      final dumpVarAt = e.indexOf('final dumpStr');
+      final firstWriteAt = e.indexOf('out.write(');
+      expect(dumpVarAt, greaterThanOrEqualTo(0));
+      expect(dumpVarAt, lessThan(firstWriteAt));
+    });
+
     test('without --dump no toString() field is emitted', () {
       expect(locateExpr(text: 'x'), isNot(contains('w.toString()')));
     });
