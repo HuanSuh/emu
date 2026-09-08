@@ -52,9 +52,14 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
    - `emu text <문자열> [--append]` — 포커스된 필드에 입력(유니코드 OK). 먼저 필드를 탭.
    - `emu swipe <x1> <y1> <x2> <y2> [--duration <ms>]` — 스크롤도 이걸로.
    - `emu open-url <url> [--no-settle]` — 딥링크를 연결된 기기로 전송(Android는
-     `adb shell am start`, iOS는 `xcrun simctl openurl`을 인자 배열로 호출해
-     쉘 이스케이프 문제 없이 안전하게 처리). `&` 등 쿼리스트링 특수문자를
-     따로 이스케이프할 필요 없음.
+     `adb shell am start`, iOS는 `xcrun simctl openurl`). `&` 등 쿼리스트링
+     특수문자를 따로 이스케이프할 필요 없다. Android는 `adb shell` 이 argv 경계를
+     보존하지 않고 기기 셸에 넘기므로, URL을 기기 셸용으로 인용해서 보낸다.
+     - 웹뷰 딥링크처럼 URL을 쿼리 파라미터에 싣는 경우(`szsapp://web?url=...`)
+       **그 값은 호출자가 percent-encoding 해야 한다.** emu는 문자열을 있는 그대로
+       전달할 뿐이다. 인코딩하지 않으면 셸이 아니라 URI 파서 단계에서 잘린다 —
+       `url=https://x.co/p?a=1&b=2` 는 앱에서 `url=https://x.co/p?a=1` 과
+       별개 파라미터 `b=2` 로 읽힌다.
    - `tap`/`shot`/`open-url` 은 기본적으로 결과 전환이 끝날 때까지 settle을
      기다린다. 필요 없으면 `--no-settle` 로 끈다.
 4. 검증:
