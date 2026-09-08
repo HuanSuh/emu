@@ -570,12 +570,30 @@ Future<int> _up(List<String> args) async {
           ? cfg!.dartDefineFromFile
           : pc.dartDefineFromFile;
 
-  // Refuse if a healthy server is already running for this project.
+  // Refuse if a healthy server is already running the app for this project.
+  // A server that only answers pings but whose app has stopped/failed is a
+  // "ghost" session (e.g. the flutter process was killed independently of
+  // the server) — reclaim it instead of refusing with a misleading message.
   final existing = session.readServerInfo();
-  if (existing != null && await _ping(existing)) {
-    stderr.writeln('A session is already running for ${session.projectRoot.path}.');
-    stderr.writeln('Dashboard: ${existing.baseUrl}   (use `emu down` first)');
-    return 1;
+  final existingAlive = existing != null && await _ping(existing);
+  String? existingAppState;
+  if (existingAlive) {
+    final data = await _get(existing, '/api/status');
+    existingAppState = (data?['status'] as Map?)?['state'] as String?;
+  }
+  switch (decideUpAction(serverAlive: existingAlive, appState: existingAppState)) {
+    case UpSessionAction.refuseRunning:
+      stderr.writeln('A session is already running for ${session.projectRoot.path}'
+          '${existingAppState != null ? ' (state: $existingAppState)' : ''}.');
+      stderr.writeln('Dashboard: ${existing!.baseUrl}   (use `emu down` first)');
+      return 1;
+    case UpSessionAction.reclaimGhost:
+      stderr.writeln(
+          "! previous session's app was $existingAppState (not actually running) — reclaiming it.");
+      await _post(existing!, '/api/shutdown');
+      break;
+    case UpSessionAction.start:
+      break;
   }
   session.clearServerInfo();
 
