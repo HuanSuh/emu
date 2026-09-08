@@ -1194,9 +1194,9 @@ Future<int> _memory(List<String> args) async {
   final info = _requireServer();
   final all = res.flag('all') ? '?all=1' : '';
 
-  final before = await _get(info, '/api/memory/snapshot$all');
+  final before = await _getJson(info, '/api/memory/snapshot$all');
   if (before == null || before['error'] != null) {
-    stderr.writeln('✗ ${before?['error'] ?? 'failed to take before-snapshot'}');
+    stderr.writeln('✗ ${before?['error'] ?? 'no response from server'}');
     return 1;
   }
 
@@ -1205,9 +1205,9 @@ Future<int> _memory(List<String> args) async {
     stderr.writeln('! command exited ${result.exitCode}: $command');
   }
 
-  final after = await _get(info, '/api/memory/snapshot$all');
+  final after = await _getJson(info, '/api/memory/snapshot$all');
   if (after == null || after['error'] != null) {
-    stderr.writeln('✗ ${after?['error'] ?? 'failed to take after-snapshot'}');
+    stderr.writeln('✗ ${after?['error'] ?? 'no response from server'}');
     return 1;
   }
 
@@ -1580,6 +1580,19 @@ Future<Map<String, dynamic>?> _get(ServerInfo info, String path) async {
   try {
     final r = await http.get(Uri.parse('${info.baseUrl}$path')).timeout(const Duration(seconds: 5));
     if (r.statusCode != 200) return null;
+    return jsonDecode(r.body) as Map<String, dynamic>;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Like [_get], but decodes the body regardless of status code — for
+/// endpoints (like `/api/memory/snapshot`) that return a meaningful
+/// `{'error': ...}` JSON body alongside a non-200 status (409, etc.), the
+/// same convention `_postJson`/`probe`/`inspect` already rely on.
+Future<Map<String, dynamic>?> _getJson(ServerInfo info, String path) async {
+  try {
+    final r = await http.get(Uri.parse('${info.baseUrl}$path')).timeout(const Duration(seconds: 5));
     return jsonDecode(r.body) as Map<String, dynamic>;
   } catch (_) {
     return null;

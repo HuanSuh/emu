@@ -504,8 +504,16 @@ class EmuServer {
       if (all) return _json({'snapshot': snapshot});
       final pubspec = File('${session.projectRoot.path}/pubspec.yaml');
       final pkg = mem.appPackageName(pubspec.existsSync() ? pubspec.readAsStringSync() : '');
-      final filtered = pkg == null ? snapshot : mem.filterToAppPackage(snapshot, pkg);
-      return _json({'snapshot': filtered});
+      if (pkg == null) {
+        // Falling back to the unfiltered snapshot here would silently violate
+        // the documented default (app-package-only) — surface it instead.
+        return _json({
+          'error': "could not determine the app's package name from pubspec.yaml "
+              '(missing/unreadable, or no `name:` field) — pass --all to see the '
+              'unfiltered snapshot',
+        }, status: 422);
+      }
+      return _json({'snapshot': mem.filterToAppPackage(snapshot, pkg)});
     } catch (e) {
       return _json({'error': '$e'}, status: 500);
     }
