@@ -52,11 +52,15 @@ Map<String, int> filterToAppPackage(Map<String, int> snapshot, String appPackage
   final prefix = 'package:$appPackage/';
   return {
     for (final e in snapshot.entries)
-      if (_libraryOf(e.key).startsWith(prefix)) e.key: e.value,
+      if (libraryOf(e.key).startsWith(prefix)) e.key: e.value,
   };
 }
 
-String _libraryOf(String classKey) {
+/// The library portion of a key produced by [takeHeapSnapshot] (drops the
+/// class name). Public so callers can disambiguate same-named classes from
+/// different libraries (e.g. when serializing a diff keyed by class name
+/// alone would collide).
+String libraryOf(String classKey) {
   final i = classKey.indexOf('|');
   return i < 0 ? classKey : classKey.substring(0, i);
 }

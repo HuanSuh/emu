@@ -1218,7 +1218,13 @@ Future<int> _memory(List<String> args) async {
   if (res.flag('json')) {
     print(jsonEncode({
       'ok': true,
-      'diff': diff.map((k, v) => MapEntry(classNameOf(k), v)),
+      // A list, not a map keyed by class name: two classes with the same
+      // simple name from different libraries are common in real codebases,
+      // and a class-name-keyed map would silently collide/overwrite one.
+      'diff': [
+        for (final e in diff.entries)
+          {'class': classNameOf(e.key), 'library': libraryOf(e.key), 'delta': e.value},
+      ],
       'command': command,
       'commandExitCode': result.exitCode,
     }));
