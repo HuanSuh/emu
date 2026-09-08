@@ -308,7 +308,7 @@ class EmuServer {
       try {
         final matches = await locate(uri, text: text, key: key);
         final m = pickMatch(matches, index, query: query);
-        return _inject(() => runTap(uri, m.x, m.y),
+        return await _inject(() => runTap(uri, m.x, m.y),
             {'x': m.x, 'y': m.y, 'widgetType': m.widgetType, 'matchCount': matches.length});
       } on LocateException catch (e) {
         return _json({'ok': false, 'error': e.message}, status: 422);
