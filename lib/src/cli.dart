@@ -1235,9 +1235,18 @@ Future<int> _memory(List<String> args) async {
     return 0;
   }
   final sorted = diff.entries.toList()..sort((a, b) => b.value.abs().compareTo(a.value.abs()));
+  // Two libraries can declare a class with the same simple name — disambiguate
+  // with the library only for names that actually collide in this diff, so the
+  // common case stays a plain class name.
+  final nameCounts = <String, int>{};
+  for (final e in sorted) {
+    nameCounts.update(classNameOf(e.key), (n) => n + 1, ifAbsent: () => 1);
+  }
   for (final e in sorted) {
     final sign = e.value > 0 ? '+' : '';
-    print('${classNameOf(e.key)}  $sign${e.value}');
+    final name = classNameOf(e.key);
+    final label = nameCounts[name]! > 1 ? '$name (${libraryOf(e.key)})' : name;
+    print('$label  $sign${e.value}');
   }
   return 0;
 }
