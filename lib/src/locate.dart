@@ -26,16 +26,18 @@ class LocateException implements Exception {
   String toString() => message;
 }
 
-/// One widget on screen that matched a `--text`/`--key` query: its tap point
-/// (physical pixels, the same space `emu tap <x> <y>` and `emu shot` use) plus
-/// enough context (size, widget type) to tell matches apart.
+/// One widget on screen that matched a `--text`/`--key`/`--type` query: its tap
+/// point (physical pixels, the same space `emu tap <x> <y>` and `emu shot` use)
+/// plus enough context (size, widget type) to tell matches apart. [dump] holds
+/// the widget's `toString()` when the query asked for it, and is null otherwise.
 class LocateMatch {
-  LocateMatch(this.x, this.y, this.width, this.height, this.widgetType);
+  LocateMatch(this.x, this.y, this.width, this.height, this.widgetType, [this.dump]);
   final int x;
   final int y;
   final double width;
   final double height;
   final String widgetType;
+  final String? dump;
 
   Map<String, dynamic> toJson() => {
         'x': x,
@@ -43,16 +45,20 @@ class LocateMatch {
         'width': width,
         'height': height,
         'widgetType': widgetType,
+        if (dump != null) 'dump': dump,
       };
 }
 
 /// Find every on-screen widget whose Semantics label, `Text` data, or
 /// `Tooltip` message equals [text] — or, when [key] is given instead, whose
-/// `ValueKey` renders to that string — and return each match's tap point.
+/// `ValueKey` renders to that string, or when [type] is given, whose runtime
+/// type name equals it — and return each match's tap point.
 ///
-/// Exactly one of [text]/[key] must be given.
-Future<List<LocateMatch>> locate(String wsUri, {String? text, String? key}) async {
-  assert((text == null) != (key == null), 'locate: give exactly one of text/key');
+/// Exactly one of [text]/[key]/[type] must be given. With [dump], each match
+/// also carries the widget's `toString()`.
+Future<List<LocateMatch>> locate(String wsUri,
+    {String? text, String? key, String? type, bool dump = false}) async {
+  assert(_exactlyOne(text, key, type), 'locate: give exactly one of text/key/type');
   final service = await vmServiceConnectUri(wsUri);
   try {
     final vm = await service.getVM();
@@ -64,7 +70,8 @@ Future<List<LocateMatch>> locate(String wsUri, {String? text, String? key}) asyn
         .firstWhere((l) => l.uri == _fwLib, orElse: () => LibraryRef(id: '', uri: '', name: ''));
     if (lib.id!.isEmpty) throw LocateException('framework library not loaded ($_fwLib)');
 
-    final r = await service.evaluate(isoId, lib.id!, locateExpr(text: text, key: key));
+    final r = await service.evaluate(
+        isoId, lib.id!, locateExpr(text: text, key: key, type: type, dump: dump));
     if (r is ErrorRef) throw LocateException('evaluate failed: ${r.message}');
     if (r is! InstanceRef) throw LocateException('unexpected evaluate result: ${r.runtimeType}');
     var raw = r.valueAsString ?? '';
@@ -107,19 +114,27 @@ LocateMatch pickMatch(List<LocateMatch> matches, int? index, {required String qu
 /// `ValueKey` are all already resolvable without extra imports.
 const _fwLib = 'package:flutter/src/widgets/binding.dart';
 
+bool _exactlyOne(String? a, String? b, String? c) =>
+    [a, b, c].where((v) => v != null).length == 1;
+
 /// Build the on-device expression that walks the `Element` tree and returns
-/// every match as `x|y|width|height|widgetType` records joined by `;`.
+/// every match as `x|y|width|height|widgetType` records joined by `;` — plus a
+/// sixth `|`-delimited field holding the widget's `toString()` when [dump] is
+/// set (with `|`, `;` and newlines squashed to spaces so free text can't break
+/// the record framing).
 ///
 /// Built as an immediately-invoked closure — `evaluate` compiles a single
 /// expression, not a statement list, and a closure literal called on the spot
 /// is itself one expression. String concatenation (not interpolation) is used
 /// throughout the on-device body so nothing here collides with this
 /// function's own `${...}` host-side interpolation.
-String locateExpr({String? text, String? key}) {
-  assert((text == null) != (key == null), 'locateExpr: give exactly one of text/key');
+String locateExpr({String? text, String? key, String? type, bool dump = false}) {
+  assert(_exactlyOne(text, key, type), 'locateExpr: give exactly one of text/key/type');
   final matchCall = text != null
       ? '_emuMatchText(w, ${dartStringLiteral(text)})'
-      : '_emuMatchKey(w.key, ${dartStringLiteral(key!)})';
+      : key != null
+          ? '_emuMatchKey(w.key, ${dartStringLiteral(key)})'
+          : '_emuMatchType(w, ${dartStringLiteral(type!)})';
   return '(() {'
       'bool _emuMatchText(Widget w, String want) {'
       'final d = w as dynamic;'
@@ -134,6 +149,9 @@ String locateExpr({String? text, String? key}) {
       'bool _emuMatchKey(Key? k, String want) {'
       'return k is ValueKey && k.value.toString() == want;'
       '}'
+      'bool _emuMatchType(Widget w, String want) {'
+      'return w.runtimeType.toString() == want;'
+      '}'
       'final out = StringBuffer();'
       'void visit(Element e) {'
       'final w = e.widget;'
@@ -143,6 +161,10 @@ String locateExpr({String? text, String? key}) {
       'try {'
       'final c = ro.localToGlobal(ro.size.center(Offset.zero));'
       'final dpr = WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio;'
+      // Computed before any `out.write` for this match: if `w.toString()`
+      // throws, the catch below discards the whole record cleanly instead of
+      // leaving a partial write in `out` for a match that never completes.
+      '${dump ? _dumpVarSrc : ''}'
       'if (out.isNotEmpty) out.write(";");'
       'out.write((c.dx * dpr).toString());'
       'out.write("|");'
@@ -153,6 +175,7 @@ String locateExpr({String? text, String? key}) {
       'out.write(ro.size.height.toString());'
       'out.write("|");'
       'out.write(w.runtimeType.toString());'
+      '${dump ? _dumpFieldSrc : ''}'
       '} catch (_) {}'
       '}'
       '}'
@@ -164,7 +187,25 @@ String locateExpr({String? text, String? key}) {
       '})()';
 }
 
-/// Parse the `x|y|width|height|widgetType` records `locateExpr` returns.
+/// Evaluates `w.toString()` into a local var, under `--dump`, before any part
+/// of the match record is written — so a throwing `toString()` override is
+/// caught before `out` holds any partial data for this match (see
+/// `_dumpFieldSrc`, which writes this value). `toString()` is free text, so
+/// the record/field delimiters (and newlines, which would wreck the
+/// one-line-per-match rendering) are squashed to spaces on-device, before
+/// they can be mistaken for framing.
+const _dumpVarSrc = 'final dumpStr = w.toString()'
+    '.replaceAll("|", " ")'
+    '.replaceAll(";", " ")'
+    '.replaceAll("\\n", " ")'
+    '.replaceAll("\\r", " ");';
+
+/// The extra `|<dumpStr>` field appended per match under `--dump`, using the
+/// value `_dumpVarSrc` already computed and validated.
+const _dumpFieldSrc = 'out.write("|");'
+    'out.write(dumpStr);';
+
+/// Parse the `x|y|width|height|widgetType[|dump]` records `locateExpr` returns.
 /// Pure, unit-tested against malformed/empty input separately from any live
 /// VM Service connection.
 List<LocateMatch> parseLocateMatches(String raw) {
@@ -172,13 +213,13 @@ List<LocateMatch> parseLocateMatches(String raw) {
   final out = <LocateMatch>[];
   for (final rec in raw.split(';')) {
     final f = rec.split('|');
-    if (f.length != 5) continue;
+    if (f.length != 5 && f.length != 6) continue;
     final x = double.tryParse(f[0]);
     final y = double.tryParse(f[1]);
     final w = double.tryParse(f[2]);
     final h = double.tryParse(f[3]);
     if (x == null || y == null || w == null || h == null) continue;
-    out.add(LocateMatch(x.round(), y.round(), w, h, f[4]));
+    out.add(LocateMatch(x.round(), y.round(), w, h, f[4], f.length == 6 ? f[5] : null));
   }
   return out;
 }

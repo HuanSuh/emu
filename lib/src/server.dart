@@ -14,6 +14,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'device_manager.dart';
 import 'engine.dart';
+import 'eval.dart';
 import 'frame.dart';
 import 'input.dart';
 import 'locate.dart';
@@ -230,6 +231,10 @@ class EmuServer {
         return _firstFrame(req);
       case '/api/settle':
         return _settle(req);
+      case '/api/find':
+        return _find(req);
+      case '/api/eval':
+        return _eval(req);
       case '/api/probe':
         return _probe(req);
       case '/api/inspect':
@@ -321,6 +326,67 @@ class EmuServer {
       return _json({'ok': false, 'error': 'x and y are required integers'}, status: 400);
     }
     return _inject(() => runTap(uri, x, y), {'x': x, 'y': y});
+  }
+
+  /// `find` — the same on-device widget query `tap --text/--key` runs, but
+  /// reported instead of tapped (and with a `--type` mode on top).
+  Future<Response> _find(Request req) async {
+    final q = req.url.queryParameters;
+    final text = q['text'];
+    final key = q['key'];
+    final type = q['type'];
+    final given = [text, key, type].where((v) => v != null).length;
+    if (given != 1) {
+      return _json({'ok': false, 'error': 'give exactly one of text/key/type'}, status: 400);
+    }
+    final dump = q['dump'] == '1' || q['dump'] == 'true';
+    final index = int.tryParse(q['index'] ?? '');
+    final query = text != null
+        ? '--text "$text"'
+        : key != null
+            ? '--key "$key"'
+            : '--type "$type"';
+
+    Response? early;
+    final uri = _vmOr409((r) => early = r);
+    if (uri == null) return early!;
+
+    try {
+      final matches = await locate(uri, text: text, key: key, type: type, dump: dump);
+      // No `--index` means "report whatever matched", zero included — only an
+      // explicit index can be wrong (out of range), and that's the 422 below.
+      final result = index == null ? matches : [pickMatch(matches, index, query: query)];
+      return _json({'ok': true, 'matches': result.map((m) => m.toJson()).toList()});
+    } on LocateException catch (e) {
+      return _json({'ok': false, 'error': e.message}, status: 422);
+    } catch (e) {
+      return _json({'ok': false, 'error': '$e'}, status: 500);
+    }
+  }
+
+  /// `eval` — evaluate an expression in the app's root library scope, with no
+  /// breakpoint and no pause (unlike `probe`/`inspect`).
+  Future<Response> _eval(Request req) async {
+    Map<String, dynamic> body;
+    try {
+      body = jsonDecode(await req.readAsString()) as Map<String, dynamic>;
+    } catch (_) {
+      return _json({'ok': false, 'error': 'invalid request body'}, status: 400);
+    }
+    final expr = body['expr'] as String?;
+    if (expr == null || expr.trim().isEmpty) {
+      return _json({'ok': false, 'error': 'expr is required'}, status: 400);
+    }
+    Response? early;
+    final uri = _vmOr409((r) => early = r);
+    if (uri == null) return early!;
+    try {
+      return _json({'ok': true, 'result': await evalOnDevice(uri, expr)});
+    } on EvalException catch (e) {
+      return _json({'ok': false, 'error': e.message}, status: 422);
+    } catch (e) {
+      return _json({'ok': false, 'error': '$e'}, status: 500);
+    }
   }
 
   Future<Response> _swipe(Request req) async {

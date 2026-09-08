@@ -61,6 +61,10 @@ Future<int> runCli(List<String> argv) async {
         return await _logs(rest);
       case 'assert':
         return await _assert(rest);
+      case 'find':
+        return await _find(rest);
+      case 'eval':
+        return await _eval(rest);
       case 'probe':
         return await _probe(rest);
       case 'inspect':
@@ -956,6 +960,122 @@ Future<int> _assert(List<String> args) async {
 }
 
 // --------------------------------------------------------------------------
+// find / eval — query widgets and evaluate expressions without tapping/pausing
+// --------------------------------------------------------------------------
+
+/// `emu find --text|--key|--type <q>` — the same on-device query `tap --text`
+/// runs, but reporting the matches instead of tapping one. Use it to check
+/// what's on screen, to disambiguate before `tap --index`, or (with `--dump`)
+/// to read a widget's own `toString()`.
+Future<int> _find(List<String> args) async {
+  final parser = ArgParser()
+    ..addOption('text', help: 'match Semantics label / Text data / Tooltip message')
+    ..addOption('key', help: 'match ValueKey')
+    ..addOption('type', help: 'match widget runtime type name, e.g. ElevatedButton')
+    ..addOption('index', help: '0-based match to report when several match')
+    ..addFlag('dump', negatable: false, help: "also print each widget's toString()")
+    ..addFlag('json', negatable: false);
+  const usage = 'usage: emu find --text <label> | --key <key> | --type <Widget> '
+      '[--index <n>] [--dump]';
+  final ArgResults res;
+  try {
+    res = parser.parse(args);
+  } catch (e) {
+    stderr.writeln(usage);
+    return 2;
+  }
+  final text = res.option('text');
+  final key = res.option('key');
+  final type = res.option('type');
+  if ([text, key, type].where((v) => v != null).length != 1) {
+    stderr.writeln(usage);
+    return 2;
+  }
+  final indexStr = res.option('index');
+  final index = indexStr == null ? null : int.tryParse(indexStr);
+  if (indexStr != null && index == null) {
+    stderr.writeln('--index must be an integer');
+    return 2;
+  }
+
+  final q = StringBuffer(text != null
+      ? 'text=${Uri.encodeQueryComponent(text)}'
+      : key != null
+          ? 'key=${Uri.encodeQueryComponent(key)}'
+          : 'type=${Uri.encodeQueryComponent(type!)}');
+  if (index != null) q.write('&index=$index');
+  if (res.flag('dump')) q.write('&dump=1');
+
+  final info = _requireServer();
+  // POSTed like `/api/tap`'s label query (the server routes on path, not
+  // method) so a 422 — the out-of-range `--index` — still reaches us as JSON.
+  final r = await _post(info, '/api/find?$q');
+  if (r == null) {
+    stderr.writeln('✗ no response from server');
+    return 1;
+  }
+  if (r['error'] != null) {
+    stderr.writeln('✗ ${r['error']}');
+    return 1;
+  }
+  if (res.flag('json')) {
+    print(jsonEncode(r));
+    return 0;
+  }
+  final matches = (r['matches'] as List).cast<Map<String, dynamic>>();
+  if (matches.isEmpty) {
+    // Not an error: "nothing on screen matches" is a legitimate answer.
+    print('(no match)');
+    return 0;
+  }
+  for (var i = 0; i < matches.length; i++) {
+    final m = matches[i];
+    print('[$i] ${m['widgetType']}   ${m['x']},${m['y']}   '
+        '${m['width']}×${m['height']}');
+    if (m['dump'] != null) print('    ${m['dump']}');
+  }
+  return 0;
+}
+
+/// `emu eval <dart-expr>` — evaluate an expression against the running app now,
+/// in its root library's scope. No breakpoint, so unlike `probe`/`inspect` it
+/// needs no line to be reached — but it only sees library-scope names.
+Future<int> _eval(List<String> args) async {
+  final parser = ArgParser()..addFlag('json', negatable: false);
+  final ArgResults res;
+  try {
+    res = parser.parse(args);
+  } catch (e) {
+    stderr.writeln("usage: emu eval '<dart expression>'");
+    return 2;
+  }
+  // Normally the shell has already delivered a quoted expression as one arg;
+  // joining is just the fallback for an unquoted one.
+  final expr = res.rest.join(' ').trim();
+  if (expr.isEmpty) {
+    stderr.writeln("usage: emu eval '<dart expression>'   # e.g. emu eval 'Router.current'");
+    return 2;
+  }
+
+  final info = _requireServer();
+  final r = await _postJson(info, '/api/eval', jsonEncode({'expr': expr}));
+  if (r == null) {
+    stderr.writeln('✗ no response from server');
+    return 1;
+  }
+  if (r['error'] != null) {
+    stderr.writeln('✗ ${r['error']}');
+    return 1;
+  }
+  if (res.flag('json')) {
+    print(jsonEncode(r));
+    return 0;
+  }
+  print(r['result']);
+  return 0;
+}
+
+// --------------------------------------------------------------------------
 // probe — capture variable values at a file:line via the VM Service
 // --------------------------------------------------------------------------
 Future<int> _probe(List<String> args) async {
@@ -1693,6 +1813,13 @@ COMMANDS
      --deny <regex>        pattern that must NOT appear (repeatable)
      --since <seq>         seq cursor (default: now)
      --timeout <s>         wait window (default 5)
+  find --text <label> | --key <key> | --type <Widget>
+                         List the on-screen widgets matching a query, with
+                         their tap points — like `tap --text`, without tapping
+     --index <n>           report only this match (0-based)
+     --dump                also show each widget's toString()
+  eval <dart-expr>       Evaluate a Dart expression now, in the app's root
+                         library scope — no breakpoint needed (unlike probe)
   probe <file:line>      Capture variable values at a line (VM Service logpoint)
      -c, --capture <e,e>   expressions to evaluate when the line is hit
      --count <n>           stop after N hits (default 1)
