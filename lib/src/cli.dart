@@ -497,6 +497,27 @@ Future<int> _configs(List<String> args) async {
   return 0;
 }
 
+/// Parses [args] with [parser], handling the `--help`/bad-flag boilerplate
+/// shared by every ArgParser-backed subcommand. On success returns the parsed
+/// [ArgResults] with a null exit code. On `--help` (which [parser] must have
+/// registered as a `help` flag), prints [usage] to stdout and returns a null
+/// result with exit code 0. On a parse failure (`FormatException`), prints
+/// [usage] to stderr and returns a null result with exit code 2.
+(ArgResults?, int?) _parseOrUsage(ArgParser parser, List<String> args, String usage) {
+  final ArgResults res;
+  try {
+    res = parser.parse(args);
+  } on FormatException {
+    stderr.writeln(usage);
+    return (null, 2);
+  }
+  if (res.flag('help')) {
+    print(usage);
+    return (null, 0);
+  }
+  return (res, null);
+}
+
 // --------------------------------------------------------------------------
 // up
 // --------------------------------------------------------------------------
@@ -526,17 +547,8 @@ Future<int> _up(List<String> args) async {
       '                [--device-timeout <s>] [--device-connection <both|attached|wireless>]\n'
       '                [--dds-port <n>] [--no-dds] [--port <n>] [--timeout <s>] [--open]\n'
       '   Boot a device + start the app, launch the dashboard.';
-  final ArgResults res;
-  try {
-    res = parser.parse(args);
-  } on FormatException {
-    stderr.writeln(usage);
-    return 2;
-  }
-  if (res.flag('help')) {
-    print(usage);
-    return 0;
-  }
+  final (res, code) = _parseOrUsage(parser, args, usage);
+  if (res == null) return code!;
   final session = Session.require();
 
   // Resolve a named launch.json config (if any). Explicit flags override it.
@@ -896,17 +908,8 @@ Future<int> _assert(List<String> args) async {
   const usage = 'usage: emu assert [--expect <regex>]... [--deny <regex>]... [--since <seq>]\n'
       '                    [--timeout <s>]\n'
       '   Assert on the log stream (e2e/CI oracle); provide at least one --expect or --deny.';
-  final ArgResults res;
-  try {
-    res = parser.parse(args);
-  } on FormatException {
-    stderr.writeln(usage);
-    return 2;
-  }
-  if (res.flag('help')) {
-    print(usage);
-    return 0;
-  }
+  final (res, code) = _parseOrUsage(parser, args, usage);
+  if (res == null) return code!;
   final expect = res.multiOption('expect');
   final deny = res.multiOption('deny');
   if (expect.isEmpty && deny.isEmpty) {
@@ -963,17 +966,8 @@ Future<int> _probe(List<String> args) async {
     ..addFlag('json', negatable: false)
     ..addFlag('help', abbr: 'h', negatable: false);
   const usage = 'usage: emu probe <file:line> --capture "expr,expr" [--count <n>] [--timeout <s>]';
-  final ArgResults res;
-  try {
-    res = parser.parse(args);
-  } on FormatException {
-    stderr.writeln(usage);
-    return 2;
-  }
-  if (res.flag('help')) {
-    print(usage);
-    return 0;
-  }
+  final (res, code) = _parseOrUsage(parser, args, usage);
+  if (res == null) return code!;
   if (res.rest.isEmpty) {
     stderr.writeln(usage);
     return 2;
@@ -1039,17 +1033,8 @@ Future<int> _inspect(List<String> args) async {
     ..addFlag('json', negatable: false)
     ..addFlag('help', abbr: 'h', negatable: false);
   const usage = 'usage: emu inspect <file:line> [--timeout <s>]   # e.g. lib/main.dart:42';
-  final ArgResults res;
-  try {
-    res = parser.parse(args);
-  } on FormatException {
-    stderr.writeln(usage);
-    return 2;
-  }
-  if (res.flag('help')) {
-    print(usage);
-    return 0;
-  }
+  final (res, code) = _parseOrUsage(parser, args, usage);
+  if (res == null) return code!;
   if (res.rest.isEmpty) {
     stderr.writeln(usage);
     return 2;
@@ -1120,17 +1105,8 @@ Future<int> _logs(List<String> args) async {
   const usage = 'usage: emu logs [-g, --grep <regex>] [-l, --level <e|w|i>] [-n, --lines <N>]\n'
       '                  [-f, --follow] [--clear]\n'
       '   Show/search logs.';
-  final ArgResults res;
-  try {
-    res = parser.parse(args);
-  } on FormatException {
-    stderr.writeln(usage);
-    return 2;
-  }
-  if (res.flag('help')) {
-    print(usage);
-    return 0;
-  }
+  final (res, code) = _parseOrUsage(parser, args, usage);
+  if (res == null) return code!;
   final session = Session.require();
   final info = session.readServerInfo();
   final serverUp = info != null && await _ping(info);
@@ -1320,17 +1296,8 @@ Future<int> _tap(List<String> args) async {
   const usage = 'usage: emu tap <x> <y> [--no-settle]   # physical pixels, as seen in `emu shot`\n'
       '   or: emu tap --text <label> [--index <n>] [--no-settle]\n'
       '   or: emu tap --key <key> [--index <n>] [--no-settle]';
-  final ArgResults res;
-  try {
-    res = parser.parse(args);
-  } on FormatException {
-    stderr.writeln(usage);
-    return 2;
-  }
-  if (res.flag('help')) {
-    print(usage);
-    return 0;
-  }
+  final (res, parseExit) = _parseOrUsage(parser, args, usage);
+  if (res == null) return parseExit!;
   final json = res.flag('json');
   final settle = !res.flag('no-settle');
   final text = res.option('text');
@@ -1377,17 +1344,8 @@ Future<int> _swipe(List<String> args) async {
     ..addFlag('json', negatable: false)
     ..addFlag('help', abbr: 'h', negatable: false);
   const usage = 'usage: emu swipe <x1> <y1> <x2> <y2> [--duration <ms>]';
-  final ArgResults res;
-  try {
-    res = parser.parse(args);
-  } on FormatException {
-    stderr.writeln(usage);
-    return 2;
-  }
-  if (res.flag('help')) {
-    print(usage);
-    return 0;
-  }
+  final (res, code) = _parseOrUsage(parser, args, usage);
+  if (res == null) return code!;
   final pos = res.rest.map(int.tryParse).toList();
   if (pos.length != 4 || pos.any((v) => v == null)) {
     stderr.writeln(usage);
@@ -1425,17 +1383,8 @@ Future<int> _settleCmd(List<String> args) async {
     ..addFlag('help', abbr: 'h', negatable: false);
   const usage = 'usage: emu settle [--timeout <s>] [--quiet <ms>]\n'
       '   Wait for animations/rebuilds to stop.';
-  final ArgResults res;
-  try {
-    res = parser.parse(args);
-  } on FormatException {
-    stderr.writeln(usage);
-    return 2;
-  }
-  if (res.flag('help')) {
-    print(usage);
-    return 0;
-  }
+  final (res, code) = _parseOrUsage(parser, args, usage);
+  if (res == null) return code!;
   final timeoutMs = ((double.tryParse(res.option('timeout')!) ?? 10) * 1000).round();
   final quietMs = int.tryParse(res.option('quiet')!) ?? 150;
   final info = _requireServer();
