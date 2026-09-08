@@ -171,6 +171,8 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 | `emu swipe <x1> <y1> <x2> <y2>` | 스와이프/스크롤. `--duration <ms>`. Android·iOS |
 | `emu text <string> [--append]` | 포커스된 필드에 입력(유니코드 OK). Android·iOS |
 | `emu settle [--timeout <s>] [--quiet <ms>]` | 애니메이션/리빌드가 멈출 때까지 대기(예약된 프레임 없음 상태를 `--quiet` 동안 유지) — `tap`/`shot` 은 이미 기본으로 대기함 |
+| `emu errors [--since <seq>]` | 로그 스트림에서 파싱한 구조화된 예외 배너(라이브러리, 예외 타입, seq 범위) |
+| `emu memory --diff-across "<cmd>" [--all]` | 셸 커맨드 실행 전후의 힙 인스턴스 수 diff (VM Service `getAllocationProfile`) |
 
 `emu up` 옵션:
 
@@ -277,6 +279,35 @@ emu logs [opts]
 ```
 
 서버가 꺼져 있어도 `.emu/run.jsonl` 에서 오프라인으로 읽는다.
+
+### errors — 구조화된 예외 배너
+
+```bash
+emu errors [opts]
+  --since <seq>   이 seq 이후 배너만 (기본: 버퍼 전체)
+```
+
+Flutter는 잡히지 않은 예외를 콘솔에 `═══╡ ... ╞═══` 로 감싼 배너로 찍는다.
+`logs` 는 이미 배너의 각 줄을 개별 에러 로그로 표시하지만, 배너 전체를 하나의
+레코드로 묶지는 않는다. `errors` 는 이미 캡처된 로그 버퍼를 파싱해서(VM Service
+새 연결 없음) 배너별로 잡은 라이브러리, 예외 타입, seq 범위, 원문 전체를 담은
+구조화된 레코드로 묶어 준다.
+
+```bash
+emu errors
+# ✗ NullCheckError (EXCEPTION CAUGHT BY WIDGETS LIBRARY)  seq 41..58
+```
+
+배너 형식이 예상과 다르면 라이브러리/예외 타입은 `null` 로 남지만 원문은 항상
+보존된다 — 파싱 실패가 조용히 에러를 삼키지 않는다.
+
+`errors` 실행 시점에 아직 출력 중인 배너는 `closed: false`(잠정치 —
+`endSeq`/`raw` 가 아직 최종이 아님, `(still printing — re-poll)` 로 표시)로
+보고된다. 이때 다음 폴링 커서는 로그 스토어의 실제 마지막 seq가 아니라 그
+배너의 `startSeq`가 되어, 배너가 실제로 닫힐 때까지 `--since <cursor>` 가
+그 배너의 여는 줄을 계속 재스캔한다 — 그렇지 않으면 폴링 시점에 마침 출력
+중이던 배너가 한 번 잘린 채로만 보고되고 이후 모든 `--since` 호출에서
+영구히 제외되어 버린다.
 
 ### assert — 로그 단언 (e2e/CI 오라클)
 
@@ -511,6 +542,31 @@ emu inspect lib/main.dart:34
 - 비-primitive는 `<ClassName>` 로 표시된다 — 더 깊이 보려면 그 필드를 `probe` 로 평가한다.
 - 대화형 `break`/`step`/`continue` 는 **의도적으로 없다**: 앱을 명령 간 멈춰두면 로그·probe가
   멎고 emu의 단발성 모델과 충돌한다. `inspect` 는 스냅샷만 찍고 즉시 resume한다.
+
+### memory --diff-across — 힙 인스턴스 수 diff
+
+```bash
+emu memory --diff-across "<셸 커맨드>" [opts]
+  --diff-across <cmd>  before/after 스냅샷 사이에 실행할 셸 커맨드
+  --all                앱 패키지뿐 아니라 프레임워크 클래스도 포함
+```
+
+힙 스냅샷을 뜨고(VM Service `getAllocationProfile(..., gc: true)` — 스냅샷
+직전에 VM이 GC를 수행하므로 살아있는 인스턴스만 집계됨), 셸 커맨드를 실행한
+뒤(예: 다른 `emu` 호출로 탭/네비게이션 왕복, 또는 실행 중인 앱에 닿는 그 무엇이든),
+두 번째 스냅샷을 떠서 클래스별 인스턴스 수 증감을 보고한다. 기본적으로
+`pubspec.yaml`에서 읽은 앱 자신의 패키지 클래스만 보여주고, `--all` 을 주면
+프레임워크/SDK 클래스까지 포함한다.
+
+```bash
+emu memory --diff-across "emu tap --text '상세보기' && emu tap --text '뒤로가기'"
+# CartPageState  +1
+# CartItem       -12
+# (no change)     ← 아무것도 새지 않았을 때
+```
+
+원래 상태로 돌아와야 할 왕복을 반복했는데 계속 늘어나는 클래스가 있다면 그게
+이 커맨드가 잡으려는 누수 신호다.
 
 ## 웹 대시보드
 

@@ -179,6 +179,8 @@ What this loop gives an agent:
 | `emu swipe <x1> <y1> <x2> <y2>` | Swipe/scroll. `--duration <ms>`. Android & iOS |
 | `emu text <string> [--append]` | Type into the focused field (unicode OK). Android & iOS |
 | `emu settle [--timeout <s>] [--quiet <ms>]` | Wait for animations/rebuilds to stop (no scheduled frame, `--quiet` window held stable) — `tap`/`shot` already do this by default |
+| `emu errors [--since <seq>]` | Structured exception banners parsed from the log stream (library, exception type, seq range) |
+| `emu memory --diff-across "<cmd>" [--all]` | Heap instance-count diff around a shell command (VM Service `getAllocationProfile`) |
 
 `emu up` options:
 
@@ -293,6 +295,37 @@ emu logs [opts]
 ```
 
 Reads offline from `.emu/run.jsonl` even when the server is down.
+
+### errors — structured exception banners
+
+```bash
+emu errors [opts]
+  --since <seq>   only banners after this seq (default: everything buffered)
+```
+
+Flutter prints uncaught exceptions to the console as a banner bracketed by
+`═══╡ ... ╞═══`; `logs` already flags every line of it as an error line
+individually, but doesn't group the banner into one record. `errors` parses the
+already-captured log buffer (no new VM Service connection) and groups each
+banner into a structured record: the library it was caught by, the exception's
+runtime type, the seq range it spans, and the full original text.
+
+```bash
+emu errors
+# ✗ NullCheckError (EXCEPTION CAUGHT BY WIDGETS LIBRARY)  seq 41..58
+```
+
+If a banner doesn't match the expected shape, the library/exception type come
+back `null` but the raw text is always preserved — a parsing miss never
+silently drops the error.
+
+A banner still being printed when `errors` runs is reported with `closed:
+false` (best-effort, `endSeq`/`raw` not yet final — shown as `(still
+printing — re-poll)`). Its `startSeq` also becomes the next poll's cursor
+instead of the log store's true last seq, so `--since <cursor>` still
+re-scans that banner's opening line until it actually closes — otherwise a
+banner that's mid-print exactly when you poll would be reported once,
+truncated, and then permanently excluded from every later `--since` call.
 
 ### assert — log assertion (e2e/CI oracle)
 
@@ -554,6 +587,32 @@ emu inspect lib/main.dart:34
 - Interactive `break`/`step`/`continue` is **intentionally absent**: holding the
   app paused between commands would freeze logs and `probe` and conflict with emu's
   one-shot model. `inspect` just takes a snapshot and resumes immediately.
+
+### memory --diff-across — heap instance-count diff
+
+```bash
+emu memory --diff-across "<shell command>" [opts]
+  --diff-across <cmd>  shell command to run between the before/after snapshots
+  --all                include framework classes, not just the app package
+```
+
+Takes a heap snapshot (VM Service `getAllocationProfile(..., gc: true)` — the VM
+garbage-collects right before sampling, so counts reflect genuinely-live
+objects), runs your shell command (e.g. a `tap`/navigation round-trip via
+another `emu` call, or anything else that reaches the running app), takes a
+second snapshot, then reports the per-class instance-count delta. By default
+only classes from the app's own package (read from `pubspec.yaml`) are shown;
+pass `--all` to include framework/SDK classes too.
+
+```bash
+emu memory --diff-across "emu tap --text '상세보기' && emu tap --text '뒤로가기'"
+# CartPageState  +1
+# CartItem       -12
+# (no change)     ← when nothing leaked
+```
+
+A class that grows across repeated round-trips of something that should return
+to its starting state is the leak signal this is built to catch.
 
 ## Web dashboard
 

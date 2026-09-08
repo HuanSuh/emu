@@ -14,11 +14,13 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'device_manager.dart';
 import 'engine.dart';
+import 'error_parser.dart';
 import 'eval.dart';
 import 'frame.dart';
 import 'input.dart';
 import 'locate.dart';
 import 'log_store.dart';
+import 'memory_diff.dart' as mem;
 import 'models.dart';
 import 'probe.dart';
 import 'session.dart';
@@ -219,6 +221,22 @@ class EmuServer {
       case '/api/logs/clear':
         logStore.clear();
         return _json({'ok': true});
+      case '/api/errors':
+        final q = req.url.queryParameters;
+        final sinceSeq = int.tryParse(q['since'] ?? '');
+        final entries = logStore.query(sinceSeq: sinceSeq);
+        final errors = parseErrorBanners(entries);
+        // A banner still printing when this scan ran is reported unclosed
+        // (best-effort). The next `--since` cursor must stop just before its
+        // opening line — advancing past it (e.g. to logStore.lastSeq) would
+        // permanently exclude that opening line from every future scan, so
+        // the banner's real closing line (once it arrives) could never be
+        // matched back up with it.
+        final openBanner = errors.isNotEmpty && !errors.last.closed ? errors.last : null;
+        final cursor = openBanner != null ? openBanner.startSeq - 1 : logStore.lastSeq;
+        return _json({'errors': errors.map((e) => e.toJson()).toList(), 'lastSeq': cursor});
+      case '/api/memory/snapshot':
+        return _memorySnapshot(req);
       case '/api/screenshot':
         return _screenshot(req);
       case '/api/tap':
@@ -540,6 +558,36 @@ class EmuServer {
       return _json({'hit': true, ...r.toJson()});
     } on ProbeException catch (e) {
       return _json({'error': e.message}, status: 422);
+    } catch (e) {
+      return _json({'error': '$e'}, status: 500);
+    }
+  }
+
+  /// Heap instance-count snapshot for `emu memory --diff-across` — the CLI
+  /// hits this once before and once after running the user's command and
+  /// diffs the two results itself, so the server stays a stateless snapshot
+  /// source (same shape as `assert`'s "read logs, compare client-side").
+  Future<Response> _memorySnapshot(Request req) async {
+    final uri = engine.status.vmServiceUri;
+    if (uri == null) {
+      return _json({'error': 'app is not running (no VM service)'}, status: 409);
+    }
+    try {
+      final snapshot = await mem.takeHeapSnapshot(uri);
+      final all = req.url.queryParameters['all'] == '1';
+      if (all) return _json({'snapshot': snapshot});
+      final pubspec = File('${session.projectRoot.path}/pubspec.yaml');
+      final pkg = mem.appPackageName(pubspec.existsSync() ? pubspec.readAsStringSync() : '');
+      if (pkg == null) {
+        // Falling back to the unfiltered snapshot here would silently violate
+        // the documented default (app-package-only) — surface it instead.
+        return _json({
+          'error': "could not determine the app's package name from pubspec.yaml "
+              '(missing/unreadable, or no `name:` field) — pass --all to see the '
+              'unfiltered snapshot',
+        }, status: 422);
+      }
+      return _json({'snapshot': mem.filterToAppPackage(snapshot, pkg)});
     } catch (e) {
       return _json({'error': '$e'}, status: 500);
     }
