@@ -100,6 +100,53 @@ void main() {
     });
   });
 
+  group('urls nested under a query parameter', () {
+    // The common shape for webview deeplinks: the target url is percent-encoded
+    // and carried in a query parameter of the outer deeplink.
+    String androidArg(String url) => buildOpenUrlCommand(
+      platform: 'android',
+      deviceId: null,
+      url: url,
+    ).arguments.last;
+
+    test('a fully percent-encoded nested url survives verbatim', () {
+      const url =
+          'szsapp://web?url=https%3A%2F%2Fapp.3o3.co.kr%2Fmypage%2Fnotification';
+      expect(androidArg(url), "'$url'");
+    });
+
+    test('percent-encoded inner query (%3F %3D %26) is not touched', () {
+      const url =
+          'szsapp://web?url=https%3A%2F%2Fx.co%2Fp%3Fa%3D1%26b%3D2&nav_mode=push';
+      expect(androidArg(url), "'$url'");
+    });
+
+    test('%25, +, ~ and a # fragment survive', () {
+      const url = 'szsapp://web?url=https%3A%2F%2Fx.co%2F100%2525%2Bq~r%23frag';
+      expect(androidArg(url), "'$url'");
+    });
+
+    test('an unencoded nested url reaches the device intact as a string', () {
+      // The shell no longer splits it. Whether the *app* reads it as one
+      // parameter is a URI-encoding question, not a shell one: Uri.parse ends
+      // the `url` value at the raw `&`, so callers still have to encode. This
+      // command must not silently repair that — it passes bytes through.
+      const url = 'szsapp://web?url=https://x.co/p?a=1&b=2';
+      expect(androidArg(url), "'$url'");
+      expect(Uri.parse(url).queryParameters['url'], 'https://x.co/p?a=1');
+    });
+
+    test('ios leaves a nested encoded url unquoted', () {
+      const url = 'szsapp://web?url=https%3A%2F%2Fx.co%2Fp%3Fa%3D1%26b%3D2';
+      final cmd = buildOpenUrlCommand(
+        platform: 'ios',
+        deviceId: null,
+        url: url,
+      );
+      expect(cmd.arguments.last, url);
+    });
+  });
+
   group('quoteForDeviceShell', () {
     test('wraps a plain value in single quotes', () {
       expect(quoteForDeviceShell('abc'), "'abc'");
