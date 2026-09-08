@@ -170,6 +170,7 @@ What this loop gives an agent:
 | `emu stop` | Stop only the app (server stays up) |
 | `emu status` | Session/device/app status + VM Service URI |
 | `emu open` | Open the dashboard in a browser |
+| `emu open-url <url> [--no-settle]` | Send a deep link to the connected device (`adb shell am start` / `xcrun simctl openurl`, argv-only — no shell escaping to get wrong). Waits for the resulting navigation to finish before returning by default |
 | `emu shot [path] [--no-settle]` | Save a screenshot (default `.emu/`). Relative paths resolve to the project root. Waits for animations/rebuilds to stop first by default |
 | `emu tap <x> <y> [--no-settle]` | Tap a coordinate (physical pixels — same space as `shot`). Android & iOS. Waits for the resulting transition to finish before returning by default |
 | `emu swipe <x1> <y1> <x2> <y2>` | Swipe/scroll. `--duration <ms>`. Android & iOS |
@@ -367,6 +368,20 @@ emu text " more" --append                          # append after the current va
   webview text fields (fine, since emu is for driving Flutter apps).
 - **It does not assert on UI**: emu only injects input; judgment is done by
   `assert` (logs) / `probe` (variables).
+
+### open-url — send a deep link
+
+```bash
+emu open-url "myapp://checkout?id=42&ref=promo"
+```
+
+Dispatches the URL to the currently connected device — `adb shell am start -a
+android.intent.action.VIEW -d <url>` on Android, `xcrun simctl openurl <udid>
+<url>` on iOS — chosen automatically from the device attached to the running
+session. The url is always passed as a single argv entry, never assembled
+into a shell string, so `&`/`;`/etc. in a query string need no escaping.
+Waits for the resulting navigation to settle by default (skip with
+`--no-settle`), same as `tap`/`shot`.
 
 ### settle — wait out animations/rebuilds before capturing
 

@@ -162,6 +162,7 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 | `emu stop` | 앱만 정지(서버는 유지) |
 | `emu status` | 세션/기기/앱 상태 + VM Service URI |
 | `emu open` | 대시보드를 브라우저로 열기 |
+| `emu open-url <url> [--no-settle]` | 연결된 기기로 딥링크 전송(`adb shell am start` / `xcrun simctl openurl`, 쉘 이스케이프 없는 argv 전달). 기본적으로 전환이 끝나길 기다렸다가 반환 |
 | `emu shot [path] [--no-settle]` | 스크린샷 저장(기본 `.emu/`). 상대 경로는 프로젝트 루트 기준. 기본적으로 먼저 애니메이션/리빌드가 멈추길 기다림 |
 | `emu tap <x> <y> [--no-settle]` | 좌표 탭 (물리 픽셀 — `shot`과 같은 좌표계). Android·iOS. 기본적으로 탭이 유발한 전환이 끝날 때까지 기다렸다가 반환 |
 | `emu swipe <x1> <y1> <x2> <y2>` | 스와이프/스크롤. `--duration <ms>`. Android·iOS |
@@ -341,6 +342,19 @@ emu text " 추가" --append                          # 현재 값 뒤에 이어�
 - **Flutter 위젯 전용**: 입력이 프레임워크 레벨이라 네이티브 뷰/웹뷰의 텍스트 필드엔 안 먹는다
   (emu는 Flutter 앱 구동이 목적이라 무방).
 - **UI 단언은 하지 않는다**: emu는 입력만 넣고, 판정은 `assert`(로그)/`probe`(변수)가 한다.
+
+### open-url — 딥링크 전송
+
+```bash
+emu open-url "myapp://checkout?id=42&ref=promo"
+```
+
+현재 연결된 기기로 URL을 전달한다 — Android는 `adb shell am start -a
+android.intent.action.VIEW -d <url>`, iOS는 `xcrun simctl openurl <udid>
+<url>` — 실행 중인 세션에 붙은 기기를 보고 자동으로 분기한다. url은 항상
+단일 argv 항목으로 넘어가며 쉘 문자열로 조합되지 않으므로, 쿼리스트링의
+`&`/`;` 등을 이스케이프할 필요가 없다. `tap`/`shot` 과 같이 기본적으로
+전환이 settle될 때까지 기다렸다가 반환한다(`--no-settle` 로 건너뛸 수 있음).
 
 ### settle — 캡처 전에 애니메이션/리빌드가 끝나길 기다리기
 
