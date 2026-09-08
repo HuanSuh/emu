@@ -115,5 +115,39 @@ void main() {
       expect(result, hasLength(1));
       expect(result.single.exceptionType, 'FooError');
     });
+
+    test('matches banners through an Android logcat tag on every line', () {
+      // Android's daemon app.log forwards adb logcat, which tags every
+      // physical line — including every line of the banner — with
+      // `<level>/<tag>( pid): `.
+      final entries = _entries([
+        'I/flutter ( 1234): ═══╡ EXCEPTION CAUGHT BY WIDGETS LIBRARY ╞════════════',
+        'I/flutter ( 1234): The following NullCheckError was thrown building X:',
+        'I/flutter ( 1234): detail',
+        'I/flutter ( 1234): ════════════════════════════════════════════════════',
+      ]);
+      final result = parseErrorBanners(entries);
+      expect(result, hasLength(1));
+      expect(result.single.library, 'EXCEPTION CAUGHT BY WIDGETS LIBRARY');
+      expect(result.single.exceptionType, 'NullCheckError');
+      expect(result.single.closed, isTrue);
+    });
+
+    test('a second opening line before the first closes splits into two records', () {
+      final entries = _entries([
+        '═══╡ EXCEPTION CAUGHT BY WIDGETS LIBRARY ╞════════════════════',
+        'The following StateError was thrown building A:',
+        '═══╡ EXCEPTION CAUGHT BY GESTURE ╞════════════════════',
+        'The following RangeError was thrown handling a gesture:',
+        '════════════════════════════════════════════════════════════════',
+      ]);
+      final result = parseErrorBanners(entries);
+      expect(result, hasLength(2));
+      // First banner never actually closed — its true end was never seen.
+      expect(result[0].exceptionType, 'StateError');
+      expect(result[0].closed, isFalse);
+      expect(result[1].exceptionType, 'RangeError');
+      expect(result[1].closed, isTrue);
+    });
   });
 }
