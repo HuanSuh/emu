@@ -1,0 +1,113 @@
+/// Groups Flutter's exception console banners into structured records.
+///
+/// Flutter prints uncaught exceptions as a banner bracketed by `═══╡ ... ╞═══`
+/// (opening, with the library name inside) and a closing line of bare `═`.
+/// [LogStore]/`inferLevel` already flags every line of that banner as an error
+/// line individually; this groups the lines back into one record per banner,
+/// working purely off already-captured [LogEntry]s (no VM Service, no new
+/// storage) so it's trivially unit-testable.
+library;
+
+import 'models.dart';
+
+/// The opening banner line, e.g.
+/// `═══╡ EXCEPTION CAUGHT BY WIDGETS LIBRARY ╞════════════════════`.
+final _openBanner = RegExp(r'^═+╡(.*)╞═+$');
+
+/// A closing banner line: nothing but `═`.
+final _closeBanner = RegExp(r'^═{10,}$');
+
+/// The line right after the banner opens, e.g.
+/// `The following NullCheckError was thrown building MyWidget(...):`.
+final _thrownBy = RegExp(r'^The following (\S+) was thrown\b');
+
+/// One exception banner, grouped from the raw log lines between an opening
+/// and closing banner line (inclusive of both).
+class StructuredError {
+  StructuredError({
+    required this.startSeq,
+    required this.endSeq,
+    required this.library,
+    required this.exceptionType,
+    required this.raw,
+  });
+
+  /// Seq of the opening banner line.
+  final int startSeq;
+
+  /// Seq of the closing banner line (or the last captured line, if the
+  /// banner never closes before the log entries run out).
+  final int endSeq;
+
+  /// Text inside `╡ ... ╞` on the opening line, e.g. "EXCEPTION CAUGHT BY
+  /// WIDGETS LIBRARY". Null when the opening line didn't match the expected
+  /// shape (the raw text is preserved regardless).
+  final String? library;
+
+  /// The exception's runtime type, e.g. "NullCheckError". Null when the line
+  /// following the banner didn't match "The following X was thrown ...".
+  final String? exceptionType;
+
+  /// The full original text of every line in the banner, newline-joined.
+  final String raw;
+
+  Map<String, dynamic> toJson() => {
+        'startSeq': startSeq,
+        'endSeq': endSeq,
+        'library': library,
+        'exceptionType': exceptionType,
+        'raw': raw,
+      };
+}
+
+/// Scan [entries] in seq order and group each exception banner (an opening
+/// `═══╡ ... ╞═══` line through the next all-`═` closing line) into one
+/// [StructuredError]. Lines outside any banner are ignored — this only
+/// extracts the structured records, it doesn't replace `logs`.
+///
+/// A banner that never closes (log buffer truncated / capture ended mid-
+/// banner) is still returned, closed at the last available entry — a partial
+/// record beats silently dropping it.
+List<StructuredError> parseErrorBanners(List<LogEntry> entries) {
+  final sorted = entries.toList()..sort((a, b) => a.seq.compareTo(b.seq));
+  final out = <StructuredError>[];
+
+  int? openIndex;
+  for (var i = 0; i < sorted.length; i++) {
+    final text = sorted[i].text;
+    if (openIndex == null) {
+      if (_openBanner.hasMatch(text.trim())) openIndex = i;
+      continue;
+    }
+    if (_closeBanner.hasMatch(text.trim())) {
+      out.add(_buildRecord(sorted, openIndex, i));
+      openIndex = null;
+    }
+  }
+  // Unterminated banner: close it at the last entry we have rather than drop it.
+  if (openIndex != null) {
+    out.add(_buildRecord(sorted, openIndex, sorted.length - 1));
+  }
+  return out;
+}
+
+StructuredError _buildRecord(List<LogEntry> sorted, int openIndex, int closeIndex) {
+  final open = sorted[openIndex];
+  final bannerMatch = _openBanner.firstMatch(open.text.trim());
+  final library = bannerMatch?.group(1)?.trim();
+
+  String? exceptionType;
+  if (openIndex + 1 <= closeIndex) {
+    final thrownMatch = _thrownBy.firstMatch(sorted[openIndex + 1].text.trim());
+    exceptionType = thrownMatch?.group(1);
+  }
+
+  final raw = sorted.sublist(openIndex, closeIndex + 1).map((e) => e.text).join('\n');
+  return StructuredError(
+    startSeq: open.seq,
+    endSeq: sorted[closeIndex].seq,
+    library: (library == null || library.isEmpty) ? null : library,
+    exceptionType: exceptionType,
+    raw: raw,
+  );
+}
