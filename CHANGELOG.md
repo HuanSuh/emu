@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-08
+
+### Added
+- `emu.yaml`/`emu.local.yaml`에 `profiles:` — 이름 붙은 설정 프리셋을
+  `.vscode/launch.json` 없이도 정의(`emu up --profile <name>`,
+  `emu config --profile <name>`으로 미리보기, `emu configs`에 목록 추가).
+  같은 이름의 profile이 양쪽 파일에 있으면 `emu.local.yaml`이 필드 단위로
+  이긴다. `--config`(launch.json)와는 상호 배타.
+
 ## [0.5.0] - 2026-09-08
 
 ### Added
@@ -111,7 +120,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/HuanSuh/emu/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/HuanSuh/emu/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/HuanSuh/emu/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/HuanSuh/emu/compare/v0.2.0...v0.3.0

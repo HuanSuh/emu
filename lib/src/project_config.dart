@@ -90,22 +90,61 @@ Map<String, dynamic> mergeConfigMaps(List<Map<String, dynamic>> layers) {
 /// Load and merge the three file layers for [projectRoot]. Missing or malformed
 /// files are skipped (a broken config should not brick `up`); [onWarn] is called
 /// with a human-readable note for each file that failed to parse.
+///
+/// If [profile] is given, each file's `profiles.<name>` sub-map (if present) is
+/// layered on top of that file's own top-level defaults — so a profile only
+/// needs to specify what differs from the plain defaults, on either file. The
+/// two files' profile entries are themselves layered `emu.yaml` then
+/// `emu.local.yaml`, so a machine can override a single field of a shared,
+/// committed profile (e.g. which device `staging` boots) without redefining
+/// the whole thing. Selecting a profile is purely additive: a project with no
+/// `profiles:` anywhere, or a `profile` of `null`, behaves exactly as before.
 EmuConfig loadProjectConfig(
   String projectRoot, {
   String? home,
+  String? profile,
   void Function(String warning)? onWarn,
 }) {
   final homeDir = home ?? Platform.environment['HOME'] ?? '';
-  final layers = <Map<String, dynamic>>[];
-  for (final path in [
-    if (homeDir.isNotEmpty) '$homeDir/.emu/config.yaml',
-    '$projectRoot/emu.yaml',
-    '$projectRoot/emu.local.yaml',
-  ]) {
-    final m = _readYamlMap(path, onWarn);
-    if (m != null) layers.add(m);
+  final yamlMap = _readYamlMap('$projectRoot/emu.yaml', onWarn);
+  final localMap = _readYamlMap('$projectRoot/emu.local.yaml', onWarn);
+
+  final layers = <Map<String, dynamic>?>[
+    if (homeDir.isNotEmpty) _readYamlMap('$homeDir/.emu/config.yaml', onWarn),
+    yamlMap,
+    localMap,
+  ].whereType<Map<String, dynamic>>().toList();
+
+  if (profile != null) {
+    for (final p in [_profileMap(yamlMap, profile), _profileMap(localMap, profile)]) {
+      if (p != null) layers.add(p);
+    }
   }
   return EmuConfig.fromMap(mergeConfigMaps(layers));
+}
+
+/// The `profiles.<name>` sub-map of [fileMap] (already-parsed `emu.yaml` or
+/// `emu.local.yaml` contents), or null if that file has no `profiles:` section
+/// or no entry named [name].
+Map<String, dynamic>? _profileMap(Map<String, dynamic>? fileMap, String name) {
+  final profiles = fileMap?['profiles'];
+  if (profiles is! Map) return null;
+  final p = profiles[name];
+  if (p is! Map) return null;
+  return p.map((k, v) => MapEntry('$k', v));
+}
+
+/// Every profile name defined under `profiles:` in `emu.yaml` and/or
+/// `emu.local.yaml` for [projectRoot], for validating `--profile <name>` and
+/// for `emu configs`/`emu config` to list what's available. Parse failures are
+/// swallowed here (the caller's own [loadProjectConfig] call surfaces them).
+Set<String> listProfileNames(String projectRoot) {
+  final names = <String>{};
+  for (final path in ['$projectRoot/emu.yaml', '$projectRoot/emu.local.yaml']) {
+    final profiles = _readYamlMap(path, null)?['profiles'];
+    if (profiles is Map) names.addAll(profiles.keys.map((k) => '$k'));
+  }
+  return names;
 }
 
 /// If `<root>/emu.local.yaml` exists, make sure the project `.gitignore` ignores

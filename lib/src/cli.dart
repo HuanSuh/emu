@@ -412,14 +412,32 @@ Future<int> _devices(List<String> args) async {
 // config (show resolved layered project config + learned memory)
 // --------------------------------------------------------------------------
 Future<int> _config(List<String> args) async {
-  final json = args.contains('--json');
+  final parser = ArgParser()
+    ..addOption('profile', help: 'preview a named profile from emu.yaml/emu.local.yaml')
+    ..addFlag('json', negatable: false)
+    ..addFlag('help', abbr: 'h', negatable: false);
+  const usage = 'usage: emu config [--profile <name>] [--json]';
+  final (res, code) = _parseOrUsage(parser, args, usage);
+  if (res == null) return code!;
+  final json = res.flag('json');
   final session = Session.require();
+
+  final wantedProfile = res.option('profile');
+  final names = listProfileNames(session.projectRoot.path);
+  if (wantedProfile != null && !names.contains(wantedProfile)) {
+    stderr.writeln('✗ profile "$wantedProfile" not found in emu.yaml/emu.local.yaml');
+    if (names.isNotEmpty) stderr.writeln('  available: ${names.map((n) => '"$n"').join(', ')}');
+    return 1;
+  }
+
   final warnings = <String>[];
-  final pc = loadProjectConfig(session.projectRoot.path, onWarn: warnings.add);
+  final pc = loadProjectConfig(session.projectRoot.path,
+      profile: wantedProfile, onWarn: warnings.add);
   final mem = ProjectMemory.load(session.stateDir);
 
   if (json) {
     print(jsonEncode({
+      'profile': wantedProfile,
       'config': {
         'device': pc.deviceId,
         'flavor': pc.flavor,
@@ -430,13 +448,15 @@ Future<int> _config(List<String> args) async {
         'port': pc.port,
         'platform': pc.platform,
       },
+      'availableProfiles': names.toList()..sort(),
       'memory': mem.toJson(),
       'warnings': warnings,
     }));
     return 0;
   }
 
-  print('Resolved config for ${session.projectRoot.path}');
+  print('Resolved config for ${session.projectRoot.path}'
+      '${wantedProfile != null ? ' (profile: $wantedProfile)' : ''}');
   void row(String k, Object? v) {
     if (v != null && !(v is List && v.isEmpty)) print('  $k: $v');
   }
@@ -462,6 +482,10 @@ Future<int> _config(List<String> args) async {
     print('Learned memory (.emu/memory.json):');
     m.forEach((k, v) => print('  $k: $v'));
   }
+  if (wantedProfile == null && names.isNotEmpty) {
+    print('Profiles available (not applied — pass --profile <name> to preview one):'
+        ' ${(names.toList()..sort()).join(', ')}');
+  }
   for (final w in warnings) {
     stderr.writeln('! $w');
   }
@@ -469,40 +493,58 @@ Future<int> _config(List<String> args) async {
 }
 
 // --------------------------------------------------------------------------
-// configs (read .vscode/launch.json)
+// configs (read .vscode/launch.json + emu.yaml/emu.local.yaml profiles)
 // --------------------------------------------------------------------------
 Future<int> _configs(List<String> args) async {
   final json = args.contains('--json');
   final session = Session.require();
   final configs = readLaunchConfigs(session.projectRoot.path);
+  final profileNames = listProfileNames(session.projectRoot.path).toList()..sort();
   if (json) {
-    print(jsonEncode({'configs': configs.map((c) => c.toJson()).toList()}));
+    print(jsonEncode({
+      'configs': configs.map((c) => c.toJson()).toList(),
+      'profiles': profileNames,
+    }));
+    return 0;
+  }
+  if (configs.isEmpty && profileNames.isEmpty) {
+    print('(no configs — .vscode/launch.json not found or has no dart entries, '
+        'and no profiles in emu.yaml/emu.local.yaml)');
     return 0;
   }
   if (configs.isEmpty) {
-    print('(no configs — .vscode/launch.json not found or has no dart entries)');
-    return 0;
-  }
-  print('Launch configs (.vscode/launch.json):');
-  for (final c in configs) {
-    final parts = <String>[
-      if (c.flavor != null) 'flavor=${c.flavor}',
-      if (c.target != null) 'target=${c.target}',
-      if (c.deviceId != null) 'device=${c.deviceId}',
-      for (final d in c.dartDefines) 'define=$d',
-      for (final f in c.dartDefineFromFile) 'define-from-file=$f',
-    ];
-    final suffix = parts.isEmpty ? '' : '  (${parts.join(', ')})';
-    if (c.isDebug) {
-      print('  • ${c.name}$suffix');
-    } else {
-      print('  ⚠ ${c.name}  [${c.mode}] — debug-only, not runnable by emu$suffix');
+    print('(no launch configs — .vscode/launch.json not found or has no dart entries)');
+  } else {
+    print('Launch configs (.vscode/launch.json):');
+    for (final c in configs) {
+      final parts = <String>[
+        if (c.flavor != null) 'flavor=${c.flavor}',
+        if (c.target != null) 'target=${c.target}',
+        if (c.deviceId != null) 'device=${c.deviceId}',
+        for (final d in c.dartDefines) 'define=$d',
+        for (final f in c.dartDefineFromFile) 'define-from-file=$f',
+      ];
+      final suffix = parts.isEmpty ? '' : '  (${parts.join(', ')})';
+      if (c.isDebug) {
+        print('  • ${c.name}$suffix');
+      } else {
+        print('  ⚠ ${c.name}  [${c.mode}] — debug-only, not runnable by emu$suffix');
+      }
+      if (c.unsupported.isNotEmpty) {
+        print('      note: ${c.unsupported.join(', ')} not replayed by emu');
+      }
     }
-    if (c.unsupported.isNotEmpty) {
-      print('      note: ${c.unsupported.join(', ')} not replayed by emu');
+  }
+  if (profileNames.isNotEmpty) {
+    if (configs.isNotEmpty) print('');
+    print('Profiles (emu.yaml / emu.local.yaml):');
+    for (final n in profileNames) {
+      print('  • $n');
     }
   }
-  print('\nRun one with:  emu up --config "<name>" [--android|--ios]');
+  print('');
+  if (configs.isNotEmpty) print('Run a launch config with:  emu up --config "<name>" [--android|--ios]');
+  if (profileNames.isNotEmpty) print('Run a profile with:        emu up --profile "<name>"');
   return 0;
 }
 
@@ -536,6 +578,7 @@ Future<int> _up(List<String> args) async {
     ..addFlag('ios', negatable: false)
     ..addOption('device', abbr: 'd')
     ..addOption('config', help: 'named config from .vscode/launch.json')
+    ..addOption('profile', help: 'named profile from emu.yaml/emu.local.yaml')
     ..addOption('flavor')
     ..addOption('target', abbr: 't')
     ..addMultiOption('dart-define')
@@ -551,7 +594,7 @@ Future<int> _up(List<String> args) async {
     ..addFlag('json', negatable: false)
     ..addFlag('help', abbr: 'h', negatable: false);
   const usage = 'usage: emu up [--android|--ios] [-d, --device <id>] [--config <name>]\n'
-      '                [--flavor <name>] [-t, --target <file>] [--dart-define K=V]\n'
+      '                [--profile <name>] [--flavor <name>] [-t, --target <file>] [--dart-define K=V]\n'
       '                [--dart-define-from-file <path>] [-a, --dart-entrypoint-args <arg>]\n'
       '                [--device-timeout <s>] [--device-connection <both|attached|wireless>]\n'
       '                [--dds-port <n>] [--no-dds] [--port <n>] [--timeout <s>] [--open]\n'
@@ -560,38 +603,57 @@ Future<int> _up(List<String> args) async {
   if (res == null) return code!;
   final session = Session.require();
 
+  final wantedConfig = res.option('config');
+  final wantedProfile = res.option('profile');
+  if (wantedConfig != null && wantedProfile != null) {
+    stderr.writeln('✗ use only one of --config (.vscode/launch.json) or '
+        '--profile (emu.yaml/emu.local.yaml)');
+    return 2;
+  }
+
   // Resolve a named launch.json config (if any). Explicit flags override it.
   LaunchConfig? cfg;
-  if (res.option('config') != null) {
-    final wanted = res.option('config')!;
+  if (wantedConfig != null) {
     final configs = readLaunchConfigs(session.projectRoot.path);
     for (final c in configs) {
-      if (c.name == wanted) {
+      if (c.name == wantedConfig) {
         cfg = c;
         break;
       }
     }
     if (cfg == null) {
-      stderr.writeln('✗ config "$wanted" not found in .vscode/launch.json');
+      stderr.writeln('✗ config "$wantedConfig" not found in .vscode/launch.json');
       if (configs.isNotEmpty) {
         stderr.writeln('  available: ${configs.map((c) => '"${c.name}"').join(', ')}');
       }
       return 1;
     }
     if (!cfg.isDebug) {
-      stderr.writeln('✗ config "$wanted" is flutterMode=${cfg.mode}; '
+      stderr.writeln('✗ config "$wantedConfig" is flutterMode=${cfg.mode}; '
           'emu drives debug builds only (hot reload + VM Service).');
       return 1;
     }
     if (cfg.unsupported.isNotEmpty) {
-      stderr.writeln('! config "$wanted": ${cfg.unsupported.join(', ')} '
+      stderr.writeln('! config "$wantedConfig": ${cfg.unsupported.join(', ')} '
           'not replayed by emu (pass it manually if needed).');
     }
   }
-  // Layered project config (emu.yaml / emu.local.yaml / ~/.emu/config.yaml),
-  // lower precedence than an explicit flag or a named launch.json config.
+
+  if (wantedProfile != null &&
+      !listProfileNames(session.projectRoot.path).contains(wantedProfile)) {
+    stderr.writeln('✗ profile "$wantedProfile" not found in emu.yaml/emu.local.yaml');
+    final names = listProfileNames(session.projectRoot.path);
+    if (names.isNotEmpty) {
+      stderr.writeln('  available: ${names.map((n) => '"$n"').join(', ')}');
+    }
+    return 1;
+  }
+
+  // Layered project config (emu.yaml / emu.local.yaml / ~/.emu/config.yaml,
+  // plus the selected profile's overrides if any), lower precedence than an
+  // explicit flag or a named launch.json config.
   final pc = loadProjectConfig(session.projectRoot.path,
-      onWarn: (w) => stderr.writeln('! emu config: $w'));
+      profile: wantedProfile, onWarn: (w) => stderr.writeln('! emu config: $w'));
   if (ensureLocalConfigIgnored(session.projectRoot.path)) {
     stderr.writeln('+ added emu.local.yaml to .gitignore (machine-specific config)');
   }
