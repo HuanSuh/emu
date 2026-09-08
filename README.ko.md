@@ -164,6 +164,7 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 | `emu open` | 대시보드를 브라우저로 열기 |
 | `emu shot [path] [--no-settle]` | 스크린샷 저장(기본 `.emu/`). 상대 경로는 프로젝트 루트 기준. 기본적으로 먼저 애니메이션/리빌드가 멈추길 기다림 |
 | `emu tap <x> <y> [--no-settle]` | 좌표 탭 (물리 픽셀 — `shot`과 같은 좌표계). Android·iOS. 기본적으로 탭이 유발한 전환이 끝날 때까지 기다렸다가 반환 |
+| `emu tap --text <label> \| --key <key> [--index <n>] [--no-settle]` | Semantics/Text/Tooltip 라벨 또는 `ValueKey` 로 위젯을 찾아 탭 — 스크린샷·픽셀 계산 불필요. 여러 개 매칭되면 `--index` 로 선택 |
 | `emu swipe <x1> <y1> <x2> <y2>` | 스와이프/스크롤. `--duration <ms>`. Android·iOS |
 | `emu text <string> [--append]` | 포커스된 필드에 입력(유니코드 OK). Android·iOS |
 | `emu settle [--timeout <s>] [--quiet <ms>]` | 애니메이션/리빌드가 멈출 때까지 대기(예약된 프레임 없음 상태를 `--quiet` 동안 유지) — `tap`/`shot` 은 이미 기본으로 대기함 |
@@ -310,6 +311,31 @@ emu text "hello world"               # 포커스된 필드에 입력 — 필드�
 
 > ⚠️ **에이전트 주의**: 스크린샷이 축소되어 전달되면(예: 1344×2992 → 898×2000) 이미지에서 읽은
 > 좌표에 **축소 배율을 곱해야** 물리 좌표가 된다. 탭이 엉뚱한 곳에 꽂히는 원인 대부분이 이것이다.
+
+**`tap --text`/`--key` 는 스크린샷·픽셀 계산을 건너뛴다** — 실행 중인 트리에서 위젯을 찾아
+그 중심을 탭한다:
+
+```bash
+emu tap --text "닫기"        # 라벨/텍스트/툴팁이 "닫기"인 위젯을 탭
+emu tap --key myButtonKey    # ValueKey 가 "myButtonKey"로 렌더되는 위젯을 탭
+```
+
+`Semantics` 위젯의 `label`, `Text` 위젯의 `data`, `Tooltip` 의 `message` 를 매칭한다
+(`IconButton(tooltip: …)`와 일반 `Text(...)` 버튼을 커버) — VM Service 로 실행 중인
+`Element` 트리에 대해 정확히 일치하는 문자열을 찾는다("라벨로 위젯을 찾아라"에 해당하는
+`ext.flutter.inspector.*` 확장은 없어서, 프레임워크가 매 프레임 하는 것과 같은 방식으로
+트리를 직접 순회한다). 여러 개가 매칭되면 개수를 알려주는 에러가 나고, `--index` 로 하나를
+고른다:
+
+```bash
+emu tap --text "삭제" --index 1   # "삭제"라는 라벨의 두 번째 위젯 (0부터 시작)
+```
+
+레이아웃이 바뀌어 위젯 위치가 이동해도 `--text`/`--key` 탭은 하드코딩된 좌표처럼 깨지지
+않는다 — 트리 순회가 지금 위치를 다시 찾아준다. 다만 실제 스크린 리더가 보는(여러 위젯의
+semantics 가 합쳐진) 접근성 트리가 아니라 정적 위젯 설정 매칭이라, `Semantics`/`Text`/
+`Tooltip` 위젯이 직접 갖고 있지 않고 자식들의 semantics 가 합쳐져서만 생기는 라벨은 매칭되지
+않는다 — 그런 경우엔 `<x> <y>` 로 되돌아가라.
 
 `tap` 이 반환하는 `seq` 는 **탭 직전의 로그 커서**다. 이걸 `assert --since` 에 넘기면
 "이 탭이 무엇을 유발했는지"를 정확한 창으로 단언할 수 있다:
@@ -471,9 +497,12 @@ emu inspect lib/main.dart:34
 *즉시* 에러(build/initState throw)는 잡지만, *지연·트리거성* 에러(Timer, 탭)는 놓칠 수 있다.
 그 경우 `emu assert --deny ... --timeout N` 이 견고한 길(폴링 기반).
 
-**입력은 좌표 탭까지만. UI 단언은 emu의 영역이 아니다.**
-`emu tap` 은 좌표를 넣을 뿐, **위젯 트리를 질의하지 않는다** — "이 버튼이 보이나?", "텍스트가 뭐지?"
-같은 UI 단언은 emu가 하지 않는다(에이전트가 스크린샷을 보고 판단하거나, `assert`/`probe` 로 검증).
+**입력은 탭 좌표를 찾기 위한 `--text`/`--key` 조회까지만. UI 단언은 emu의 영역이 아니다.**
+`emu tap --text`/`--key` 는 탭 좌표를 찾기 위해서만 위젯 트리를 읽는다 — `Semantics`/`Text`/
+`Tooltip` 위젯의 정적 라벨이나 `ValueKey` 를 매칭할 뿐, 프레임워크가 완전히 합친 접근성
+트리(실제 스크린 리더 같은 것이 켜져 있을 때만 존재)는 아니다. "이 버튼이 보이나?",
+"텍스트가 뭐지?" 같은 UI 단언은 여전히 emu가 하지 않는다(에이전트가 스크린샷을 보고
+판단하거나, `assert`/`probe` 로 검증).
 셀렉터 기반의 견고한 UI 단언이 필요하면 `integration_test`(공식)/`patrol`/`maestro` 를 쓰고,
 emu는 그 위에서 **로그·변수 검증**을 더하는 게 맞다.
 입력(`tap`/`swipe`/`text`)은 **Android·iOS 공통**이다 — VM Service로 프레임워크에 직접 넣어

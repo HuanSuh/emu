@@ -16,6 +16,7 @@ import 'device_manager.dart';
 import 'engine.dart';
 import 'frame.dart';
 import 'input.dart';
+import 'locate.dart';
 import 'log_store.dart';
 import 'models.dart';
 import 'probe.dart';
@@ -295,14 +296,30 @@ class EmuServer {
 
   Future<Response> _tap(Request req) async {
     final q = req.url.queryParameters;
+    final text = q['text'];
+    final key = q['key'];
+    Response? early;
+    final uri = _vmOr409((r) => early = r);
+    if (uri == null) return early!;
+
+    if (text != null || key != null) {
+      final index = int.tryParse(q['index'] ?? '');
+      final query = text != null ? '--text "$text"' : '--key "$key"';
+      try {
+        final matches = await locate(uri, text: text, key: key);
+        final m = pickMatch(matches, index, query: query);
+        return _inject(() => runTap(uri, m.x, m.y),
+            {'x': m.x, 'y': m.y, 'widgetType': m.widgetType, 'matchCount': matches.length});
+      } on LocateException catch (e) {
+        return _json({'ok': false, 'error': e.message}, status: 422);
+      }
+    }
+
     final x = int.tryParse(q['x'] ?? '');
     final y = int.tryParse(q['y'] ?? '');
     if (x == null || y == null) {
       return _json({'ok': false, 'error': 'x and y are required integers'}, status: 400);
     }
-    Response? early;
-    final uri = _vmOr409((r) => early = r);
-    if (uri == null) return early!;
     return _inject(() => runTap(uri, x, y), {'x': x, 'y': y});
   }
 
