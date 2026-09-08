@@ -3,8 +3,11 @@ name: emu
 description: >
   IDE 없이 Flutter 앱을 기동·조작·검증하는 CLI. Flutter 앱을 디버깅하거나,
   에뮬레이터/시뮬레이터 화면을 캡처·탭·입력·스와이프·딥링크로 조작하거나, hot
-  reload 후 로그로 검증하거나, 특정 코드 위치의 지역변수를 덤프할 때 사용한다.
-  키워드: flutter 디버그, 앱 기동, 스크린샷 탭, hot reload 검증, emu.
+  reload 후 로그로 검증하거나, 특정 코드 위치의 지역변수를 덤프하거나, 위젯을
+  라벨/키/타입으로 조회하거나, 표현식을 즉시 평가하거나, 예외/메모리 누수를
+  진단할 때 사용한다.
+  키워드: flutter 디버그, 앱 기동, 스크린샷 탭, hot reload 검증, 위젯 조회,
+  즉시 평가, 예외 수집, 메모리 diff, emu.
 ---
 
 # emu — IDE-less Flutter driver

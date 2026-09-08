@@ -162,7 +162,7 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 | `emu stop` | 앱만 정지(서버는 유지) |
 | `emu status` | 세션/기기/앱 상태 + VM Service URI |
 | `emu open` | 대시보드를 브라우저로 열기 |
-| `emu open-url <url> [--no-settle]` | 연결된 기기로 딥링크 전송(`adb shell am start` / `xcrun simctl openurl`, 쉘 이스케이프 없는 argv 전달). 기본적으로 전환이 끝나길 기다렸다가 반환 |
+| `emu open-url <url> [--no-settle]` | 연결된 기기로 딥링크 전송(`adb shell am start` / `xcrun simctl openurl`). 이스케이프는 emu가 처리. 기본적으로 전환이 끝나길 기다렸다가 반환 |
 | `emu shot [path] [--no-settle]` | 스크린샷 저장(기본 `.emu/`). 상대 경로는 프로젝트 루트 기준. 기본적으로 먼저 애니메이션/리빌드가 멈추길 기다림 |
 | `emu tap <x> <y> [--no-settle]` | 좌표 탭 (물리 픽셀 — `shot`과 같은 좌표계). Android·iOS. 기본적으로 탭이 유발한 전환이 끝날 때까지 기다렸다가 반환 |
 | `emu tap --text <label> \| --key <key> [--index <n>] [--no-settle]` | Semantics/Text/Tooltip 라벨 또는 `ValueKey` 로 위젯을 찾아 탭 — 스크린샷·픽셀 계산 불필요. 여러 개 매칭되면 `--index` 로 선택 |
@@ -410,10 +410,24 @@ emu open-url "myapp://checkout?id=42&ref=promo"
 
 현재 연결된 기기로 URL을 전달한다 — Android는 `adb shell am start -a
 android.intent.action.VIEW -d <url>`, iOS는 `xcrun simctl openurl <udid>
-<url>` — 실행 중인 세션에 붙은 기기를 보고 자동으로 분기한다. url은 항상
-단일 argv 항목으로 넘어가며 쉘 문자열로 조합되지 않으므로, 쿼리스트링의
-`&`/`;` 등을 이스케이프할 필요가 없다. `tap`/`shot` 과 같이 기본적으로
-전환이 settle될 때까지 기다렸다가 반환한다(`--no-settle` 로 건너뛸 수 있음).
+<url>` — 실행 중인 세션에 붙은 기기를 보고 자동으로 분기한다. 쿼리스트링의
+`&`/`;` 등을 직접 이스케이프할 필요는 없다 — emu가 처리한다. `tap`/`shot`
+과 같이 기본적으로 전환이 settle될 때까지 기다렸다가 반환한다(`--no-settle`
+로 건너뛸 수 있음).
+
+> **구현 참고**: `xcrun simctl openurl` 은 URL을 그대로 exec하므로 iOS
+> 경로는 URL을 손대지 않고 넘긴다. `adb shell` 은 다르다 — 인자를 공백으로
+> 이어붙여 *기기*의 `/bin/sh` 에 그 문자열을 넘기고, 거기서 `&`/`;`/백틱이
+> 다시 해석된다. 그래서 Android 경로에서는 URL을 그 셸용으로 한 번 더
+> 인용한다(`'…'`, 내부 `'` 는 이스케이프). 이걸 안 하면 쿼리스트링의 첫
+> `&` 이후가 전부 조용히 사라진다.
+
+URL 자체가 다른 URL을 쿼리 파라미터로 싣는 경우(웹뷰 딥링크,
+`myapp://web?url=https://example.com/p?a=1&b=2` 같은 형태)엔 **호출자가**
+그 내부 값을 percent-encoding 해야 한다. emu는 문자열을 있는 그대로
+전달할 뿐이라, 인코딩 안 된 `&` 가 안에 있으면 일반 URI 파서 단계에서
+별개 파라미터(`url=...&b=2`)로 갈린다 — 이 분리는 셸에 닿기도 전에
+일어나므로 인용으로 고칠 수 있는 문제가 아니다.
 
 ### settle — 캡처 전에 애니메이션/리빌드가 끝나길 기다리기
 
@@ -645,6 +659,15 @@ lib/src/
   models.dart          LogEntry / AppStatus / DeviceInfo
   daemon_protocol.dart flutter --machine 메시지 인코드/디코드
   engine.dart          flutter 프로세스 소유 · reload/restart/cold/stop
+  env.dart             자식 프로세스 spawn 전에 낡은 SDKROOT/DEVELOPER_DIR 제거
+  frame.dart           첫 프레임 감지(`up` 이 실제로 화면을 그렸는지)
+  input.dart           VM Service 기반 합성 tap/swipe/text (Android·iOS, 유니코드)
+  settle.dart          입력 후 settle 감지(애니메이션/리빌드가 잠잠해졌는지)
+  locate.dart          Semantics/Text/Tooltip 라벨, ValueKey, 타입으로 위젯 찾기
+  eval.dart            앱의 루트 라이브러리 스코프에서 Dart 표현식을 지금 평가
+  error_parser.dart    Flutter 예외 콘솔 배너를 구조화된 레코드로 묶기
+  memory_diff.dart     힙 인스턴스 수 스냅샷 + diff (VM Service getAllocationProfile)
+  open_url.dart        딥링크용 adb/simctl 호출 조립(기기 셸 인용 포함)
   log_store.dart       링버퍼 · 영속화 · 필터 질의
   assertions.dart      순수 expect/deny 로그 단언 로직
   probe.dart           VM Service logpoint: 라인에서 변수 캡처
@@ -653,6 +676,7 @@ lib/src/
   device_manager.dart  기기 탐색 + 에뮬레이터/시뮬레이터 부팅
   session.dart         프로젝트 탐지 + .emu/ 상태
   server.dart          REST + WebSocket + 정적 대시보드 서빙
+  version.dart         내장 버전 + GitHub 릴리스 체크(--version/doctor/update)
   cli.dart             명령 파싱 + 서버 클라이언트
 web/                   대시보드 (바닐라 HTML/JS/CSS, 빌드 스텝 없음)
 tool/bundle_web.dart   web/ 를 바이너리에 임베드
@@ -663,7 +687,8 @@ docs/BACKLOG.md        개선 백로그 + 우선순위
 ## 개발
 
 ```bash
-dart test                  # 단위 테스트 (프로토콜·로그스토어·기기파싱·단언·probe 헬퍼)
+dart test                  # 단위 테스트 (프로토콜·로그스토어·기기파싱·단언·probe/locate/eval
+                            # 헬퍼·예외 배너 파싱·메모리 diff)
 dart analyze               # 린트
 EMU_WEB_DIR=web dart run bin/emu.dart up   # 대시보드를 디스크에서 서빙(라이브 편집)
 ```
@@ -688,4 +713,10 @@ EMU_WEB_DIR=web dart run bin/emu.dart up   # 대시보드를 디스크에서 서
 - 🚫 `emu e2e` — 외부 e2e 엔진 구동: 보류(입력 수단 확보로 전제 소멸, [BACKLOG](docs/BACKLOG.md) 참고)
 - ⬜ iOS 텍스트 입력의 IME 우회(현재는 포커스된 Flutter 필드 한정)
 - ✅ `emu inspect` — 지역변수 전체 + 콜스택 스냅샷 (단발성, 비차단)
+- ✅ 셀프 업데이트 — `emu --version`/`doctor`/`update`/`uninstall`
+- ✅ `emu open-url` — 연결된 기기로 딥링크 전송
+- ✅ `emu tap --text`/`--key` + `emu find` — 스크린샷·픽셀 계산 없이 위젯 질의로 구동/조회
+- ✅ `emu eval` — 브레이크포인트 없이 지금 즉시 Dart 표현식 평가
+- ✅ `emu errors` — Flutter 예외 콘솔 배너를 구조화
+- ✅ `emu memory --diff-across` — 커맨드 실행 전후 힙 인스턴스 수 diff(누수 탐지)
 - ⬜ 대화형 `break`/`step`/`continue` — 앱을 멈춰둬 emu 단발성 모델과 충돌, 수요 보고 결정

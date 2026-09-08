@@ -170,7 +170,7 @@ What this loop gives an agent:
 | `emu stop` | Stop only the app (server stays up) |
 | `emu status` | Session/device/app status + VM Service URI |
 | `emu open` | Open the dashboard in a browser |
-| `emu open-url <url> [--no-settle]` | Send a deep link to the connected device (`adb shell am start` / `xcrun simctl openurl`, argv-only — no shell escaping to get wrong). Waits for the resulting navigation to finish before returning by default |
+| `emu open-url <url> [--no-settle]` | Send a deep link to the connected device (`adb shell am start` / `xcrun simctl openurl`). No escaping to get wrong — emu quotes the URL for you. Waits for the resulting navigation to finish before returning by default |
 | `emu shot [path] [--no-settle]` | Save a screenshot (default `.emu/`). Relative paths resolve to the project root. Waits for animations/rebuilds to stop first by default |
 | `emu tap <x> <y> [--no-settle]` | Tap a coordinate (physical pixels — same space as `shot`). Android & iOS. Waits for the resulting transition to finish before returning by default |
 | `emu tap --text <label> \| --key <key> [--index <n>] [--no-settle]` | Tap the widget whose Semantics/Text/Tooltip label, or `ValueKey`, matches — no screenshot/pixel math needed. `--index` picks one when several match |
@@ -441,10 +441,24 @@ emu open-url "myapp://checkout?id=42&ref=promo"
 Dispatches the URL to the currently connected device — `adb shell am start -a
 android.intent.action.VIEW -d <url>` on Android, `xcrun simctl openurl <udid>
 <url>` on iOS — chosen automatically from the device attached to the running
-session. The url is always passed as a single argv entry, never assembled
-into a shell string, so `&`/`;`/etc. in a query string need no escaping.
-Waits for the resulting navigation to settle by default (skip with
-`--no-settle`), same as `tap`/`shot`.
+session. `&`/`;`/etc. in a query string need no escaping on your end; emu
+handles it. Waits for the resulting navigation to settle by default (skip
+with `--no-settle`), same as `tap`/`shot`.
+
+> **Implementation note**: `xcrun simctl openurl` execs the URL directly, so
+> the iOS path passes it through as-is. `adb shell` does not — it joins its
+> arguments with spaces and hands the result to the *device*'s `/bin/sh`,
+> which re-parses `&`/`;`/backticks. So on Android emu additionally quotes
+> the URL for that shell (`'…'`, with embedded `'` escaped) before sending
+> it — without this, everything in the query string after the first `&`
+> silently disappears.
+
+If the URL itself carries another URL as a query parameter (a webview deep
+link like `myapp://web?url=https://example.com/p?a=1&b=2`), **you** must
+percent-encode that inner value. emu passes the string through unchanged; an
+un-encoded `&` inside it is read as a second top-level parameter (`url=...&b=2`)
+by any normal URI parser — that split happens before the string ever reaches a
+shell, so quoting can't fix it.
 
 ### settle — wait out animations/rebuilds before capturing
 
@@ -702,6 +716,15 @@ lib/src/
   models.dart          LogEntry / AppStatus / DeviceInfo
   daemon_protocol.dart encode/decode flutter --machine messages
   engine.dart          owns the flutter process · reload/restart/cold/stop
+  env.dart             strips a stale SDKROOT/DEVELOPER_DIR before spawning child processes
+  frame.dart           first-frame detection (has `up` actually painted yet)
+  input.dart           synthetic tap/swipe/text via the VM Service (Android & iOS, unicode)
+  settle.dart          post-input settle detection (animations/rebuilds gone quiet)
+  locate.dart          find a widget by Semantics/Text/Tooltip label, ValueKey, or type
+  eval.dart            evaluate a Dart expression now, in the app's root library scope
+  error_parser.dart    group Flutter's exception console banners into structured records
+  memory_diff.dart     heap instance-count snapshot + diff (VM Service getAllocationProfile)
+  open_url.dart        build the adb/simctl invocation for a deep link (device-shell quoting)
   log_store.dart       ring buffer · persistence · filtered queries
   assertions.dart      pure expect/deny log assertion logic
   probe.dart           VM Service logpoint: capture variables at a line
@@ -710,6 +733,7 @@ lib/src/
   device_manager.dart  device discovery + emulator/simulator boot
   session.dart         project detection + .emu/ state
   server.dart          serves REST + WebSocket + the static dashboard
+  version.dart         embedded version + GitHub release check (--version/doctor/update)
   cli.dart             command parsing + server client
 web/                   dashboard (vanilla HTML/JS/CSS, no build step)
 tool/bundle_web.dart   embeds web/ into the binary
@@ -720,7 +744,8 @@ docs/BACKLOG.md        improvement backlog + priorities
 ## Development
 
 ```bash
-dart test                  # unit tests (protocol, log store, device parsing, assertions, probe helpers)
+dart test                  # unit tests (protocol, log store, device parsing, assertions,
+                            # probe/locate/eval helpers, error-banner parsing, memory diffing)
 dart analyze               # lint
 EMU_WEB_DIR=web dart run bin/emu.dart up   # serve the dashboard from disk (live editing)
 ```
@@ -745,4 +770,10 @@ See [`docs/BACKLOG.md`](docs/BACKLOG.md) for in-progress/planned items.
 - 🚫 `emu e2e` — driving an external e2e engine: shelved (premise removed once input landed, see [BACKLOG](docs/BACKLOG.md))
 - ⬜ IME bypass for iOS text input (currently focused-Flutter-field only)
 - ✅ `emu inspect` — full locals + call-stack snapshot (one-shot, non-blocking)
+- ✅ Self-update — `emu --version`/`doctor`/`update`/`uninstall`
+- ✅ `emu open-url` — send a deep link to the connected device
+- ✅ `emu tap --text`/`--key` + `emu find` — drive/inspect by widget query, no screenshot/pixel math
+- ✅ `emu eval` — evaluate a Dart expression now, no breakpoint
+- ✅ `emu errors` — Flutter's exception console banners, structured
+- ✅ `emu memory --diff-across` — heap instance-count diff around a command (leak hunting)
 - ⬜ Interactive `break`/`step`/`continue` — conflicts with emu's one-shot model by holding the app paused; decide on demand

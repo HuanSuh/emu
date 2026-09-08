@@ -432,3 +432,27 @@ emu 리포를 플러그인 겸 셀프 마켓플레이스로 구성해 전역 설
 
 **남은 것**: 정식 백로그 항목은 모두 완료 또는 근거 있는 보류. 다음 작업도 실수요에서 나온다
 (웹뷰 폼 입력 요구 → #11의 idb 경로, probe 한계 신호 → #6, 추가 개밥먹기 피드백).
+
+---
+
+## GitHub Issue #2 — 첫 실사용 후기 처리 결과 (2026-09-08)
+
+외부 사용자(@Heewookji)의 실사용 후기 이슈에서 나온 6개 항목. 자세한 배경/근거는
+[Issue #2](https://github.com/HuanSuh/emu/issues/2) 참고, 커밋 상세는 `CHANGELOG.md`
+`[Unreleased]`/`[0.4.0]` 참고.
+
+| # | 항목 | 상태 | 비고 |
+|---|------|------|------|
+| 1 | SKILL.md 명령 동기화 | ✅ 완료 | `_printUsage()` 기준으로 전체 재동기화 |
+| 2 | `emu open-url` (딥링크 전송) | ✅ 완료 | 이후 Android `adb shell` 기기 셸 재해석 버그를 이슈 리포터 본인이 PR #6으로 직접 수정 |
+| 3 | `emu tap --text/--key` (텍스트/키로 탭) | ✅ 완료 | `emu find`로 조회 기능만 분리 노출까지 확장. [`DESIGN.md`](DESIGN.md) B1 갱신 동반 |
+| 4 | 중단된 `up`이 남긴 유령 세션 | ✅ 완료 | 서버는 살아있는데 앱이 stopped/failed면 자동 정리 후 재기동, 진짜 running이면 기존처럼 거부 |
+| 5 | 서브커맨드 `--help` 크래시 | ✅ 완료 | 공유 헬퍼 `_parseOrUsage`로 8개 서브커맨드 통일, 이후 추가된 `find`/`eval`/`errors`/`memory`도 소급 적용 |
+| 6 | VM Service 기반 조회 명령 | 부분 완료 | `find`✅ / `eval`✅ / `errors`✅ / `memory --diff-across`✅. `routes`(네비게이션 스택)는 🚫 보류 |
+
+**6번 중 `routes` 보류 사유**: Flutter 공개 API로는 전체 Navigator 스택을 조회할 방법이 없고,
+private 구현(`_ModalScope` 등, 릴리스마다 리팩터링 대상)에 evaluate 스코프를 맞춰 접근해야
+한다. 다른 4개(`find`/`eval`/`errors`/`memory`)는 각각 VM Service 공개 RPC(`evaluate`,
+`getAllocationProfile`) 또는 이미 캡처된 로그 재가공이라 버전 fragility가 낮았던 것과 대조적.
+런타임에 실제 존재를 확인하고 실패 시 정직하게 보고하는 capability-probe 방식으로 재검토
+여지는 남겨둠 — 실수요가 생기면 그때 다시 판단([`DESIGN.md`](DESIGN.md) 보류 항목 참고).
