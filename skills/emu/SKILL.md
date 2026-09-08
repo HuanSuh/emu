@@ -82,6 +82,13 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
      기다리는 `probe`/`inspect` 와 달리 "지금 값"을 바로 본다. 대신 라이브러리
      스코프 이름(최상위 함수/게터, `main.dart` 의 import)만 보이고 지역변수는
      못 본다. 문자열은 따옴표, 객체는 `<ClassName>` 로 표기.
+   - `emu errors [--since <seq>]` — 로그에 찍힌 Flutter 예외 콘솔 배너
+     (`═══╡ ... ╞═══`)를 배너 단위로 묶어 라이브러리/예외 타입/seq 범위/원문을
+     보여준다. `logs` 는 줄 단위로만 보여주지만 이건 배너 전체를 하나로 본다.
+   - `emu memory --diff-across "<셸 커맨드>" [--all]` — 커맨드 실행 전후 힙
+     인스턴스 수 diff(VM Service `getAllocationProfile`). 왕복 후에도 계속
+     늘어나는 클래스가 있으면 누수 의심. 기본은 앱 자신의 패키지 클래스만,
+     `--all` 로 프레임워크 클래스까지 포함.
 5. `emu down [--kill-device]` — 세션 종료.
 
 ## 기타 명령

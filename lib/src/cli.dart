@@ -12,6 +12,7 @@ import 'package:http/http.dart' as http;
 import 'assertions.dart';
 import 'device_manager.dart';
 import 'launch_config.dart';
+import 'memory_diff.dart';
 import 'models.dart';
 import 'open_url.dart';
 import 'project_config.dart';
@@ -59,6 +60,10 @@ Future<int> runCli(List<String> argv) async {
         return await _action(rest, '/api/stop', 'stop', drain: false);
       case 'logs':
         return await _logs(rest);
+      case 'errors':
+        return await _errors(rest);
+      case 'memory':
+        return await _memory(rest);
       case 'assert':
         return await _assert(rest);
       case 'find':
@@ -974,16 +979,12 @@ Future<int> _find(List<String> args) async {
     ..addOption('type', help: 'match widget runtime type name, e.g. ElevatedButton')
     ..addOption('index', help: '0-based match to report when several match')
     ..addFlag('dump', negatable: false, help: "also print each widget's toString()")
-    ..addFlag('json', negatable: false);
+    ..addFlag('json', negatable: false)
+    ..addFlag('help', abbr: 'h', negatable: false);
   const usage = 'usage: emu find --text <label> | --key <key> | --type <Widget> '
       '[--index <n>] [--dump]';
-  final ArgResults res;
-  try {
-    res = parser.parse(args);
-  } catch (e) {
-    stderr.writeln(usage);
-    return 2;
-  }
+  final (res, code) = _parseOrUsage(parser, args, usage);
+  if (res == null) return code!;
   final text = res.option('text');
   final key = res.option('key');
   final type = res.option('type');
@@ -1041,19 +1042,17 @@ Future<int> _find(List<String> args) async {
 /// in its root library's scope. No breakpoint, so unlike `probe`/`inspect` it
 /// needs no line to be reached — but it only sees library-scope names.
 Future<int> _eval(List<String> args) async {
-  final parser = ArgParser()..addFlag('json', negatable: false);
-  final ArgResults res;
-  try {
-    res = parser.parse(args);
-  } catch (e) {
-    stderr.writeln("usage: emu eval '<dart expression>'");
-    return 2;
-  }
+  final parser = ArgParser()
+    ..addFlag('json', negatable: false)
+    ..addFlag('help', abbr: 'h', negatable: false);
+  const usage = "usage: emu eval '<dart expression>'   # e.g. emu eval 'Router.current'";
+  final (res, code) = _parseOrUsage(parser, args, usage);
+  if (res == null) return code!;
   // Normally the shell has already delivered a quoted expression as one arg;
   // joining is just the fallback for an unquoted one.
   final expr = res.rest.join(' ').trim();
   if (expr.isEmpty) {
-    stderr.writeln("usage: emu eval '<dart expression>'   # e.g. emu eval 'Router.current'");
+    stderr.writeln(usage);
     return 2;
   }
 
@@ -1300,6 +1299,120 @@ int _logsFromFile(Session session, ArgResults res, Map<String, String> query) {
   final shown = matched.length > limit ? matched.sublist(matched.length - limit) : matched;
   for (final e in shown) {
     print(res.flag('json') ? jsonEncode(e.toJson()) : _formatLine(e));
+  }
+  return 0;
+}
+
+// --------------------------------------------------------------------------
+// errors — structured exception banners parsed out of the log stream
+// --------------------------------------------------------------------------
+Future<int> _errors(List<String> args) async {
+  final parser = ArgParser()
+    ..addOption('since', help: 'seq cursor — only banners after this seq')
+    ..addFlag('json', negatable: false)
+    ..addFlag('help', abbr: 'h', negatable: false);
+  const usage = 'usage: emu errors [--since <seq>]';
+  final (res, code) = _parseOrUsage(parser, args, usage);
+  if (res == null) return code!;
+  final info = _requireServer();
+  final since = res.option('since');
+  final qs = since != null ? '?since=${Uri.encodeQueryComponent(since)}' : '';
+  final data = await _get(info, '/api/errors$qs');
+  if (data == null) {
+    stderr.writeln('✗ failed to read errors');
+    return 1;
+  }
+  final errors = (data['errors'] as List).cast<Map<String, dynamic>>();
+  if (res.flag('json')) {
+    print(jsonEncode(data));
+    return 0;
+  }
+  if (errors.isEmpty) {
+    print('(no errors)');
+    return 0;
+  }
+  for (final e in errors) {
+    final type = e['exceptionType'] ?? '<unknown>';
+    final lib = e['library'] ?? '<unknown>';
+    final inProgress = e['closed'] == false ? '  (still printing — re-poll)' : '';
+    print('✗ $type ($lib)  seq ${e['startSeq']}..${e['endSeq']}$inProgress');
+  }
+  return 0;
+}
+
+// --------------------------------------------------------------------------
+// memory --diff-across — heap instance-count diff around a shell command
+// --------------------------------------------------------------------------
+Future<int> _memory(List<String> args) async {
+  final parser = ArgParser()
+    ..addOption('diff-across', help: 'shell command to run between the before/after snapshots')
+    ..addFlag('all', negatable: false, help: 'include framework classes, not just the app package')
+    ..addFlag('json', negatable: false)
+    ..addFlag('help', abbr: 'h', negatable: false);
+  const usage = 'usage: emu memory --diff-across "<shell command>" [--all]';
+  final (res, code) = _parseOrUsage(parser, args, usage);
+  if (res == null) return code!;
+  final command = res.option('diff-across');
+  if (command == null || command.isEmpty) {
+    stderr.writeln(usage);
+    return 2;
+  }
+  final info = _requireServer();
+  final all = res.flag('all') ? '?all=1' : '';
+
+  final before = await _getJson(info, '/api/memory/snapshot$all');
+  if (before == null || before['error'] != null) {
+    stderr.writeln('✗ ${before?['error'] ?? 'no response from server'}');
+    return 1;
+  }
+
+  final result = await Process.run('sh', ['-c', command]);
+  if (result.exitCode != 0) {
+    stderr.writeln('! command exited ${result.exitCode}: $command');
+  }
+
+  final after = await _getJson(info, '/api/memory/snapshot$all');
+  if (after == null || after['error'] != null) {
+    stderr.writeln('✗ ${after?['error'] ?? 'no response from server'}');
+    return 1;
+  }
+
+  final beforeSnap = (before['snapshot'] as Map).cast<String, dynamic>().map((k, v) => MapEntry(k, v as int));
+  final afterSnap = (after['snapshot'] as Map).cast<String, dynamic>().map((k, v) => MapEntry(k, v as int));
+  final diff = diffSnapshots(beforeSnap, afterSnap);
+
+  if (res.flag('json')) {
+    print(jsonEncode({
+      'ok': true,
+      // A list, not a map keyed by class name: two classes with the same
+      // simple name from different libraries are common in real codebases,
+      // and a class-name-keyed map would silently collide/overwrite one.
+      'diff': [
+        for (final e in diff.entries)
+          {'class': classNameOf(e.key), 'library': libraryOf(e.key), 'delta': e.value},
+      ],
+      'command': command,
+      'commandExitCode': result.exitCode,
+    }));
+    return 0;
+  }
+  if (diff.isEmpty) {
+    print('(no change)');
+    return 0;
+  }
+  final sorted = diff.entries.toList()..sort((a, b) => b.value.abs().compareTo(a.value.abs()));
+  // Two libraries can declare a class with the same simple name — disambiguate
+  // with the library only for names that actually collide in this diff, so the
+  // common case stays a plain class name.
+  final nameCounts = <String, int>{};
+  for (final e in sorted) {
+    nameCounts.update(classNameOf(e.key), (n) => n + 1, ifAbsent: () => 1);
+  }
+  for (final e in sorted) {
+    final sign = e.value > 0 ? '+' : '';
+    final name = classNameOf(e.key);
+    final label = nameCounts[name]! > 1 ? '$name (${libraryOf(e.key)})' : name;
+    print('$label  $sign${e.value}');
   }
   return 0;
 }
@@ -1657,6 +1770,19 @@ Future<Map<String, dynamic>?> _get(ServerInfo info, String path) async {
   }
 }
 
+/// Like [_get], but decodes the body regardless of status code — for
+/// endpoints (like `/api/memory/snapshot`) that return a meaningful
+/// `{'error': ...}` JSON body alongside a non-200 status (409, etc.), the
+/// same convention `_postJson`/`probe`/`inspect` already rely on.
+Future<Map<String, dynamic>?> _getJson(ServerInfo info, String path) async {
+  try {
+    final r = await http.get(Uri.parse('${info.baseUrl}$path')).timeout(const Duration(seconds: 5));
+    return jsonDecode(r.body) as Map<String, dynamic>;
+  } catch (_) {
+    return null;
+  }
+}
+
 Future<Map<String, dynamic>?> _post(ServerInfo info, String path) async {
   try {
     final r =
@@ -1808,6 +1934,12 @@ COMMANDS
      -n, --lines <N>       Last N lines (default 200)
      -f, --follow          Stream live
      --clear               Clear the log buffer
+  errors [opts]          Structured exception banners parsed from the log stream
+     --since <seq>         only banners after this seq (default: all buffered)
+  memory --diff-across "<cmd>" [opts]
+                         Heap instance-count diff around a shell command
+     --diff-across <cmd>   shell command to run between before/after snapshots
+     --all                 include framework classes, not just the app package
   assert [opts]          Assert on the log stream (e2e/CI oracle)
      --expect <regex>      pattern that MUST appear (repeatable)
      --deny <regex>        pattern that must NOT appear (repeatable)

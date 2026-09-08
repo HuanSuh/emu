@@ -35,11 +35,21 @@ class ProbeHit {
       };
 }
 
-/// Extract the `name:` field from a pubspec.yaml's contents.
+/// Extract the `name:` field from a pubspec.yaml's contents. `name: my_app`
+/// and the equally-valid quoted `name: "my_app"` / `name: 'my_app'` both
+/// resolve to `my_app` — an unstripped quote would build a `package:"my_app"/`
+/// URI/prefix that matches nothing.
 String? packageNameFromPubspec(String content) {
   for (final raw in content.split('\n')) {
     final m = RegExp(r'^name:\s*(\S+)').firstMatch(raw.trim());
-    if (m != null) return m.group(1);
+    if (m == null) continue;
+    var name = m.group(1)!;
+    if (name.length >= 2 &&
+        ((name.startsWith('"') && name.endsWith('"')) ||
+            (name.startsWith("'") && name.endsWith("'")))) {
+      name = name.substring(1, name.length - 1);
+    }
+    return name;
   }
   return null;
 }
