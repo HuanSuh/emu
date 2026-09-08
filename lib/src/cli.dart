@@ -1235,17 +1235,62 @@ void _rememberProject(void Function(ProjectMemory) mutate) {
 /// Waits for the resulting transition/animation to settle before returning
 /// unless `--no-settle` is passed — a bare `tap` immediately followed by
 /// `shot` is the exact trap this defaults to guarding against.
+///
+/// `--text`/`--key` are an alternative to `<x> <y>`: they find the widget by
+/// its Semantics/Text/Tooltip label or `ValueKey` and tap its center, so
+/// layout changes don't silently break the tap. If several widgets match,
+/// use `--index` to pick one.
 Future<int> _tap(List<String> args) async {
-  final json = args.contains('--json');
-  final settle = !args.contains('--no-settle');
-  final pos = args.where((a) => !a.startsWith('-')).toList();
-  final x = pos.length == 2 ? int.tryParse(pos[0]) : null;
-  final y = pos.length == 2 ? int.tryParse(pos[1]) : null;
-  if (x == null || y == null) {
-    stderr.writeln('usage: emu tap <x> <y> [--no-settle]   # physical pixels, as seen in `emu shot`');
+  final parser = ArgParser()
+    ..addOption('text', help: 'tap the widget whose Semantics label / Text / Tooltip matches this')
+    ..addOption('key', help: 'tap the widget whose ValueKey matches this')
+    ..addOption('index', help: '0-based match to tap when --text/--key matches more than one')
+    ..addFlag('json', negatable: false)
+    ..addFlag('no-settle', negatable: false, help: 'skip the post-tap settle wait');
+  const usage = 'usage: emu tap <x> <y> [--no-settle]   # physical pixels, as seen in `emu shot`\n'
+      '   or: emu tap --text <label> [--index <n>] [--no-settle]\n'
+      '   or: emu tap --key <key> [--index <n>] [--no-settle]';
+  final ArgResults res;
+  try {
+    res = parser.parse(args);
+  } catch (e) {
+    stderr.writeln(usage);
     return 2;
   }
-  final code = await _inject('/api/tap?x=$x&y=$y', 'tap $x,$y', json: json);
+  final json = res.flag('json');
+  final settle = !res.flag('no-settle');
+  final text = res.option('text');
+  final key = res.option('key');
+  final indexStr = res.option('index');
+  final index = indexStr == null ? null : int.tryParse(indexStr);
+  if (indexStr != null && index == null) {
+    stderr.writeln('--index must be an integer');
+    return 2;
+  }
+
+  final String path;
+  final String label;
+  if (text != null || key != null) {
+    if (text != null && key != null) {
+      stderr.writeln('use only one of --text or --key');
+      return 2;
+    }
+    final q = StringBuffer(text != null
+        ? 'text=${Uri.encodeQueryComponent(text)}'
+        : 'key=${Uri.encodeQueryComponent(key!)}');
+    if (index != null) q.write('&index=$index');
+    path = '/api/tap?$q';
+    label = text != null ? 'tap --text "$text"' : 'tap --key "$key"';
+  } else {
+    final pos = res.rest.map(int.tryParse).toList();
+    if (pos.length != 2 || pos.any((v) => v == null)) {
+      stderr.writeln(usage);
+      return 2;
+    }
+    path = '/api/tap?x=${pos[0]}&y=${pos[1]}';
+    label = 'tap ${pos[0]},${pos[1]}';
+  }
+  final code = await _inject(path, label, json: json);
   if (code == 0 && settle) await _post(_requireServer(), '/api/settle');
   return code;
 }
@@ -1613,6 +1658,10 @@ COMMANDS
   tap <x> <y> [--no-settle]
                          Tap at physical pixels (same space as `shot`)
                          Waits for the resulting transition to finish (skip with --no-settle)
+  tap --text <label> | --key <key> [--index <n>] [--no-settle]
+                         Tap the widget whose Semantics/Text/Tooltip label, or
+                         ValueKey, matches — no pixel math needed
+                         --index <n>   pick one when several widgets match
   swipe <x1> <y1> <x2> <y2>
                          Swipe/scroll between two points
      --duration <ms>       swipe duration (default 300)

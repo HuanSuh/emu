@@ -40,6 +40,10 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
    기본적으로 애니메이션/리빌드가 멈추길 먼저 기다린다.
 3. 조작 — 좌표계는 `shot` 과 동일:
    - `emu tap <x> <y> [--no-settle]`
+   - `emu tap --text <라벨> | --key <key> [--index <n>] [--no-settle]` — 좌표 대신
+     위젯의 Semantics/Text/Tooltip 라벨이나 `ValueKey` 로 탭. 레이아웃이 바뀌어도
+     안 깨지므로 라벨/키를 아는 위젯이면 좌표 산출보다 이걸 우선 쓴다. 여러 개
+     매칭되면 에러가 나며 개수를 알려주니 `--index` 로 선택.
    - `emu text <문자열> [--append]` — 포커스된 필드에 입력(유니코드 OK). 먼저 필드를 탭.
    - `emu swipe <x1> <y1> <x2> <y2> [--duration <ms>]` — 스크롤도 이걸로.
    - `emu open-url <url> [--no-settle]` — 딥링크를 연결된 기기로 전송(Android는
@@ -81,9 +85,10 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
 
 ## 규칙
 
-- **tap/swipe 전에는 항상 `emu shot` 을 새로 떠서 좌표를 확정한다.** 좌표는
+- **좌표 tap/swipe 전에는 항상 `emu shot` 을 새로 떠서 좌표를 확정한다.** 좌표는
   부팅·화면 전환마다 바뀌므로 이전 좌표를 재사용하지 않는다(`.emu/memory.json` 의
-  학습값도 권위가 아니다).
+  학습값도 권위가 아니다). 탭 대상의 라벨이나 key를 알고 있으면 `emu tap --text`/
+  `--key` 를 써서 스크린샷·좌표 산출을 아예 건너뛴다.
 - 좌표는 스크린샷 파일의 픽셀 좌표를 그대로 쓴다(다운스케일된 미리보기 크기가 아님).
 - 한 번에 한 앱만 구동한다. 새 세션 전 `emu down` 으로 정리.
 - 명령마다 `--json` 이 있어 결과를 파싱할 수 있다.

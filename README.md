@@ -173,6 +173,7 @@ What this loop gives an agent:
 | `emu open-url <url> [--no-settle]` | Send a deep link to the connected device (`adb shell am start` / `xcrun simctl openurl`, argv-only — no shell escaping to get wrong). Waits for the resulting navigation to finish before returning by default |
 | `emu shot [path] [--no-settle]` | Save a screenshot (default `.emu/`). Relative paths resolve to the project root. Waits for animations/rebuilds to stop first by default |
 | `emu tap <x> <y> [--no-settle]` | Tap a coordinate (physical pixels — same space as `shot`). Android & iOS. Waits for the resulting transition to finish before returning by default |
+| `emu tap --text <label> \| --key <key> [--index <n>] [--no-settle]` | Tap the widget whose Semantics/Text/Tooltip label, or `ValueKey`, matches — no screenshot/pixel math needed. `--index` picks one when several match |
 | `emu swipe <x1> <y1> <x2> <y2>` | Swipe/scroll. `--duration <ms>`. Android & iOS |
 | `emu text <string> [--append]` | Type into the focused field (unicode OK). Android & iOS |
 | `emu settle [--timeout <s>] [--quiet <ms>]` | Wait for animations/rebuilds to stop (no scheduled frame, `--quiet` window held stable) — `tap`/`shot` already do this by default |
@@ -333,6 +334,33 @@ image directly.
 > 898×2000), you must **multiply the coordinates you read off the image by the
 > downscale ratio** to get physical coordinates. This is the most common cause of
 > taps landing in the wrong place.
+
+**`tap --text`/`--key` skips the screenshot + pixel math** — it finds the widget
+on the live tree and taps its center:
+
+```bash
+emu tap --text "닫기"        # tap the widget whose label/text/tooltip is "닫기"
+emu tap --key myButtonKey    # tap the widget whose ValueKey renders to "myButtonKey"
+```
+
+It matches a `Semantics` widget's `label`, a `Text` widget's `data`, or a
+`Tooltip`'s `message` (covers `IconButton(tooltip: …)` and plain `Text(...)`
+buttons) — an exact string match, evaluated against the live `Element` tree via
+the VM Service (no `ext.flutter.inspector.*` extension returns hit-testable
+geometry for a label query, so this walks the tree itself, the same way the
+framework does every frame). If several widgets match, it's an error naming the
+count; pick one with `--index`:
+
+```bash
+emu tap --text "삭제" --index 1   # the 2nd widget labeled "삭제" (0-based)
+```
+
+Layout changes that move a widget don't break `--text`/`--key` taps the way
+they break hardcoded coordinates — the tree walk finds wherever the widget is
+now. It's still a static-config match, not the merged accessibility tree a
+screen reader sees, so a label composed only from merged child semantics (with
+no `Semantics`/`Text`/`Tooltip` widget carrying it directly) won't match; fall
+back to `<x> <y>` for those.
 
 The `seq` that `tap` returns is the **log cursor just before the tap**. Pass it to
 `assert --since` to assert "what this tap triggered" over the exact window:
@@ -528,12 +556,16 @@ It catches *immediate* errors (build/initState throw), but may miss *delayed /
 triggered* errors (Timer, a tap). In that case `emu assert --deny ... --timeout N`
 is the robust path (polling-based).
 
-**Input goes as far as coordinate taps. UI assertion is not emu's domain.**
-`emu tap` only injects a coordinate; it **does not query the widget tree** — UI
-assertions like "is this button visible?", "what's the text?" are not emu's job
-(the agent judges from a screenshot, or verifies via `assert`/`probe`). If you
-need robust selector-based UI assertions, use `integration_test` (official) /
-`patrol` / `maestro`, and let emu add **log & variable verification** on top.
+**Input goes as far as `--text`/`--key` lookup for tapping. UI assertion is not
+emu's domain.** `emu tap --text`/`--key` reads the widget tree only to find a
+tap point — it matches a `Semantics`/`Text`/`Tooltip` widget's static label, or
+a `ValueKey`, not the framework's fully merged accessibility tree (which only
+exists once something has enabled semantics, e.g. a real screen reader). UI
+assertions like "is this button visible?", "what's the text?" are still not
+emu's job (the agent judges from a screenshot, or verifies via `assert`/`probe`).
+If you need robust selector-based UI assertions, use `integration_test`
+(official) / `patrol` / `maestro`, and let emu add **log & variable
+verification** on top.
 Input (`tap`/`swipe`/`text`) is **common to Android and iOS** — injected directly
 into the framework via the VM Service, working around `simctl`'s lack of input.
 `text` supports unicode too. But it's **Flutter widgets only**.
