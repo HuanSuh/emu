@@ -44,6 +44,11 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
      위젯의 Semantics/Text/Tooltip 라벨이나 `ValueKey` 로 탭. 레이아웃이 바뀌어도
      안 깨지므로 라벨/키를 아는 위젯이면 좌표 산출보다 이걸 우선 쓴다. 여러 개
      매칭되면 에러가 나며 개수를 알려주니 `--index` 로 선택.
+   - `emu find --text <라벨> | --key <key> | --type <위젯타입> [--index <n>] [--dump]`
+     — `tap --text` 와 같은 탐색을 탭 없이 수행해 매칭 위젯 목록과 탭 좌표를 출력.
+     화면 검증이나, 여러 개 매칭될 때 `--index` 를 정하기 전 확인용. `--type` 은
+     위젯 런타임 타입명 매칭, `--dump` 는 각 위젯의 `toString()` 도 출력.
+     0개 매칭은 에러가 아니라 `(no match)` (exit 0).
    - `emu text <문자열> [--append]` — 포커스된 필드에 입력(유니코드 OK). 먼저 필드를 탭.
    - `emu swipe <x1> <y1> <x2> <y2> [--duration <ms>]` — 스크롤도 이걸로.
    - `emu open-url <url> [--no-settle]` — 딥링크를 연결된 기기로 전송(Android는
@@ -72,6 +77,11 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
      `--count`(기본 1, N번 hit까지 대기), `--timeout`(기본 10s).
    - `emu inspect <file:line> [--timeout <s>]` — 그 줄에서 지역변수 전체 +
      콜스택 덤프 후 자동 resume. 이름을 몰라도 되는 `probe` 대체재.
+   - `emu eval '<dart 표현식>'` — 브레이크포인트 없이 앱의 루트 라이브러리
+     (`main()` 이 있는 곳) 스코프에서 표현식을 즉시 평가. 줄에 도달할 때까지
+     기다리는 `probe`/`inspect` 와 달리 "지금 값"을 바로 본다. 대신 라이브러리
+     스코프 이름(최상위 함수/게터, `main.dart` 의 import)만 보이고 지역변수는
+     못 본다. 문자열은 따옴표, 객체는 `<ClassName>` 로 표기.
 5. `emu down [--kill-device]` — 세션 종료.
 
 ## 기타 명령
