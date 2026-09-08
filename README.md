@@ -317,6 +317,14 @@ If a banner doesn't match the expected shape, the library/exception type come
 back `null` but the raw text is always preserved — a parsing miss never
 silently drops the error.
 
+A banner still being printed when `errors` runs is reported with `closed:
+false` (best-effort, `endSeq`/`raw` not yet final — shown as `(still
+printing — re-poll)`). Its `startSeq` also becomes the next poll's cursor
+instead of the log store's true last seq, so `--since <cursor>` still
+re-scans that banner's opening line until it actually closes — otherwise a
+banner that's mid-print exactly when you poll would be reported once,
+truncated, and then permanently excluded from every later `--since` call.
+
 ### assert — log assertion (e2e/CI oracle)
 
 ```bash

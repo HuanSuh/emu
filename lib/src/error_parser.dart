@@ -30,13 +30,14 @@ class StructuredError {
     required this.library,
     required this.exceptionType,
     required this.raw,
+    required this.closed,
   });
 
   /// Seq of the opening banner line.
   final int startSeq;
 
-  /// Seq of the closing banner line (or the last captured line, if the
-  /// banner never closes before the log entries run out).
+  /// Seq of the closing banner line, or (when [closed] is false) the last
+  /// captured entry's seq — the banner was still printing when this scan ran.
   final int endSeq;
 
   /// Text inside `╡ ... ╞` on the opening line, e.g. "EXCEPTION CAUGHT BY
@@ -51,12 +52,19 @@ class StructuredError {
   /// The full original text of every line in the banner, newline-joined.
   final String raw;
 
+  /// Whether the closing `═` line was actually seen. False means this record
+  /// is a best-effort snapshot of a banner still being printed — callers that
+  /// poll with a seq cursor must not advance their cursor past [startSeq] - 1
+  /// for an unclosed record, or they will never see its real, complete text.
+  final bool closed;
+
   Map<String, dynamic> toJson() => {
         'startSeq': startSeq,
         'endSeq': endSeq,
         'library': library,
         'exceptionType': exceptionType,
         'raw': raw,
+        'closed': closed,
       };
 }
 
@@ -80,18 +88,21 @@ List<StructuredError> parseErrorBanners(List<LogEntry> entries) {
       continue;
     }
     if (_closeBanner.hasMatch(text.trim())) {
-      out.add(_buildRecord(sorted, openIndex, i));
+      out.add(_buildRecord(sorted, openIndex, i, closed: true));
       openIndex = null;
     }
   }
-  // Unterminated banner: close it at the last entry we have rather than drop it.
+  // Unterminated banner: still printing (or the log buffer was truncated
+  // mid-banner) — report a best-effort snapshot rather than dropping it, but
+  // mark it unclosed so callers know not to treat [endSeq] as final.
   if (openIndex != null) {
-    out.add(_buildRecord(sorted, openIndex, sorted.length - 1));
+    out.add(_buildRecord(sorted, openIndex, sorted.length - 1, closed: false));
   }
   return out;
 }
 
-StructuredError _buildRecord(List<LogEntry> sorted, int openIndex, int closeIndex) {
+StructuredError _buildRecord(List<LogEntry> sorted, int openIndex, int closeIndex,
+    {required bool closed}) {
   final open = sorted[openIndex];
   final bannerMatch = _openBanner.firstMatch(open.text.trim());
   final library = bannerMatch?.group(1)?.trim();
@@ -109,5 +120,6 @@ StructuredError _buildRecord(List<LogEntry> sorted, int openIndex, int closeInde
     library: (library == null || library.isEmpty) ? null : library,
     exceptionType: exceptionType,
     raw: raw,
+    closed: closed,
   );
 }

@@ -1172,7 +1172,8 @@ Future<int> _errors(List<String> args) async {
   for (final e in errors) {
     final type = e['exceptionType'] ?? '<unknown>';
     final lib = e['library'] ?? '<unknown>';
-    print('✗ $type ($lib)  seq ${e['startSeq']}..${e['endSeq']}');
+    final inProgress = e['closed'] == false ? '  (still printing — re-poll)' : '';
+    print('✗ $type ($lib)  seq ${e['startSeq']}..${e['endSeq']}$inProgress');
   }
   return 0;
 }

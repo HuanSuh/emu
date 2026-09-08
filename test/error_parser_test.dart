@@ -38,6 +38,7 @@ void main() {
       expect(e.endSeq, 8);
       expect(e.raw, contains('Null check operator used on a null value'));
       expect(e.raw, contains('#0  MyWidget.build'));
+      expect(e.closed, isTrue);
     });
 
     test('parses multiple banners independently', () {
@@ -96,6 +97,10 @@ void main() {
       expect(result, hasLength(1));
       expect(result.single.exceptionType, 'TimeoutException');
       expect(result.single.endSeq, 3);
+      // Unclosed — a caller polling with a seq cursor must not advance past
+      // startSeq - 1, or the eventual real closing line can never be matched
+      // back up with this banner's opening line.
+      expect(result.single.closed, isFalse);
     });
 
     test('processes entries in seq order regardless of input order', () {

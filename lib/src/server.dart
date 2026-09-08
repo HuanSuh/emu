@@ -225,7 +225,15 @@ class EmuServer {
         final sinceSeq = int.tryParse(q['since'] ?? '');
         final entries = logStore.query(sinceSeq: sinceSeq);
         final errors = parseErrorBanners(entries);
-        return _json({'errors': errors.map((e) => e.toJson()).toList(), 'lastSeq': logStore.lastSeq});
+        // A banner still printing when this scan ran is reported unclosed
+        // (best-effort). The next `--since` cursor must stop just before its
+        // opening line — advancing past it (e.g. to logStore.lastSeq) would
+        // permanently exclude that opening line from every future scan, so
+        // the banner's real closing line (once it arrives) could never be
+        // matched back up with it.
+        final openBanner = errors.isNotEmpty && !errors.last.closed ? errors.last : null;
+        final cursor = openBanner != null ? openBanner.startSeq - 1 : logStore.lastSeq;
+        return _json({'errors': errors.map((e) => e.toJson()).toList(), 'lastSeq': cursor});
       case '/api/memory/snapshot':
         return _memorySnapshot(req);
       case '/api/screenshot':
