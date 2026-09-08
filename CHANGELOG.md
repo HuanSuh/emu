@@ -6,6 +6,33 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-08
+
+### Added
+- `emu find --text <label> | --key <key> | --type <Widget> [--index <n>] [--dump]`
+  — `tap --text/--key`가 쓰는 온디바이스 위젯 조회를 탭 없이 노출. `--type`은
+  위젯 런타임 타입명 매칭, `--dump`는 각 위젯의 `toString()`도 출력. 매칭
+  0개는 에러가 아니라 `(no match)`.
+- `emu eval '<dart-expr>'` — 브레이크포인트 없이 앱의 isolate root library
+  스코프에서 표현식을 즉시 평가. 그 줄이 실행돼야 값을 주는 `probe`/`inspect`와
+  달리 "지금 상태"를 바로 조회한다.
+- `emu errors [--since <seq>]` — 로그에 이미 잡히는 Flutter 예외 콘솔 배너
+  (`═══╡ ... ╞═══`)를 배너 단위로 묶어 라이브러리/예외 타입/seq 범위로
+  구조화. Android는 로그가 logcat 태그를 달고 오므로 그걸 벗기고 매칭한다.
+- `emu memory --diff-across "<shell command>" [--all]` — 주어진 커맨드
+  실행 전후 힙 인스턴스 수 diff(VM Service `getAllocationProfile(gc:true)`).
+  기본은 앱 자신의 패키지 클래스만, `--all`로 프레임워크 클래스까지 포함.
+
+### Fixed
+- `up`/`assert`/`probe`/`inspect`/`logs`/`swipe`/`settle`/`tap`이 `--help`나
+  잘못된 플래그를 주면 `FormatException` 스택트레이스로 죽던 문제 수정.
+  공유 헬퍼(`_parseOrUsage`)로 통일하고 모든 서브커맨드가 `-h`/`--help`를
+  지원하도록 함(`find`/`eval`/`errors`/`memory` 포함).
+- `emu open-url`이 Android에서 파라미터를 조용히 잃던 문제 수정: `adb shell`은
+  argv 경계를 보존하지 않고 인자를 이어붙여 기기의 `/bin/sh`에 다시 넘기므로,
+  URL에 `&`가 있으면 거기서 잘렸다. URL을 기기 셸용으로 인용해서 보낸다
+  (이슈 리포터 [@Heewookji](https://github.com/Heewookji) 기여, #6).
+
 ## [0.4.0] - 2026-09-08
 
 GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1건, 기능 2건,
@@ -84,7 +111,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/HuanSuh/emu/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/HuanSuh/emu/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/HuanSuh/emu/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/HuanSuh/emu/compare/v0.1.0...v0.2.0
