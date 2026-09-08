@@ -76,6 +76,35 @@ class Session {
   }
 }
 
+/// What `emu up` should do given the state of an already-registered session.
+enum UpSessionAction {
+  /// No live server for this project — proceed with a fresh launch.
+  start,
+
+  /// A server is up and the app is actually running/starting — refuse; the
+  /// existing session must be torn down with `emu down` first.
+  refuseRunning,
+
+  /// A server process answers pings but the app isn't actually up (crashed,
+  /// or its process was killed/interrupted independently of the server) — a
+  /// "ghost" session. Reclaim it and proceed with a fresh launch instead of
+  /// blocking the user with a misleading "already running" refusal.
+  reclaimGhost,
+}
+
+/// Decide what `up` should do given whether the existing session's server
+/// answered a ping and, if so, the app's reported run state (an
+/// [AppRunState] name from `/api/status`, or null if it couldn't be read).
+///
+/// Pulled out as a pure function so the ghost-session decision — the part
+/// that previously misled users with "already running" when only the server
+/// process, not the app, was alive — is unit-testable without a real server.
+UpSessionAction decideUpAction({required bool serverAlive, String? appState}) {
+  if (!serverAlive) return UpSessionAction.start;
+  if (appState == 'stopped' || appState == 'failed') return UpSessionAction.reclaimGhost;
+  return UpSessionAction.refuseRunning;
+}
+
 class ServerInfo {
   ServerInfo({required this.port, required this.pid, this.project});
   final int port;
