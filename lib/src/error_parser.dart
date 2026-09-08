@@ -21,6 +21,16 @@ final _closeBanner = RegExp(r'^═{10,}$');
 /// `The following NullCheckError was thrown building MyWidget(...):`.
 final _thrownBy = RegExp(r'^The following (\S+) was thrown\b');
 
+/// Android's daemon `app.log` forwards adb logcat, which tags every physical
+/// line with `<level>/<tag>( pid): `, e.g. `I/flutter ( 1234): message` (see
+/// `log_store.dart`'s `_logcatPrefix` / its tests) — including every line of
+/// an exception banner. Strip that tag before matching the banner regexes
+/// against it, or `_openBanner`/`_closeBanner`/`_thrownBy` (anchored at `^`)
+/// never match on Android and `emu errors` silently reports none.
+final _logcatTag = RegExp(r'^[EWIDV]/\S+\s*\(\s*\d+\s*\)\s*:\s*');
+
+String _stripLogcatTag(String text) => text.replaceFirst(_logcatTag, '');
+
 /// One exception banner, grouped from the raw log lines between an opening
 /// and closing banner line (inclusive of both).
 class StructuredError {
@@ -82,14 +92,22 @@ List<StructuredError> parseErrorBanners(List<LogEntry> entries) {
 
   int? openIndex;
   for (var i = 0; i < sorted.length; i++) {
-    final text = sorted[i].text;
+    final text = _stripLogcatTag(sorted[i].text.trim());
     if (openIndex == null) {
-      if (_openBanner.hasMatch(text.trim())) openIndex = i;
+      if (_openBanner.hasMatch(text)) openIndex = i;
       continue;
     }
-    if (_closeBanner.hasMatch(text.trim())) {
+    if (_closeBanner.hasMatch(text)) {
       out.add(_buildRecord(sorted, openIndex, i, closed: true));
       openIndex = null;
+    } else if (_openBanner.hasMatch(text)) {
+      // A second opening line before the first banner closed: two banners'
+      // lines interleaved (e.g. two concurrent log sources) rather than one
+      // banner containing a literal "╡...╞" in its body. Close the first one
+      // here (unclosed — its real end was never seen) instead of silently
+      // merging both banners' text into one mis-attributed record.
+      out.add(_buildRecord(sorted, openIndex, i - 1, closed: false));
+      openIndex = i;
     }
   }
   // Unterminated banner: still printing (or the log buffer was truncated
@@ -104,12 +122,13 @@ List<StructuredError> parseErrorBanners(List<LogEntry> entries) {
 StructuredError _buildRecord(List<LogEntry> sorted, int openIndex, int closeIndex,
     {required bool closed}) {
   final open = sorted[openIndex];
-  final bannerMatch = _openBanner.firstMatch(open.text.trim());
+  final bannerMatch = _openBanner.firstMatch(_stripLogcatTag(open.text.trim()));
   final library = bannerMatch?.group(1)?.trim();
 
   String? exceptionType;
   if (openIndex + 1 <= closeIndex) {
-    final thrownMatch = _thrownBy.firstMatch(sorted[openIndex + 1].text.trim());
+    final thrownMatch =
+        _thrownBy.firstMatch(_stripLogcatTag(sorted[openIndex + 1].text.trim()));
     exceptionType = thrownMatch?.group(1);
   }
 

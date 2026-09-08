@@ -12,6 +12,10 @@ void main() {
     test('null when absent', () {
       expect(packageNameFromPubspec('version: 1.0.0'), isNull);
     });
+    test('strips surrounding quotes — a valid YAML form for the value', () {
+      expect(packageNameFromPubspec('name: "my_app"\nversion: 1.0.0'), 'my_app');
+      expect(packageNameFromPubspec("name: 'my_app'\nversion: 1.0.0"), 'my_app');
+    });
   });
 
   group('matchScriptUri', () {
