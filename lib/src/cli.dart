@@ -13,6 +13,7 @@ import 'assertions.dart';
 import 'device_manager.dart';
 import 'launch_config.dart';
 import 'models.dart';
+import 'open_url.dart';
 import 'project_config.dart';
 import 'project_memory.dart';
 import 'server.dart';
@@ -78,6 +79,8 @@ Future<int> runCli(List<String> argv) async {
         return await _settleCmd(rest);
       case 'open':
         return await _open(rest);
+      case 'open-url':
+        return await _openUrlCmd(rest);
       case 'down':
         return await _down(rest);
       case 'help':
@@ -1340,6 +1343,54 @@ Future<int> _open(List<String> args) async {
   return 0;
 }
 
+/// `emu open-url <url>` — send a deep link to the currently connected device
+/// via `adb shell am start` (Android) or `xcrun simctl openurl` (iOS), always
+/// as an argv array so a `url` containing `&`/`;`/etc. never round-trips
+/// through a shell. Waits for the resulting navigation to settle unless
+/// `--no-settle` is passed, same as `tap`/`shot`.
+Future<int> _openUrlCmd(List<String> args) async {
+  final json = args.contains('--json');
+  final settle = !args.contains('--no-settle');
+  final url = args.firstWhere((a) => !a.startsWith('-'), orElse: () => '');
+  if (url.isEmpty) {
+    stderr.writeln('usage: emu open-url <url> [--no-settle]');
+    return 2;
+  }
+  final info = _requireServer();
+  final data = await _get(info, '/api/status');
+  final deviceId = (data?['status'] as Map?)?['deviceId'] as String?;
+  final cmd = buildOpenUrlCommand(
+    platform: platformForDeviceId(deviceId),
+    deviceId: deviceId,
+    url: url,
+  );
+  ProcessResult result;
+  try {
+    result = await Process.run(cmd.executable, cmd.arguments);
+  } catch (e) {
+    if (json) {
+      print(jsonEncode({'ok': false, 'error': '$e'}));
+    } else {
+      stderr.writeln('✗ open-url failed: $e');
+    }
+    return 1;
+  }
+  final ok = result.exitCode == 0;
+  if (ok && settle) await _post(info, '/api/settle');
+  if (json) {
+    print(jsonEncode({
+      'ok': ok,
+      'url': url,
+      if (!ok) 'error': '${result.stderr}'.trim(),
+    }));
+  } else if (ok) {
+    print('✓ open-url $url');
+  } else {
+    stderr.writeln('✗ open-url failed: ${result.stderr}');
+  }
+  return ok ? 0 : 1;
+}
+
 Future<int> _down(List<String> args) async {
   final killDevice = args.contains('--kill-device');
   final session = Session.require();
@@ -1571,6 +1622,10 @@ COMMANDS
      --timeout <s>         max time to wait (default 10)
      --quiet <ms>          quiet window with no scheduled frames (default 150)
   open                   Open the dashboard in the browser
+  open-url <url> [--no-settle]
+                         Send a deep link to the connected device
+                         (adb am start / xcrun simctl openurl). Waits for the
+                         resulting navigation to finish (skip with --no-settle)
   down [--kill-device]   Stop the session (optionally power off the device)
 
 ENV
