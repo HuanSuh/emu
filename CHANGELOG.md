@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+### Added
+- `emu.yaml`/`emu.local.yaml`에 `profiles:` — 이름 붙은 설정 프리셋을
+  `.vscode/launch.json` 없이도 정의(`emu up --profile <name>`,
+  `emu config --profile <name>`으로 미리보기, `emu configs`에 목록 추가).
+  같은 이름의 profile이 양쪽 파일에 있으면 `emu.local.yaml`이 필드 단위로
+  이긴다. `--config`(launch.json)와는 상호 배타.
+
 ## [0.5.0] - 2026-09-08
 
 ### Added

@@ -90,6 +90,71 @@ void main() {
     });
   });
 
+  group('loadProjectConfig profiles', () {
+    late Directory root;
+    setUp(() => root = Directory.systemTemp.createTempSync('emu_cfg_profiles'));
+    tearDown(() => root.deleteSync(recursive: true));
+
+    test('no --profile behaves exactly as before (backward compatible)', () {
+      File('${root.path}/emu.yaml').writeAsStringSync('flavor: dev\n'
+          'profiles:\n  staging:\n    flavor: staging\n');
+      final c = loadProjectConfig(root.path, home: '');
+      expect(c.flavor, 'dev'); // profiles: ignored entirely when no name is given
+    });
+
+    test('selected profile overrides the plain top-level defaults', () {
+      File('${root.path}/emu.yaml').writeAsStringSync('flavor: dev\ndevice: devDevice\n'
+          'profiles:\n'
+          '  staging:\n'
+          '    flavor: staging\n'
+          '    dartDefineFromFile: dart_defines/staging.json\n');
+      final c = loadProjectConfig(root.path, home: '', profile: 'staging');
+      expect(c.flavor, 'staging');
+      expect(c.dartDefineFromFile, ['dart_defines/staging.json']);
+      expect(c.deviceId, 'devDevice'); // untouched field falls through to top-level
+    });
+
+    test('emu.local.yaml profile field wins over emu.yaml profile field of the same name', () {
+      File('${root.path}/emu.yaml').writeAsStringSync(
+          'profiles:\n  staging:\n    flavor: staging\n    device: sharedDevice\n');
+      File('${root.path}/emu.local.yaml')
+          .writeAsStringSync('profiles:\n  staging:\n    device: myLocalDevice\n');
+      final c = loadProjectConfig(root.path, home: '', profile: 'staging');
+      expect(c.deviceId, 'myLocalDevice'); // local profile field wins
+      expect(c.flavor, 'staging'); // not overridden locally, falls through to emu.yaml's profile
+    });
+
+    test('a profile defined only in emu.local.yaml (no emu.yaml entry) still resolves', () {
+      File('${root.path}/emu.local.yaml')
+          .writeAsStringSync('profiles:\n  onlyLocal:\n    device: x\n');
+      final c = loadProjectConfig(root.path, home: '', profile: 'onlyLocal');
+      expect(c.deviceId, 'x');
+    });
+
+    test('unknown profile name yields the plain config, not an error', () {
+      File('${root.path}/emu.yaml').writeAsStringSync('flavor: dev\n');
+      final c = loadProjectConfig(root.path, home: '', profile: 'nope');
+      expect(c.flavor, 'dev'); // caller (cli.dart) is responsible for validating existence first
+    });
+  });
+
+  group('listProfileNames', () {
+    late Directory root;
+    setUp(() => root = Directory.systemTemp.createTempSync('emu_cfg_profile_names'));
+    tearDown(() => root.deleteSync(recursive: true));
+
+    test('empty when neither file has a profiles: section', () {
+      expect(listProfileNames(root.path), isEmpty);
+    });
+
+    test('union of names from both files, de-duplicated', () {
+      File('${root.path}/emu.yaml')
+          .writeAsStringSync('profiles:\n  staging:\n    flavor: staging\n  prod:\n    flavor: prod\n');
+      File('${root.path}/emu.local.yaml').writeAsStringSync('profiles:\n  staging:\n    device: x\n');
+      expect(listProfileNames(root.path), {'staging', 'prod'});
+    });
+  });
+
   group('ensureLocalConfigIgnored', () {
     late Directory root;
     setUp(() => root = Directory.systemTemp.createTempSync('emu_gi'));

@@ -155,8 +155,8 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 | `emu update [-y]` | 최신 릴리스를 pull + 재빌드 (`emu`가 git 체크아웃에서 실행 중일 때만 동작 — 예: `emu-setup` 이후) |
 | `emu uninstall [-y]` | 현재 실행 중인 바이너리를 가리키는 PATH 심링크 제거 |
 | `emu devices` | `flutter devices` + Android AVD 목록 |
-| `emu configs` | `.vscode/launch.json` 의 실행 구성 목록 (debug만 실행 가능) |
-| `emu config` | `emu.yaml` 계층 병합 결과 + 학습된 메모리 표시 |
+| `emu configs` | `.vscode/launch.json` 의 실행 구성 목록 (debug만 실행 가능) + `emu.yaml`/`emu.local.yaml` 의 profile 목록 |
+| `emu config [--profile <name>]` | `emu.yaml` 계층 병합 결과 + 학습된 메모리 표시. `--profile` 주면 그 profile로 resolve된 값을 대신 미리보기 |
 | `emu up [opts]` | 기기 부팅 + 앱 실행 + 대시보드 기동. `running`/`failed` + 첫 프레임까지 대기 |
 | `emu down [--kill-device]` | 세션 종료. `--kill-device` 면 기기 전원도 끔 |
 | `emu stop` | 앱만 정지(서버는 유지) |
@@ -180,7 +180,8 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 |------|------|
 | `--android` / `--ios` | 해당 플랫폼 기본 기기를 부팅 |
 | `-d, --device <id>` | 특정 flutter device id 사용. iOS 시뮬레이터 udid면 꺼져 있어도 자동 부팅 |
-| `--config <name>` | `.vscode/launch.json` 의 구성을 재현 (개별 플래그가 덮어씀) |
+| `--config <name>` | `.vscode/launch.json` 의 구성을 재현 (개별 플래그가 덮어씀). `--profile` 과 상호 배타 |
+| `--profile <name>` | `emu.yaml`/`emu.local.yaml` 의 named profile 적용 (개별 플래그가 덮어씀). `--config` 와 상호 배타 |
 | `--flavor <name>` | 빌드 flavor |
 | `-t, --target <file>` | 진입점(`lib/main_dev.dart` 등) |
 | `--dart-define K=V` | dart-define (반복 가능) |
@@ -224,7 +225,9 @@ git-ignore되는 로컬 층에 둔다.
 | 계층 | 파일 | 성격 |
 |------|------|------|
 | explicit flag | `emu up --flavor …` | CLI 인자 |
-| `--config` | `.vscode/launch.json` | named 구성 |
+| `--config` | `.vscode/launch.json` | named 구성 (아래 `--profile` 와 상호 배타) |
+| `--profile` (local) | `<root>/emu.local.yaml` → `profiles.<name>` | 이 머신의 profile override |
+| `--profile` (project) | `<root>/emu.yaml` → `profiles.<name>` | 팀 공유 profile |
 | local | `<root>/emu.local.yaml` | **git-ignore**. 이 머신 전용(`device` 등) |
 | project | `<root>/emu.yaml` | **커밋**. 팀 공유(`flavor`, `dartDefines`, `target`) |
 | user | `~/.emu/config.yaml` | 모든 프로젝트 기본값(`timeout` 등) |
@@ -251,6 +254,43 @@ emu up              # 위 값들이 기본으로 적용됨 (플래그로 덮어�
 - 깨진 yaml 한 층은 경고만 내고 건너뛴다 — 설정 하나가 `up` 을 죽이지 않는다.
 - `emu.local.yaml` 은 머신 종속값이라 커밋 금지 — `emu up` 이 이 파일을 처음 보면
   프로젝트 `.gitignore` 에 자동 추가한다(멱등, 파일이 있을 때만).
+
+#### profile — `emu.yaml` 안의 이름 붙은 프리셋 (IDE 불필요)
+
+`--config`는 `.vscode/launch.json`이 있어야 한다. 그게 없는 프로젝트(또는 앞으로도 없을
+에이전트 워크플로)를 위해, `emu.yaml`/`emu.local.yaml` 안에 직접 이름 붙은 프리셋을
+정의할 수 있다 — 형식은 위와 동일, `profiles:` 키 아래 묶기만 하면 된다. profile은
+최상위 기본값과 다른 부분만 적으면 되고, 나머지는 최상위 값으로 자연스럽게 폴백된다.
+
+```yaml
+# emu.yaml  (커밋)
+flavor: dev
+profiles:
+  staging:
+    flavor: staging
+    dartDefineFromFile: dart_defines/staging.json
+  prod:
+    flavor: prod
+    target: lib/main_prod.dart
+```
+```yaml
+# emu.local.yaml  (git-ignore 대상)
+profiles:
+  staging:
+    device: emulator-9999   # 이 머신에서 "staging" 부팅 시 쓸 기기만 override
+```
+```bash
+emu configs                       # launch.json 구성 + emu.yaml/emu.local.yaml profile 모두 목록
+emu config --profile staging      # 기동 없이 "staging" 이 어떻게 resolve되는지 미리보기
+emu up --profile staging          # 그대로 기동
+```
+
+- `--config`와 `--profile`은 "이름 붙은 프리셋"이라는 같은 개념의 두 소스라 동시에 못 씀 —
+  한 번의 실행엔 하나만.
+- 같은 이름의 profile이 `emu.yaml`과 `emu.local.yaml` 양쪽에 있으면, 필드 단위로
+  `emu.local.yaml` 쪽이 이긴다 — 팀은 `staging` profile을 공유하고 각자 머신은
+  device만 자기 것으로 override하는 식.
+- 존재하지 않는 `--profile` 이름은 실제 존재하는 profile 목록과 함께 에러.
 
 **학습 메모리(`.emu/memory.json`, git-ignore됨)** — 도구가 실행하며 주워담는 재계산용
 힌트(`lastScreen`·`lastDpr`·`lastInspect`·`seenKeys`). **권위가 아니다**: 다음 실행이

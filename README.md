@@ -163,8 +163,8 @@ What this loop gives an agent:
 | `emu update [-y]` | Pull + rebuild the latest release (only works when `emu` runs from a git checkout, e.g. after `emu-setup`) |
 | `emu uninstall [-y]` | Remove the PATH symlink(s) pointing at the running binary |
 | `emu devices` | `flutter devices` + Android AVD list |
-| `emu configs` | List run configs from `.vscode/launch.json` (debug only) |
-| `emu config` | Show the merged `emu.yaml` config + learned memory |
+| `emu configs` | List run configs from `.vscode/launch.json` (debug only) + profiles from `emu.yaml`/`emu.local.yaml` |
+| `emu config [--profile <name>]` | Show the merged `emu.yaml` config + learned memory; with `--profile`, preview that named profile's resolved config instead |
 | `emu up [opts]` | Boot device + launch app + start dashboard. Waits for `running`/`failed` + first frame |
 | `emu down [--kill-device]` | End the session. `--kill-device` also powers the device off |
 | `emu stop` | Stop only the app (server stays up) |
@@ -188,7 +188,8 @@ What this loop gives an agent:
 |--------|-------------|
 | `--android` / `--ios` | Boot a default device of that platform |
 | `-d, --device <id>` | Use a specific flutter device id. An iOS simulator udid auto-boots even if off |
-| `--config <name>` | Replay a `.vscode/launch.json` config (individual flags override it) |
+| `--config <name>` | Replay a `.vscode/launch.json` config (individual flags override it). Mutually exclusive with `--profile` |
+| `--profile <name>` | Apply a named profile from `emu.yaml`/`emu.local.yaml` (individual flags override it). Mutually exclusive with `--config` |
 | `--flavor <name>` | Build flavor |
 | `-t, --target <file>` | Entry point (e.g. `lib/main_dev.dart`) |
 | `--dart-define K=V` | dart-define (repeatable) |
@@ -236,7 +237,9 @@ Precedence (high → low):
 | Layer | File | Nature |
 |-------|------|--------|
 | explicit flag | `emu up --flavor …` | CLI argument |
-| `--config` | `.vscode/launch.json` | named config |
+| `--config` | `.vscode/launch.json` | named config (mutually exclusive with `--profile`, below) |
+| `--profile` (local) | `<root>/emu.local.yaml` → `profiles.<name>` | this machine's override of the named profile |
+| `--profile` (project) | `<root>/emu.yaml` → `profiles.<name>` | team-shared named profile |
 | local | `<root>/emu.local.yaml` | **git-ignored**. This machine only (`device`, etc.) |
 | project | `<root>/emu.yaml` | **committed**. Team-shared (`flavor`, `dartDefines`, `target`) |
 | user | `~/.emu/config.yaml` | Defaults across all projects (`timeout`, etc.) |
@@ -265,6 +268,44 @@ emu up              # the values above apply as defaults (flags still override)
 - `emu.local.yaml` holds machine-specific values, so it must not be committed —
   `emu up` auto-adds it to the project `.gitignore` the first time it sees the
   file (idempotent; only when the file exists).
+
+#### profiles — named presets inside `emu.yaml` (no IDE required)
+
+`--config` needs a `.vscode/launch.json`. For projects that don't have one (or
+agents that never will), define named presets directly in `emu.yaml`/
+`emu.local.yaml` instead — same file format as above, just grouped under a
+`profiles:` key. A profile only needs to state what differs from the plain
+top-level defaults; everything else falls through to them.
+
+```yaml
+# emu.yaml  (committed)
+flavor: dev
+profiles:
+  staging:
+    flavor: staging
+    dartDefineFromFile: dart_defines/staging.json
+  prod:
+    flavor: prod
+    target: lib/main_prod.dart
+```
+```yaml
+# emu.local.yaml  (git-ignored)
+profiles:
+  staging:
+    device: emulator-9999   # override just the device this machine boots for "staging"
+```
+```bash
+emu configs                       # lists launch.json configs *and* emu.yaml/emu.local.yaml profiles
+emu config --profile staging      # preview what "staging" resolves to, without launching
+emu up --profile staging          # launch with it
+```
+
+- `--config` and `--profile` are two sources of the same idea (a named preset)
+  and can't be combined — pick one per invocation.
+- A profile can live in `emu.yaml`, `emu.local.yaml`, or both; when both define
+  the same profile name, `emu.local.yaml`'s fields win per-field (so a team can
+  share a `staging` profile while each machine overrides just its own device).
+- An unknown `--profile` name fails with the list of profiles that do exist.
 
 **Learned memory (`.emu/memory.json`, git-ignored)** — recomputation hints the
 tool picks up while running (`lastScreen`, `lastDpr`, `lastInspect`, `seenKeys`).

@@ -32,8 +32,14 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
 1. `emu up [opts]` — 기기 부팅 + 앱 실행. `running` + 첫 프레임까지 대기한다.
    - 반복 실행이면 `emu.yaml`(flavor/target)·`emu.local.yaml`(device)을 만들어
      인자를 생략한다. `emu config` 로 병합 결과를 확인.
+   - `.vscode/launch.json`이 없거나 여러 환경(dev/staging/prod)을 CLI만으로
+     다뤄야 하면, `emu.yaml`/`emu.local.yaml`에 `profiles:` 로 이름 붙은
+     프리셋을 정의하고 `emu up --profile <이름>` 으로 고른다(`emu configs` 로
+     목록, `emu config --profile <이름>` 으로 미리보기). `--config`와 동시
+     사용 불가 — 이름 붙은 프리셋 소스를 하나만 고른다.
    - 주요 옵션: `--android`/`--ios`, `-d/--device <id>`, `--config <name>`
-     (`.vscode/launch.json` 재현), `--flavor`, `-t/--target <file>`,
+     (`.vscode/launch.json` 재현) 또는 `--profile <name>`(`emu.yaml` 프리셋,
+     상호 배타), `--flavor`, `-t/--target <file>`,
      `--dart-define K=V`(반복), `--dart-define-from-file <path>`(반복),
      `-a/--dart-entrypoint-args <arg>`(반복), `--device-timeout <s>`,
      `--device-connection <both|attached|wireless>`, `--dds-port <n>`,
@@ -102,8 +108,10 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
   대기(`tap`/`shot`/`open-url` 은 이미 기본으로 이걸 하므로, 두 명령 사이에
   독립적으로 끼워 넣거나 기본값보다 세밀하게 조정할 때만 필요).
 - `emu devices` — 실행 중인 기기 + Android AVD 목록.
-- `emu configs` — `.vscode/launch.json` 재현 가능한 구성 목록.
-- `emu config` — `emu.yaml` 계층 병합 결과 + 학습된 메모리.
+- `emu configs` — `.vscode/launch.json` 재현 가능한 구성 목록 + `emu.yaml`/`emu.local.yaml`
+  의 profile 목록.
+- `emu config [--profile <name>]` — `emu.yaml` 계층 병합 결과 + 학습된 메모리(`--profile`
+  주면 그 profile로 미리보기).
 - `emu doctor` — 의존성 점검(flutter/adb/emulator/xcrun) + 업데이트 여부.
 - `emu --version`/`-v`, `emu update [-y]`, `emu uninstall [-y]` — 버전 확인,
   최신 릴리스로 업데이트, PATH 심링크 제거.
