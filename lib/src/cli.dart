@@ -979,16 +979,12 @@ Future<int> _find(List<String> args) async {
     ..addOption('type', help: 'match widget runtime type name, e.g. ElevatedButton')
     ..addOption('index', help: '0-based match to report when several match')
     ..addFlag('dump', negatable: false, help: "also print each widget's toString()")
-    ..addFlag('json', negatable: false);
+    ..addFlag('json', negatable: false)
+    ..addFlag('help', abbr: 'h', negatable: false);
   const usage = 'usage: emu find --text <label> | --key <key> | --type <Widget> '
       '[--index <n>] [--dump]';
-  final ArgResults res;
-  try {
-    res = parser.parse(args);
-  } catch (e) {
-    stderr.writeln(usage);
-    return 2;
-  }
+  final (res, code) = _parseOrUsage(parser, args, usage);
+  if (res == null) return code!;
   final text = res.option('text');
   final key = res.option('key');
   final type = res.option('type');
@@ -1046,19 +1042,17 @@ Future<int> _find(List<String> args) async {
 /// in its root library's scope. No breakpoint, so unlike `probe`/`inspect` it
 /// needs no line to be reached — but it only sees library-scope names.
 Future<int> _eval(List<String> args) async {
-  final parser = ArgParser()..addFlag('json', negatable: false);
-  final ArgResults res;
-  try {
-    res = parser.parse(args);
-  } catch (e) {
-    stderr.writeln("usage: emu eval '<dart expression>'");
-    return 2;
-  }
+  final parser = ArgParser()
+    ..addFlag('json', negatable: false)
+    ..addFlag('help', abbr: 'h', negatable: false);
+  const usage = "usage: emu eval '<dart expression>'   # e.g. emu eval 'Router.current'";
+  final (res, code) = _parseOrUsage(parser, args, usage);
+  if (res == null) return code!;
   // Normally the shell has already delivered a quoted expression as one arg;
   // joining is just the fallback for an unquoted one.
   final expr = res.rest.join(' ').trim();
   if (expr.isEmpty) {
-    stderr.writeln("usage: emu eval '<dart expression>'   # e.g. emu eval 'Router.current'");
+    stderr.writeln(usage);
     return 2;
   }
 
@@ -1315,8 +1309,11 @@ int _logsFromFile(Session session, ArgResults res, Map<String, String> query) {
 Future<int> _errors(List<String> args) async {
   final parser = ArgParser()
     ..addOption('since', help: 'seq cursor — only banners after this seq')
-    ..addFlag('json', negatable: false);
-  final res = parser.parse(args);
+    ..addFlag('json', negatable: false)
+    ..addFlag('help', abbr: 'h', negatable: false);
+  const usage = 'usage: emu errors [--since <seq>]';
+  final (res, code) = _parseOrUsage(parser, args, usage);
+  if (res == null) return code!;
   final info = _requireServer();
   final since = res.option('since');
   final qs = since != null ? '?since=${Uri.encodeQueryComponent(since)}' : '';
@@ -1350,11 +1347,14 @@ Future<int> _memory(List<String> args) async {
   final parser = ArgParser()
     ..addOption('diff-across', help: 'shell command to run between the before/after snapshots')
     ..addFlag('all', negatable: false, help: 'include framework classes, not just the app package')
-    ..addFlag('json', negatable: false);
-  final res = parser.parse(args);
+    ..addFlag('json', negatable: false)
+    ..addFlag('help', abbr: 'h', negatable: false);
+  const usage = 'usage: emu memory --diff-across "<shell command>" [--all]';
+  final (res, code) = _parseOrUsage(parser, args, usage);
+  if (res == null) return code!;
   final command = res.option('diff-across');
   if (command == null || command.isEmpty) {
-    stderr.writeln('usage: emu memory --diff-across "<shell command>" [--all]');
+    stderr.writeln(usage);
     return 2;
   }
   final info = _requireServer();
