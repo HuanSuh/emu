@@ -166,6 +166,8 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 | `emu shot [path] [--no-settle]` | 스크린샷 저장(기본 `.emu/`). 상대 경로는 프로젝트 루트 기준. 기본적으로 먼저 애니메이션/리빌드가 멈추길 기다림 |
 | `emu tap <x> <y> [--no-settle]` | 좌표 탭 (물리 픽셀 — `shot`과 같은 좌표계). Android·iOS. 기본적으로 탭이 유발한 전환이 끝날 때까지 기다렸다가 반환 |
 | `emu tap --text <label> \| --key <key> [--index <n>] [--no-settle]` | Semantics/Text/Tooltip 라벨 또는 `ValueKey` 로 위젯을 찾아 탭 — 스크린샷·픽셀 계산 불필요. 여러 개 매칭되면 `--index` 로 선택 |
+| `emu find --text <label> \| --key <key> \| --type <Widget> [--index <n>] [--dump]` | 질의에 매칭되는 화면 위젯 목록 + 탭 좌표 — `tap --text` 와 같은 탐색을 탭 없이 수행. `--dump` 면 각 위젯의 `toString()` 도 출력 |
+| `emu eval <dart-expr>` | 실행 중인 앱의 루트 라이브러리 스코프에서 Dart 표현식을 지금 즉시 평가 — 브레이크포인트도 일시정지도 없음(`probe` 와 다름) |
 | `emu swipe <x1> <y1> <x2> <y2>` | 스와이프/스크롤. `--duration <ms>`. Android·iOS |
 | `emu text <string> [--append]` | 포커스된 필드에 입력(유니코드 OK). Android·iOS |
 | `emu settle [--timeout <s>] [--quiet <ms>]` | 애니메이션/리빌드가 멈출 때까지 대기(예약된 프레임 없음 상태를 `--quiet` 동안 유지) — `tap`/`shot` 은 이미 기본으로 대기함 |
@@ -421,6 +423,46 @@ emu shot ui.png --no-settle
 **절대 예외를 던지지 않는다**: 타임아웃이거나 VM Service 가 아직 연결 불가능한 상태면 커맨드를
 실패시키는 대신 `settled: false` 를 리턴한다 — 느리거나 계속 애니메이션 중인 화면은 워크플로우를
 막는 대신 캡처에 대한 신뢰도만 낮춘다. `tap`/`shot` 은 settle이 타임아웃되어도 정상적으로 반환한다.
+
+### find — 탭하지 않고 화면에 뭐가 있는지 보기
+
+```bash
+emu find --text <label> | --key <key> | --type <Widget> [--index <n>] [--dump]
+```
+
+`find` 는 `tap --text/--key` 와 똑같은 위젯 탐색을 수행하되, 하나를 탭하는 대신 매칭된
+것들을 보고한다 — 화면이 기대대로 그려졌는지 확인하거나, `--index` 를 정하기 전에 몇 개가
+걸리는지 보는 용도다. `--type` 은 위젯 런타임 타입명으로 매칭하며 `tap` 에는 없는 모드다.
+
+```bash
+emu find --text "삭제"
+# [0] Text   340,1210   72.0×24.0
+# [1] Text   340,1580   72.0×24.0
+emu find --type ElevatedButton --dump   # 매치마다 다음 줄에 toString()
+emu tap --text "삭제" --index 1          # …그 다음 원하는 걸 탭
+```
+
+0개 매칭은 실패가 아니라 그냥 답이다(`(no match)`, exit 0). 마지막 매치를 넘어선
+`--index` 같은 잘못된 요청만 exit 1 이다.
+
+### eval — 지금 이 순간의 표현식 평가
+
+```bash
+emu eval '<dart expression>'
+```
+
+`probe`/`inspect` 는 실행이 그 줄에 **도달해야** 값을 볼 수 있다. `eval` 은
+브레이크포인트 없이 앱의 루트 라이브러리(`main()` 이 있는 곳) 스코프에서 평가하므로
+"지금 이게 뭘 들고 있나?" 에 바로 답한다 — 싱글턴, 현재 라우트, 피처 플래그 확인에 좋다.
+
+```bash
+emu eval 'AppRouter.currentScreenName'
+# "BENEFIT_MAIN"
+```
+
+멈춘 프레임이 필요 없는 대신 **라이브러리 스코프** 이름만 보인다 — 최상위 함수/게터와
+`main.dart` 가 import 한 것들뿐, 함수의 지역변수는 못 본다. 그건 `probe`/`inspect` 몫이다.
+값 표기는 거기와 동일하다: 문자열은 따옴표, 나머지 primitive 는 그대로, 객체는 `<ClassName>`.
 
 ### probe — 변수 캡처 (VM Service logpoint)
 

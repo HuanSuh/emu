@@ -23,9 +23,33 @@ void main() {
       expect(locateExpr(text: 'a"b'), contains(r'_emuMatchText(w, "a\"b")'));
     });
 
-    test('exactly one of text/key must be given', () {
+    test('by --type checks the widget runtime type name', () {
+      final e = locateExpr(type: 'ElevatedButton');
+      expect(e, contains('_emuMatchType(w, "ElevatedButton")'));
+      expect(e, contains('w.runtimeType.toString() == want'));
+      expect(e, isNot(contains('_emuMatchText(w,')));
+      expect(e, isNot(contains('_emuMatchKey(w.key')));
+    });
+
+    test('exactly one of text/key/type must be given', () {
       expect(() => locateExpr(), throwsA(isA<AssertionError>()));
       expect(() => locateExpr(text: 'a', key: 'b'), throwsA(isA<AssertionError>()));
+      expect(() => locateExpr(text: 'a', type: 'b'), throwsA(isA<AssertionError>()));
+      expect(() => locateExpr(key: 'a', type: 'b'), throwsA(isA<AssertionError>()));
+      expect(() => locateExpr(text: 'a', key: 'b', type: 'c'),
+          throwsA(isA<AssertionError>()));
+    });
+
+    test('--dump appends a toString() field, sanitized of the delimiters', () {
+      final e = locateExpr(text: 'x', dump: true);
+      expect(e, contains('w.toString()'));
+      expect(e, contains(r'.replaceAll("|", " ")'));
+      expect(e, contains(r'.replaceAll(";", " ")'));
+      expect(e, contains(r'.replaceAll("\n", " ")'));
+    });
+
+    test('without --dump no toString() field is emitted', () {
+      expect(locateExpr(text: 'x'), isNot(contains('w.toString()')));
     });
 
     test('walks the element tree from the root and converts to physical pixels', () {
@@ -63,6 +87,23 @@ void main() {
       expect(m, hasLength(2));
       expect(m[0].widgetType, 'Text');
       expect(m[1].widgetType, 'Semantics');
+    });
+
+    test('a sixth field is the widget dump; without it dump is null', () {
+      expect(parseLocateMatches('1|2|3|4|Text').single.dump, isNull);
+      final m = parseLocateMatches('1|2|3|4|Text|Text("hi")').single;
+      expect(m.widgetType, 'Text');
+      expect(m.dump, 'Text("hi")');
+    });
+
+    test('dump survives alongside other records', () {
+      final m = parseLocateMatches('1|2|3|4|Text|A;5|6|7|8|Icon|B');
+      expect(m.map((e) => e.dump), ['A', 'B']);
+    });
+
+    test('a dumped match serializes its dump; a plain one omits the field', () {
+      expect(LocateMatch(1, 2, 3, 4, 'Text', 'A').toJson()['dump'], 'A');
+      expect(LocateMatch(1, 2, 3, 4, 'Text').toJson().containsKey('dump'), isFalse);
     });
 
     test('skips malformed records instead of throwing', () {

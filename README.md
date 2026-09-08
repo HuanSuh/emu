@@ -174,6 +174,8 @@ What this loop gives an agent:
 | `emu shot [path] [--no-settle]` | Save a screenshot (default `.emu/`). Relative paths resolve to the project root. Waits for animations/rebuilds to stop first by default |
 | `emu tap <x> <y> [--no-settle]` | Tap a coordinate (physical pixels — same space as `shot`). Android & iOS. Waits for the resulting transition to finish before returning by default |
 | `emu tap --text <label> \| --key <key> [--index <n>] [--no-settle]` | Tap the widget whose Semantics/Text/Tooltip label, or `ValueKey`, matches — no screenshot/pixel math needed. `--index` picks one when several match |
+| `emu find --text <label> \| --key <key> \| --type <Widget> [--index <n>] [--dump]` | List the on-screen widgets matching that query, with their tap points — the same lookup `tap --text` does, without tapping. `--dump` also prints each widget's `toString()` |
+| `emu eval <dart-expr>` | Evaluate a Dart expression against the running app now, in its root library's scope — no breakpoint, no pause (unlike `probe`) |
 | `emu swipe <x1> <y1> <x2> <y2>` | Swipe/scroll. `--duration <ms>`. Android & iOS |
 | `emu text <string> [--append]` | Type into the focused field (unicode OK). Android & iOS |
 | `emu settle [--timeout <s>] [--quiet <ms>]` | Wait for animations/rebuilds to stop (no scheduled frame, `--quiet` window held stable) — `tap`/`shot` already do this by default |
@@ -456,6 +458,50 @@ that isn't reachable yet it reports `settled: false` rather than failing the
 command, so a slow or perpetually-animating screen degrades your confidence in
 the capture instead of blocking the workflow — `tap`/`shot` still return
 normally even when settle times out.
+
+### find — see what's on screen, without tapping it
+
+```bash
+emu find --text <label> | --key <key> | --type <Widget> [--index <n>] [--dump]
+```
+
+`find` runs exactly the widget lookup `tap --text/--key` runs, and reports the
+matches instead of tapping one — so you can check whether a screen rendered what
+you expected, or see how many widgets a query hits before committing to an
+`--index`. `--type` matches a widget's runtime type name, which `tap` has no
+equivalent for.
+
+```bash
+emu find --text "삭제"
+# [0] Text   340,1210   72.0×24.0
+# [1] Text   340,1580   72.0×24.0
+emu find --type ElevatedButton --dump   # each match's toString() on the next line
+emu tap --text "삭제" --index 1          # …then tap the one you meant
+```
+
+Matching zero widgets is an ordinary answer (`(no match)`, exit 0), not a
+failure — only a bad request, such as an `--index` past the last match, exits 1.
+
+### eval — evaluate an expression right now
+
+```bash
+emu eval '<dart expression>'
+```
+
+`probe`/`inspect` can only report once execution *reaches* a line. `eval`
+evaluates against the app's root library (whatever `main()` lives in) with no
+breakpoint at all, so it answers "what is this holding *at this moment?*" —
+useful for singletons, current route, feature flags.
+
+```bash
+emu eval 'AppRouter.currentScreenName'
+# "BENEFIT_MAIN"
+```
+
+The flip side of needing no paused frame is that it only sees **library-scope**
+names — top-level functions/getters and whatever `main.dart` imports — not any
+function's locals. For those, use `probe`/`inspect`. Values render as they do
+there: strings quoted, other primitives bare, objects as `<ClassName>`.
 
 ### probe — capture variables (VM Service logpoint)
 
