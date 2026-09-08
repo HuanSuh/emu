@@ -12,3 +12,6 @@
 # Tooling state
 .omc/
 .DS_Store
+
+# Orca-managed sub-worktrees
+/.claude/
