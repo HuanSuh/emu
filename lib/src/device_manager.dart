@@ -74,26 +74,39 @@ class DeviceManager {
     return (res.stdout as String).split('\n').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
   }
 
-  /// Already-running Android emulator device id (e.g. `emulator-5554`), if any.
-  Future<String?> _runningAndroidDevice() async {
-    if (!await _hasCommand('adb')) return null;
+  /// Serials of running Android emulators (`adb devices`), in adb's order.
+  Future<List<String>> _runningAndroidEmulators() async {
+    if (!await _hasCommand('adb')) return const [];
     final res = await Process.run('adb', ['devices']);
-    if (res.exitCode != 0) return null;
-    for (final line in (res.stdout as String).split('\n')) {
-      final t = line.trim();
-      if (t.startsWith('emulator-') && t.endsWith('device')) {
-        return t.split(RegExp(r'\s+')).first;
-      }
-    }
-    return null;
+    if (res.exitCode != 0) return const [];
+    return parseAdbEmulators(res.stdout as String);
   }
 
-  /// Boot an Android AVD (or reuse a running one). Returns its flutter device id.
-  Future<String> bootAndroid({String? avd, void Function(String)? onProgress}) async {
-    final running = await _runningAndroidDevice();
-    if (running != null) {
-      onProgress?.call('Android emulator already running: $running');
-      return running;
+  /// AVD name behind a running emulator serial (`adb -s <serial> emu avd name`).
+  Future<String?> _avdNameOf(String serial) async {
+    final res = await Process.run('adb', ['-s', serial, 'emu', 'avd', 'name']);
+    if (res.exitCode != 0) return null;
+    final name = (res.stdout as String).split('\n').first.trim();
+    return name.isEmpty || name == 'OK' ? null : name;
+  }
+
+  /// Pick an Android emulator: reuse the first running one [claim] accepts,
+  /// otherwise boot an AVD that isn't already running and claim that.
+  /// [claim] reserves the device for this session (see `device_lease.dart`)
+  /// and returns false when another session holds it. Returns the device id.
+  Future<String> bootAndroid({
+    String? avd,
+    Future<bool> Function(String deviceId)? claim,
+    void Function(String)? onProgress,
+  }) async {
+    final take = claim ?? (_) async => true;
+    final running = await _runningAndroidEmulators();
+    for (final serial in running) {
+      if (await take(serial)) {
+        onProgress?.call('Android emulator already running: $serial');
+        return serial;
+      }
+      onProgress?.call('Android emulator $serial is in use by another emu session — skipping');
     }
     if (!await _hasCommand('emulator')) {
       throw DeviceException('Android SDK `emulator` not found on PATH.');
@@ -102,9 +115,16 @@ class DeviceManager {
       throw DeviceException('`adb` not found on PATH.');
     }
     final avds = await listAndroidAvds();
-    final target = avd ?? preferredAvd(avds);
+    final runningAvds = <String>[
+      for (final serial in running) ?(await _avdNameOf(serial)),
+    ];
+    final target = avd ?? chooseAvdToBoot(avds, runningAvds);
     if (target == null) {
-      throw DeviceException('No Android AVD found. Create one in Android Studio Device Manager.');
+      throw DeviceException(avds.isEmpty
+          ? 'No Android AVD found. Create one in Android Studio Device Manager.'
+          : 'Every Android emulator is in use by another emu session and no other '
+              'AVD is left to boot. Create another AVD, run `emu down` in the other '
+              'project, or pass --share-device.');
     }
     onProgress?.call('booting Android AVD: $target');
     // The emulator binary locates its Qt/qemu libs relative to its own
@@ -122,54 +142,70 @@ class DeviceManager {
       mode: ProcessStartMode.detached,
       workingDirectory: emuDir,
     );
-    await Process.run('adb', ['wait-for-device']);
     onProgress?.call('waiting for Android boot to complete...');
+    // Other emulators may already be running, so identify ours as the serial
+    // that wasn't there before the boot.
     for (var i = 0; i < 120; i++) {
-      final res = await Process.run('adb', ['shell', 'getprop', 'sys.boot_completed']);
-      if ((res.stdout as String).trim() == '1') {
-        final id = await _runningAndroidDevice();
-        if (id != null) return id;
-      }
       await Future<void>.delayed(const Duration(seconds: 2));
+      final fresh = (await _runningAndroidEmulators()).where((s) => !running.contains(s));
+      for (final serial in fresh) {
+        final res = await Process.run(
+            'adb', ['-s', serial, 'shell', 'getprop', 'sys.boot_completed']);
+        if ((res.stdout as String).trim() != '1') continue;
+        if (await take(serial)) return serial;
+        throw DeviceException('booted $serial but another emu session claimed it first.');
+      }
     }
     throw DeviceException('Timed out waiting for Android emulator to boot.');
   }
 
-  /// Boot an iOS simulator (or reuse a booted one). Returns its udid. macOS only.
-  Future<String> bootIos({String? udid, void Function(String)? onProgress}) async {
+  /// Pick an iOS simulator: an explicit [udid] (claimed, then booted if
+  /// needed), else the first booted one [claim] accepts, else a shut-down
+  /// iPhone claimed before booting. Returns its udid. macOS only.
+  Future<String> bootIos({
+    String? udid,
+    Future<bool> Function(String deviceId)? claim,
+    void Function(String)? onProgress,
+  }) async {
     if (!isMacOS) throw DeviceException('iOS simulators are macOS-only.');
     if (!await _hasCommand('xcrun')) {
       throw DeviceException('`xcrun` not found. Install Xcode command line tools.');
     }
+    final take = claim ?? (_) async => true;
     final list = await _xcrun(['simctl', 'list', 'devices', '-j']);
     if (list.exitCode != 0) {
       throw DeviceException(
           'xcrun simctl failed (is full Xcode installed and selected?): ${list.stderr}');
     }
-    final data = jsonDecode(list.stdout as String) as Map<String, dynamic>;
-    final devices = (data['devices'] as Map).cast<String, dynamic>();
+    final sims = parseSimctlDevices(list.stdout as String);
 
-    String? chosen = udid;
-    String? bootedAlready;
-    for (final entry in devices.entries) {
-      for (final d in (entry.value as List).cast<Map>()) {
-        final m = d.cast<String, dynamic>();
-        final available = (m['isAvailable'] as bool?) ?? false;
-        if (!available) continue;
-        final state = m['state'] as String?;
-        final id = m['udid'] as String;
-        final name = (m['name'] as String?) ?? '';
-        if (state == 'Booted') bootedAlready ??= id;
-        if (chosen == null && name.contains('iPhone')) chosen = id;
+    String? chosen;
+    if (udid != null) {
+      if (!await take(udid)) {
+        throw DeviceException('simulator $udid is in use by another emu session.');
+      }
+      chosen = udid;
+    } else {
+      for (final s in sims.where((s) => s.booted)) {
+        if (await take(s.udid)) {
+          onProgress?.call('iOS simulator already booted: ${s.udid}');
+          _openSimulatorApp();
+          return s.udid;
+        }
+        onProgress?.call('iOS simulator ${s.udid} is in use by another emu session — skipping');
+      }
+      for (final s in sims.where((s) => !s.booted && s.name.contains('iPhone'))) {
+        if (await take(s.udid)) {
+          chosen = s.udid;
+          break;
+        }
       }
     }
-    if (udid == null && bootedAlready != null) {
-      onProgress?.call('iOS simulator already booted: $bootedAlready');
-      _openSimulatorApp();
-      return bootedAlready;
-    }
     if (chosen == null) {
-      throw DeviceException('No available iPhone simulator found (check Xcode > Settings > Platforms).');
+      throw DeviceException(sims.any((s) => s.name.contains('iPhone'))
+          ? 'Every iPhone simulator is in use by another emu session. Run `emu down` '
+              'in the other project, pass --device <udid>, or pass --share-device.'
+          : 'No available iPhone simulator found (check Xcode > Settings > Platforms).');
     }
     onProgress?.call('booting iOS simulator: $chosen');
     final boot = await _xcrun(['simctl', 'boot', chosen]);
@@ -188,13 +224,17 @@ class DeviceManager {
     }
   }
 
-  /// Power off devices for the given platform (best-effort).
-  Future<void> shutdown(String platform) async {
-    if (platform == 'ios' && isMacOS) {
-      await _xcrun(['simctl', 'shutdown', 'all']);
-    } else if (platform == 'android') {
-      await Process.run('adb', ['emu', 'kill']);
+  /// Power off one device (best-effort). Only emulators/simulators can be
+  /// powered off; returns false for a physical device.
+  Future<bool> shutdownDevice(String deviceId) async {
+    if (platformForDeviceId(deviceId) == 'ios') {
+      if (!isMacOS) return false;
+      final res = await _xcrun(['simctl', 'shutdown', deviceId]);
+      return res.exitCode == 0;
     }
+    if (!deviceId.startsWith('emulator-')) return false;
+    final res = await Process.run('adb', ['-s', deviceId, 'emu', 'kill']);
+    return res.exitCode == 0;
   }
 
   /// Capture a screenshot to [outPath]. Picks adb or simctl by platform.
@@ -276,4 +316,40 @@ int _avdScore(String name) {
   }
   if (RegExp(r'pixel|gphone|nexus').hasMatch(n)) return 2;
   return 1;
+}
+
+/// Running emulator serials from `adb devices` output (physical devices and
+/// offline/unauthorized entries are ignored).
+List<String> parseAdbEmulators(String adbDevicesOutput) => [
+      for (final line in adbDevicesOutput.split('\n'))
+        if (line.trim().startsWith('emulator-') && line.trim().endsWith('device'))
+          line.trim().split(RegExp(r'\s+')).first,
+    ];
+
+/// The AVD to boot when every running emulator is taken: the preferred one
+/// among those not already running (an AVD can only run once).
+String? chooseAvdToBoot(List<String> avds, List<String> runningAvds) =>
+    preferredAvd(avds.where((a) => !runningAvds.contains(a)).toList());
+
+class SimulatorInfo {
+  SimulatorInfo({required this.udid, required this.name, required this.booted});
+  final String udid;
+  final String name;
+  final bool booted;
+}
+
+/// Available simulators from `xcrun simctl list devices -j`, in listing order.
+List<SimulatorInfo> parseSimctlDevices(String jsonText) {
+  final data = jsonDecode(jsonText) as Map<String, dynamic>;
+  final devices = (data['devices'] as Map).cast<String, dynamic>();
+  return [
+    for (final runtime in devices.values)
+      for (final d in (runtime as List).cast<Map>())
+        if ((d['isAvailable'] as bool?) ?? false)
+          SimulatorInfo(
+            udid: d['udid'] as String,
+            name: (d['name'] as String?) ?? '',
+            booted: d['state'] == 'Booted',
+          ),
+  ];
 }

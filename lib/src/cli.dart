@@ -10,6 +10,7 @@ import 'package:args/args.dart';
 import 'package:http/http.dart' as http;
 
 import 'assertions.dart';
+import 'device_lease.dart';
 import 'device_manager.dart';
 import 'launch_config.dart';
 import 'memory_diff.dart';
@@ -384,9 +385,15 @@ Future<int> _devices(List<String> args) async {
   final dm = DeviceManager();
   final list = await dm.listDevices();
   final avds = await dm.listAndroidAvds();
+  final leases = DeviceLeases();
+  final held = {
+    for (final d in list) d.id: await leases.liveHolderOf(d.id),
+  };
   if (json) {
     print(jsonEncode({
-      'devices': list.map((d) => d.toJson()).toList(),
+      'devices': [
+        for (final d in list) {...d.toJson(), 'lease': held[d.id]?.toJson()},
+      ],
       'androidAvds': avds,
     }));
     return 0;
@@ -396,7 +403,9 @@ Future<int> _devices(List<String> args) async {
   } else {
     print('Devices:');
     for (final d in list) {
-      print('  ${d.id}  ${d.name}  [${d.platform}${d.emulator ? ', emulator' : ''}]');
+      final lease = held[d.id];
+      print('  ${d.id}  ${d.name}  [${d.platform}${d.emulator ? ', emulator' : ''}]'
+          '${lease != null ? '  (in use: ${lease.project}, ${lease.dashboard})' : ''}');
     }
   }
   if (avds.isNotEmpty) {
@@ -588,6 +597,8 @@ Future<int> _up(List<String> args) async {
     ..addOption('device-connection', allowed: ['both', 'attached', 'wireless'])
     ..addOption('dds-port')
     ..addFlag('dds', defaultsTo: true, help: 'Dart Developer Service (use --no-dds to disable)')
+    ..addFlag('share-device', negatable: false,
+        help: 'use the device even if another emu session holds it')
     ..addOption('port', defaultsTo: '$_defaultPort')
     ..addOption('timeout', help: 'seconds to wait for running/failed (default 240)')
     ..addFlag('open', negatable: false)
@@ -597,8 +608,11 @@ Future<int> _up(List<String> args) async {
       '                [--profile <name>] [--flavor <name>] [-t, --target <file>] [--dart-define K=V]\n'
       '                [--dart-define-from-file <path>] [-a, --dart-entrypoint-args <arg>]\n'
       '                [--device-timeout <s>] [--device-connection <both|attached|wireless>]\n'
-      '                [--dds-port <n>] [--no-dds] [--port <n>] [--timeout <s>] [--open]\n'
-      '   Boot a device + start the app, launch the dashboard.';
+      '                [--dds-port <n>] [--no-dds] [--share-device] [--port <n>] [--timeout <s>]\n'
+      '                [--open]\n'
+      '   Boot a device + start the app, launch the dashboard.\n'
+      '   A device held by another emu session is skipped (auto-pick) or refused\n'
+      '   (--device); --share-device overrides that.';
   final (res, code) = _parseOrUsage(parser, args, usage);
   if (res == null) return code!;
   final session = Session.require();
@@ -724,6 +738,7 @@ Future<int> _up(List<String> args) async {
       '--device-connection=${res.option('device-connection')}',
     if (res.option('dds-port') != null) '--dds-port=${res.option('dds-port')}',
     if (!res.flag('dds')) '--no-dds',
+    if (res.flag('share-device')) '--share-device',
     '--project=${session.projectRoot.path}',
   ];
 
@@ -1788,15 +1803,39 @@ Future<int> _down(List<String> args) async {
     session.clearServerInfo();
     return 0;
   }
+  // Learn our own device before shutdown — only it may be powered off.
+  final status = killDevice ? await _get(info, '/api/status') : null;
+  final deviceId = (status?['status'] as Map?)?['deviceId'] as String?;
   await _post(info, '/api/shutdown');
-  if (killDevice) {
-    // Best-effort device power-off after the server releases it.
-    final dm = DeviceManager();
-    await dm.shutdown('android');
-    await dm.shutdown('ios');
-  }
   print('✓ session stopped');
+  if (killDevice) await _killOwnDevice(deviceId);
   return 0;
+}
+
+/// Power off [deviceId] after our server released it — unless another live
+/// emu session still holds it (e.g. one that attached with --share-device).
+Future<void> _killOwnDevice(String? deviceId) async {
+  if (deviceId == null) {
+    print('! device unknown (the app never reached a device) — not powering anything off');
+    return;
+  }
+  // Give the server a moment to exit and drop its lease.
+  final leases = DeviceLeases();
+  DeviceLease? other;
+  for (var i = 0; i < 10; i++) {
+    other = await leases.liveHolderOf(deviceId);
+    if (other == null) break;
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+  }
+  if (other != null) {
+    print('! $deviceId is in use by the emu session of ${other.project} — leaving it on');
+    return;
+  }
+  if (await DeviceManager().shutdownDevice(deviceId)) {
+    print('✓ powered off $deviceId');
+  } else {
+    print('! could not power off $deviceId (physical device, or already off)');
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -1917,7 +1956,8 @@ Future<int> runServe(List<String> args) async {
     ..addOption('device-timeout')
     ..addOption('device-connection')
     ..addOption('dds-port')
-    ..addFlag('dds', defaultsTo: true);
+    ..addFlag('dds', defaultsTo: true)
+    ..addFlag('share-device', negatable: false);
   final res = parser.parse(args);
   final session = Session.require(start: res.option('project'));
   final server = EmuServer(session: session);
@@ -1939,6 +1979,7 @@ Future<int> runServe(List<String> args) async {
         deviceConnection: res.option('device-connection'),
         ddsPort: int.tryParse(res.option('dds-port') ?? ''),
         noDds: !res.flag('dds'),
+        shareDevice: res.flag('share-device'),
       ),
     );
   } catch (e, st) {
@@ -2044,7 +2085,7 @@ COMMANDS
                          Send a deep link to the connected device
                          (adb am start / xcrun simctl openurl). Waits for the
                          resulting navigation to finish (skip with --no-settle)
-  down [--kill-device]   Stop the session (optionally power off the device)
+  down [--kill-device]   Stop the session (optionally power off this session's device)
 
 ENV
   EMU_PROJECT   Project root override (default: auto-detect via pubspec.yaml)

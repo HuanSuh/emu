@@ -12,6 +12,7 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_web_socket/shelf_web_socket.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import 'device_lease.dart';
 import 'device_manager.dart';
 import 'engine.dart';
 import 'error_parser.dart';
@@ -41,6 +42,7 @@ class LaunchOptions {
     this.deviceConnection,
     this.ddsPort,
     this.noDds = false,
+    this.shareDevice = false,
     this.extra = const [],
   });
 
@@ -66,13 +68,31 @@ class LaunchOptions {
 
   /// Disable the Dart Developer Service (`--no-dds`).
   final bool noDds;
+
+  /// Skip the device lease check (`up --share-device`): run on a device even
+  /// if another emu session holds it, without taking the lease ourselves.
+  final bool shareDevice;
   final List<String> extra;
 }
 
 class EmuServer {
-  EmuServer({required this.session});
+  EmuServer({required this.session, DeviceLeases? leases})
+      : leases = leases ?? DeviceLeases();
 
   final Session session;
+
+  /// Machine-wide device ownership, so two sessions never drive one device.
+  final DeviceLeases leases;
+
+  /// The device this server holds the lease on, released in [dispose].
+  String? _leasedDevice;
+
+  /// The live lease that blocked the last failed [_claim].
+  DeviceLease? _lastConflict;
+
+  /// Set first thing in [dispose], so a claim still in flight (the post-hoc
+  /// one in [_claimOnceFlutterPicks]) gives its lease back instead of leaking it.
+  bool _disposed = false;
 
   late final LogStore logStore;
   late final FlutterEngine engine;
@@ -101,14 +121,55 @@ class EmuServer {
     await _launch(opts);
   }
 
+  /// Reserve [deviceId] for this server. False when another live emu session
+  /// holds it (then [_lastConflict] says who). With `--share-device` always
+  /// true, but never takes the lease — overwriting another session's lease
+  /// would break its release and `down --kill-device` protection.
+  Future<bool> _claim(String deviceId, LaunchOptions opts) async {
+    if (opts.shareDevice) {
+      final holder = await leases.liveHolderOf(deviceId);
+      if (holder != null && holder.pid != pid) {
+        logStore.add(
+            'sharing device $deviceId with the emu session of ${holder.project} '
+            '(${holder.dashboard}) — inputs and screenshots may interleave',
+            level: LogLevel.warn,
+            source: 'system');
+      }
+      return true;
+    }
+    final result = await leases.acquire(DeviceLease(
+      deviceId: deviceId,
+      pid: pid,
+      port: port,
+      project: session.projectRoot.path,
+    ));
+    if (result.acquired) {
+      if (_disposed) {
+        leases.release(deviceId, pid);
+        return true;
+      }
+      if (_leasedDevice != null && _leasedDevice != deviceId) {
+        leases.release(_leasedDevice!, pid);
+      }
+      _leasedDevice = deviceId;
+      return true;
+    }
+    _lastConflict = result.holder;
+    return false;
+  }
+
   Future<void> _launch(LaunchOptions opts) async {
     String? deviceId = opts.deviceId;
     String? deviceName;
+    Future<bool> claim(String id) => _claim(id, opts);
     try {
+      if (deviceId != null && !await claim(deviceId)) {
+        throw DeviceException(leaseConflictMessage(deviceId, _lastConflict!));
+      }
       if (deviceId == null && opts.platform == 'android') {
-        deviceId = await devices.bootAndroid(onProgress: logStore.system);
+        deviceId = await devices.bootAndroid(claim: claim, onProgress: logStore.system);
       } else if (deviceId == null && opts.platform == 'ios') {
-        deviceId = await devices.bootIos(onProgress: logStore.system);
+        deviceId = await devices.bootIos(claim: claim, onProgress: logStore.system);
       } else if (deviceId != null && platformForDeviceId(deviceId) == 'ios') {
         // An explicit iOS simulator udid isn't visible to `flutter run` until
         // the simulator is booted. `bootIos` is idempotent (a booted device is
@@ -129,12 +190,38 @@ class EmuServer {
         noDds: opts.noDds,
         extra: opts.extra,
       );
+      if (deviceId == null) _claimOnceFlutterPicks(opts);
       await engine.start(args, deviceName: deviceName ?? deviceId);
     } on DeviceException catch (e) {
       logStore.add('device error: ${e.message}', level: LogLevel.error, source: 'system');
+      engine.markFailed('device error: ${e.message}');
     } catch (e) {
       logStore.add('launch error: $e', level: LogLevel.error, source: 'system');
+      engine.markFailed('launch error: $e');
     }
+  }
+
+  /// With neither `--device` nor a platform, `flutter run` picks the device
+  /// itself, so it can't be claimed up front. Claim it once the app reports
+  /// which device it's on; on conflict the damage (install) is done, so warn
+  /// loudly at error level — it lands in `up`'s verdict `errors`.
+  void _claimOnceFlutterPicks(LaunchOptions opts) {
+    late final StreamSubscription<AppStatus> sub;
+    var claimed = false;
+    sub = engine.statusStream.listen((s) async {
+      final id = s.deviceId;
+      if (id == null || claimed) return;
+      claimed = true;
+      await sub.cancel();
+      if (!await _claim(id, opts)) {
+        logStore.add(
+            '${leaseConflictMessage(id, _lastConflict!)}\n'
+            '  flutter picked this device itself — pass --android/--ios/--device '
+            'so emu can choose a free one',
+            level: LogLevel.error,
+            source: 'system');
+      }
+    });
   }
 
   Future<HttpServer> _bind(int requestedPort) async {
@@ -630,7 +717,9 @@ class EmuServer {
       Response(status, body: jsonEncode(data), headers: {'Content-Type': 'application/json'});
 
   Future<void> dispose() async {
+    _disposed = true;
     session.clearServerInfo();
+    if (_leasedDevice != null) leases.release(_leasedDevice!, pid);
     for (final s in _sockets) {
       await s.sink.close();
     }

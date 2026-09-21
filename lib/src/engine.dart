@@ -58,6 +58,13 @@ class FlutterEngine {
     if (!_statusController.isClosed) _statusController.add(next);
   }
 
+  /// Report a launch that failed before `flutter run` could start (e.g. no
+  /// free device), so `up` gets a `failed` verdict instead of waiting out its
+  /// timeout on a status that never leaves `stopped`.
+  void markFailed(String message) {
+    _setStatus(_status.copyWith(state: AppRunState.failed, message: message));
+  }
+
   /// Build the `flutter run --machine` argument list.
   static List<String> buildRunArgs({
     String? deviceId,

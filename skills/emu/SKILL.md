@@ -43,7 +43,14 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
      `--dart-define K=V`(반복), `--dart-define-from-file <path>`(반복),
      `-a/--dart-entrypoint-args <arg>`(반복), `--device-timeout <s>`,
      `--device-connection <both|attached|wireless>`, `--dds-port <n>`,
-     `--no-dds`, `--port <n>`(기본 4577), `--timeout <s>`(기본 240), `--open`.
+     `--no-dds`, `--share-device`, `--port <n>`(기본 4577), `--timeout <s>`(기본 240),
+     `--open`.
+   - **디바이스 점유**: 한 기기는 한 emu 세션만 쓴다(프로젝트·worktree가 달라도).
+     `--android`/`--ios` 는 다른 세션이 쓰는 기기를 건너뛰고 다른 기기를 부팅하고,
+     `--device` 로 점유된 기기를 지정하면 점유자(프로젝트·대시보드)를 알려주며 즉시
+     실패한다. 병렬 세션에선 `--android`/`--ios`/`--device` 중 하나를 꼭 준다(안 주면
+     flutter가 기기를 고르고 충돌은 사후 error로만 보고됨). 일부러 공유할 때만
+     `--share-device`.
 2. `emu shot [path] [--no-settle]` — 스크린샷 저장(**물리 픽셀**, 기본
    `.emu/shot-<ts>.png`). 저장 경로를 Read로 확인해 좌표를 눈으로 산출한다.
    기본적으로 애니메이션/리빌드가 멈추길 먼저 기다린다.
@@ -98,7 +105,8 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
      인스턴스 수 diff(VM Service `getAllocationProfile`). 왕복 후에도 계속
      늘어나는 클래스가 있으면 누수 의심. 기본은 앱 자신의 패키지 클래스만,
      `--all` 로 프레임워크 클래스까지 포함.
-5. `emu down [--kill-device]` — 세션 종료.
+5. `emu down [--kill-device]` — 세션 종료. `--kill-device` 는 이 세션의 기기만 끈다
+   (다른 emu 세션이 점유 중이면 끄지 않음).
 
 ## 기타 명령
 
@@ -107,7 +115,8 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
 - `emu settle [--timeout <s>] [--quiet <ms>]` — 애니메이션/리빌드가 멈출 때까지
   대기(`tap`/`shot`/`open-url` 은 이미 기본으로 이걸 하므로, 두 명령 사이에
   독립적으로 끼워 넣거나 기본값보다 세밀하게 조정할 때만 필요).
-- `emu devices` — 실행 중인 기기 + Android AVD 목록.
+- `emu devices` — 실행 중인 기기 + Android AVD 목록. 다른 emu 세션이 점유한 기기는
+  `(in use: <project>, <dashboard>)` 로 표시 — `up` 전에 빈 기기 확인용.
 - `emu configs` — `.vscode/launch.json` 재현 가능한 구성 목록 + `emu.yaml`/`emu.local.yaml`
   의 profile 목록.
 - `emu config [--profile <name>]` — `emu.yaml` 계층 병합 결과 + 학습된 메모리(`--profile`

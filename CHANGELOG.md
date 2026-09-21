@@ -6,6 +6,24 @@
 
 ## [Unreleased]
 
+### Added
+- 디바이스 임대(device lease) — 한 기기는 한 시점에 한 emu 세션만 구동한다.
+  프로젝트·worktree가 달라도 `~/.emu/devices/<device-id>.json` 으로 서로를
+  본다. `up --android`/`--ios` 는 점유된 기기를 건너뛰고 다른 AVD/시뮬레이터를
+  부팅, `up --device` 로 점유된 기기를 지정하면 점유자를 알려주며 즉시 실패.
+  죽은 서버의 임대는 자동 회수. 설계: `docs/DEVICE_LEASE.md`.
+- `emu up --share-device` — 점유 검사를 건너뛰고 의도적으로 기기를 공유.
+- `emu devices` 가 점유 정보를 표시(`--json` 은 기기별 `lease`).
+
+### Changed
+- `emu down --kill-device` 가 모든 시뮬레이터/에뮬레이터(`simctl shutdown all`,
+  `adb emu kill`) 대신 **이 세션의 기기만** 끈다. 다른 emu 세션이 점유 중이면
+  끄지 않는다.
+
+### Fixed
+- 기동 전 기기 오류(기기 없음, 부팅 실패 등)에서 앱 상태가 `stopped` 에 머물러
+  `up` 이 타임아웃(기본 240초)까지 기다리던 문제 — 이제 즉시 `failed` verdict.
+
 ## [0.6.0] - 2026-09-08
 
 ### Added
