@@ -1,6 +1,6 @@
 # 디바이스 임대(Device Lease) 설계
 
-> 상태: 구현됨(Unreleased). 상위 불변식은 [`DESIGN.md`](DESIGN.md)의 I1(엔진 하나 = 서버 하나)과 I5
+> 상태: v0.7.0 구현. 상위 불변식은 [`DESIGN.md`](DESIGN.md)의 I1(엔진 하나 = 서버 하나)과 I5
 > (에이전트 우선 — 판정이 섞이지 않아야 한다).
 
 ## 1. 문제

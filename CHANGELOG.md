@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-22
+
 ### Added
 - 디바이스 임대(device lease) — 한 기기는 한 시점에 한 emu 세션만 구동한다.
   프로젝트·worktree가 달라도 `~/.emu/devices/<device-id>.json` 으로 서로를
@@ -138,7 +140,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/HuanSuh/emu/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/HuanSuh/emu/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/HuanSuh/emu/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/HuanSuh/emu/compare/v0.3.0...v0.4.0
