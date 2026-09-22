@@ -78,4 +78,57 @@ void main() {
       expect(preferredAvd(['My_Device', 'Other_Device']), 'My_Device');
     });
   });
+
+  group('parseAdbEmulators', () {
+    test('keeps ready emulators, drops physical/offline/unauthorized', () {
+      const out = 'List of devices attached\n'
+          'emulator-5554\tdevice\n'
+          'R5CT30ABCDE\tdevice\n'
+          'emulator-5556\toffline\n'
+          'emulator-5558\tdevice\n'
+          'emulator-5560\tunauthorized\n';
+      expect(parseAdbEmulators(out), ['emulator-5554', 'emulator-5558']);
+    });
+
+    test('no devices', () {
+      expect(parseAdbEmulators('List of devices attached\n\n'), isEmpty);
+    });
+  });
+
+  group('chooseAvdToBoot', () {
+    test('skips AVDs that are already running', () {
+      expect(chooseAvdToBoot(['Pixel_7', 'Pixel_8'], ['Pixel_7']), 'Pixel_8');
+    });
+
+    test('still applies the phone preference among the rest', () {
+      expect(chooseAvdToBoot(['Pixel_7', 'Galaxy_Z_Flip', 'Pixel_8'], ['Pixel_7']), 'Pixel_8');
+    });
+
+    test('null when every AVD is running', () {
+      expect(chooseAvdToBoot(['Pixel_7'], ['Pixel_7']), isNull);
+    });
+  });
+
+  test('parseSimctlDevices keeps available sims with booted state, in order', () {
+    const json = '''
+    {"devices": {
+      "com.apple.CoreSimulator.SimRuntime.iOS-18-0": [
+        {"udid":"U1","name":"iPhone 15","state":"Booted","isAvailable":true},
+        {"udid":"U2","name":"iPhone 16","state":"Shutdown","isAvailable":true},
+        {"udid":"U3","name":"iPhone 14","state":"Shutdown","isAvailable":false}
+      ],
+      "com.apple.CoreSimulator.SimRuntime.watchOS-11-0": [
+        {"udid":"U4","name":"Apple Watch","state":"Booted","isAvailable":true}
+      ]
+    }}''';
+    final sims = parseSimctlDevices(json);
+    expect(sims.map((s) => s.udid), ['U1', 'U2', 'U4']);
+    expect(sims.map((s) => s.booted), [true, false, true]);
+    expect(sims[1].name, 'iPhone 16');
+  });
+
+  test('shutdownDevice refuses physical Android devices without running adb', () async {
+    expect(await DeviceManager().shutdownDevice('R5CT30ABCDE'), isFalse);
+    expect(await DeviceManager().shutdownDevice('192.168.0.5:5555'), isFalse);
+  });
 }

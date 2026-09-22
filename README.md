@@ -38,6 +38,7 @@ flutter run --machine  ◄─JSON-RPC─►  engine  ──►  server (127.0.0.
 - [Web dashboard](#web-dashboard)
 - [How it works](#how-it-works)
 - [State files (.emu/)](#state-files-emu)
+- [Device ownership](#device-ownership)
 - [Limitations & comparison](#limitations--comparison)
 - [Project layout](#project-layout)
 - [Development](#development)
@@ -162,11 +163,11 @@ What this loop gives an agent:
 | `emu doctor` | Check dependencies (flutter / adb / emulator / xcrun) + update status |
 | `emu update [-y]` | Pull + rebuild the latest release (only works when `emu` runs from a git checkout, e.g. after `emu-setup`) |
 | `emu uninstall [-y]` | Remove the PATH symlink(s) pointing at the running binary |
-| `emu devices` | `flutter devices` + Android AVD list |
+| `emu devices` | `flutter devices` + Android AVD list. Devices held by another emu session are marked `(in use: <project>, <dashboard>)` (`--json`: a `lease` field per device) |
 | `emu configs` | List run configs from `.vscode/launch.json` (debug only) + profiles from `emu.yaml`/`emu.local.yaml` |
 | `emu config [--profile <name>]` | Show the merged `emu.yaml` config + learned memory; with `--profile`, preview that named profile's resolved config instead |
 | `emu up [opts]` | Boot device + launch app + start dashboard. Waits for `running`/`failed` + first frame |
-| `emu down [--kill-device]` | End the session. `--kill-device` also powers the device off |
+| `emu down [--kill-device]` | End the session. `--kill-device` also powers off **this session's** device (never one another emu session still holds) |
 | `emu stop` | Stop only the app (server stays up) |
 | `emu status` | Session/device/app status + VM Service URI |
 | `emu open` | Open the dashboard in a browser |
@@ -186,8 +187,8 @@ What this loop gives an agent:
 
 | Option | Description |
 |--------|-------------|
-| `--android` / `--ios` | Boot a default device of that platform |
-| `-d, --device <id>` | Use a specific flutter device id. An iOS simulator udid auto-boots even if off |
+| `--android` / `--ios` | Use a free device of that platform: reuse a running one no other emu session holds, else boot another (see [Device ownership](#device-ownership)) |
+| `-d, --device <id>` | Use a specific flutter device id. An iOS simulator udid auto-boots even if off. Fails fast if another emu session holds it |
 | `--config <name>` | Replay a `.vscode/launch.json` config (individual flags override it). Mutually exclusive with `--profile` |
 | `--profile <name>` | Apply a named profile from `emu.yaml`/`emu.local.yaml` (individual flags override it). Mutually exclusive with `--config` |
 | `--flavor <name>` | Build flavor |
@@ -199,6 +200,7 @@ What this loop gives an agent:
 | `--device-connection <both\|attached\|wireless>` | device discovery mode |
 | `--dds-port <n>` | bind the Dart Developer Service to this port |
 | `--no-dds` | disable the Dart Developer Service |
+| `--share-device` | Use the device even if another emu session holds it (inputs/screenshots of both sessions may interleave) |
 | `--port <n>` | Dashboard port (default 4577, auto-falls back if in use) |
 | `--timeout <s>` | Window to wait for `running`/`failed` (default 240). Raise it for long cold boots |
 | `--open` | Open a browser after launch |
@@ -707,6 +709,26 @@ Stored in the project's `.emu/` directory and auto git-ignored:
 | `shot-*.png` | Screenshots |
 | `memory.json` | Learned recomputation hints (lastScreen, etc.) |
 
+## Device ownership
+
+One device is driven by one emu session at a time, even across different
+projects and git worktrees — otherwise two agents' taps, screenshots and
+installs interleave on the same screen and neither verdict can be trusted.
+Each server records a lease in `~/.emu/devices/<device-id>.json`
+(pid/port/project):
+
+- `up --android`/`--ios` skip devices another session holds and boot another
+  AVD/simulator instead; if none is left, `up` fails naming the holder.
+- `up --device <id>` on a held device fails immediately with the holder's
+  project and dashboard.
+- With neither, flutter picks the device itself; emu can only check afterwards
+  and reports a conflict as an error in the `up` verdict — prefer `--android`/
+  `--ios`/`--device` when running sessions in parallel.
+- A lease whose server died (crash, `kill -9`) is reclaimed automatically.
+- `--share-device` opts out (no lease is taken). `emu devices` shows who holds what.
+
+Design: [`docs/DEVICE_LEASE.md`](docs/DEVICE_LEASE.md).
+
 ## Limitations & comparison
 
 Stated honestly.
@@ -772,6 +794,7 @@ lib/src/
   project_config.dart  layered config (emu.yaml) merge
   project_memory.dart  learned recomputation hints (.emu/memory.json)
   device_manager.dart  device discovery + emulator/simulator boot
+  device_lease.dart    machine-wide device ownership (~/.emu/devices)
   session.dart         project detection + .emu/ state
   server.dart          serves REST + WebSocket + the static dashboard
   version.dart         embedded version + GitHub release check (--version/doctor/update)

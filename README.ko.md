@@ -35,6 +35,7 @@ flutter run --machine  ◄─JSON-RPC─►  엔진  ──►  서버 (127.0.0.
 - [웹 대시보드](#웹-대시보드)
 - [동작 원리](#동작-원리)
 - [상태 파일(.emu/)](#상태-파일emu)
+- [디바이스 점유](#디바이스-점유)
 - [한계와 비교](#한계와-비교)
 - [프로젝트 구조](#프로젝트-구조)
 - [개발](#개발)
@@ -154,11 +155,11 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 | `emu doctor` | 의존성 점검 (flutter / adb / emulator / xcrun) + 업데이트 상태 |
 | `emu update [-y]` | 최신 릴리스를 pull + 재빌드 (`emu`가 git 체크아웃에서 실행 중일 때만 동작 — 예: `emu-setup` 이후) |
 | `emu uninstall [-y]` | 현재 실행 중인 바이너리를 가리키는 PATH 심링크 제거 |
-| `emu devices` | `flutter devices` + Android AVD 목록 |
+| `emu devices` | `flutter devices` + Android AVD 목록. 다른 emu 세션이 점유한 기기는 `(in use: <project>, <dashboard>)` 로 표시(`--json` 은 기기별 `lease` 필드) |
 | `emu configs` | `.vscode/launch.json` 의 실행 구성 목록 (debug만 실행 가능) + `emu.yaml`/`emu.local.yaml` 의 profile 목록 |
 | `emu config [--profile <name>]` | `emu.yaml` 계층 병합 결과 + 학습된 메모리 표시. `--profile` 주면 그 profile로 resolve된 값을 대신 미리보기 |
 | `emu up [opts]` | 기기 부팅 + 앱 실행 + 대시보드 기동. `running`/`failed` + 첫 프레임까지 대기 |
-| `emu down [--kill-device]` | 세션 종료. `--kill-device` 면 기기 전원도 끔 |
+| `emu down [--kill-device]` | 세션 종료. `--kill-device` 면 **이 세션의** 기기 전원도 끔(다른 emu 세션이 아직 점유한 기기는 끄지 않음) |
 | `emu stop` | 앱만 정지(서버는 유지) |
 | `emu status` | 세션/기기/앱 상태 + VM Service URI |
 | `emu open` | 대시보드를 브라우저로 열기 |
@@ -178,8 +179,8 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 
 | 옵션 | 설명 |
 |------|------|
-| `--android` / `--ios` | 해당 플랫폼 기본 기기를 부팅 |
-| `-d, --device <id>` | 특정 flutter device id 사용. iOS 시뮬레이터 udid면 꺼져 있어도 자동 부팅 |
+| `--android` / `--ios` | 해당 플랫폼의 비어 있는 기기 사용: 다른 emu 세션이 점유하지 않은 실행 중 기기를 재사용하고, 없으면 다른 AVD/시뮬레이터를 부팅([디바이스 점유](#디바이스-점유) 참고) |
+| `-d, --device <id>` | 특정 flutter device id 사용. iOS 시뮬레이터 udid면 꺼져 있어도 자동 부팅. 다른 emu 세션이 점유 중이면 즉시 실패 |
 | `--config <name>` | `.vscode/launch.json` 의 구성을 재현 (개별 플래그가 덮어씀). `--profile` 과 상호 배타 |
 | `--profile <name>` | `emu.yaml`/`emu.local.yaml` 의 named profile 적용 (개별 플래그가 덮어씀). `--config` 와 상호 배타 |
 | `--flavor <name>` | 빌드 flavor |
@@ -191,6 +192,7 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 | `--device-connection <both\|attached\|wireless>` | 기기 탐색 방식 |
 | `--dds-port <n>` | Dart Developer Service 바인딩 포트 |
 | `--no-dds` | Dart Developer Service 비활성화 |
+| `--share-device` | 다른 emu 세션이 점유한 기기라도 사용(두 세션의 입력·스크린샷이 섞일 수 있음) |
 | `--port <n>` | 대시보드 포트(기본 4577, 사용 중이면 자동 폴백) |
 | `--timeout <s>` | `running`/`failed` 도달까지 대기하는 창(기본 240). 콜드부트가 길면 늘린다 |
 | `--open` | 기동 후 브라우저 열기 |
@@ -655,6 +657,22 @@ emu memory --diff-across "emu tap --text '상세보기' && emu tap --text '뒤�
 | `shot-*.png` | 스크린샷 |
 | `memory.json` | 학습된 재계산 힌트(lastScreen 등) |
 
+## 디바이스 점유
+
+한 기기는 한 시점에 한 emu 세션만 구동한다. 프로젝트나 git worktree가 달라도 마찬가지다.
+그렇지 않으면 두 에이전트의 탭·스크린샷·설치가 같은 화면에서 섞여 어느 쪽 판정도 믿을 수 없다.
+각 서버는 `~/.emu/devices/<device-id>.json` 에 임대(pid/port/project)를 기록한다:
+
+- `up --android`/`--ios` 는 다른 세션이 점유한 기기를 건너뛰고 다른 AVD/시뮬레이터를 부팅한다.
+  남은 게 없으면 점유자를 알려주며 실패한다.
+- `up --device <id>` 가 점유된 기기면 점유자의 프로젝트·대시보드를 알려주며 즉시 실패한다.
+- 둘 다 안 주면 flutter가 기기를 직접 고르므로 emu는 사후에만 확인할 수 있고, 충돌은 `up`
+  verdict의 error로 보고된다 — 세션을 병렬로 돌릴 땐 `--android`/`--ios`/`--device` 를 쓴다.
+- 서버가 죽은(크래시, `kill -9`) 임대는 자동으로 회수된다.
+- `--share-device` 로 예외 처리(임대를 잡지 않음). `emu devices` 로 누가 무엇을 점유 중인지 본다.
+
+설계: [`docs/DEVICE_LEASE.md`](docs/DEVICE_LEASE.md).
+
 ## 한계와 비교
 
 정직하게 짚는다.
@@ -714,6 +732,7 @@ lib/src/
   project_config.dart  계층 설정(emu.yaml) 병합
   project_memory.dart  학습된 재계산 힌트(.emu/memory.json)
   device_manager.dart  기기 탐색 + 에뮬레이터/시뮬레이터 부팅
+  device_lease.dart    머신 전역 디바이스 점유(~/.emu/devices)
   session.dart         프로젝트 탐지 + .emu/ 상태
   server.dart          REST + WebSocket + 정적 대시보드 서빙
   version.dart         내장 버전 + GitHub 릴리스 체크(--version/doctor/update)
