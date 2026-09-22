@@ -94,6 +94,9 @@ class EmuServer {
   /// one in [_claimOnceFlutterPicks]) gives its lease back instead of leaking it.
   bool _disposed = false;
 
+  /// The status listener of [_claimOnceFlutterPicks], cancelled in [dispose].
+  StreamSubscription<AppStatus>? _postHocClaim;
+
   late final LogStore logStore;
   late final FlutterEngine engine;
   final DeviceManager devices = DeviceManager();
@@ -146,7 +149,7 @@ class EmuServer {
     if (result.acquired) {
       if (_disposed) {
         leases.release(deviceId, pid);
-        return true;
+        return true; // Not a conflict — we're shutting down, so don't hold it.
       }
       if (_leasedDevice != null && _leasedDevice != deviceId) {
         leases.release(_leasedDevice!, pid);
@@ -206,13 +209,12 @@ class EmuServer {
   /// which device it's on; on conflict the damage (install) is done, so warn
   /// loudly at error level — it lands in `up`'s verdict `errors`.
   void _claimOnceFlutterPicks(LaunchOptions opts) {
-    late final StreamSubscription<AppStatus> sub;
     var claimed = false;
-    sub = engine.statusStream.listen((s) async {
+    _postHocClaim = engine.statusStream.listen((s) async {
       final id = s.deviceId;
       if (id == null || claimed) return;
       claimed = true;
-      await sub.cancel();
+      await _postHocClaim?.cancel();
       if (!await _claim(id, opts)) {
         logStore.add(
             '${leaseConflictMessage(id, _lastConflict!)}\n'
@@ -718,6 +720,7 @@ class EmuServer {
 
   Future<void> dispose() async {
     _disposed = true;
+    await _postHocClaim?.cancel();
     session.clearServerInfo();
     if (_leasedDevice != null) leases.release(_leasedDevice!, pid);
     for (final s in _sockets) {

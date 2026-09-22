@@ -126,4 +126,9 @@ void main() {
     expect(sims.map((s) => s.booted), [true, false, true]);
     expect(sims[1].name, 'iPhone 16');
   });
+
+  test('shutdownDevice refuses physical Android devices without running adb', () async {
+    expect(await DeviceManager().shutdownDevice('R5CT30ABCDE'), isFalse);
+    expect(await DeviceManager().shutdownDevice('192.168.0.5:5555'), isFalse);
+  });
 }

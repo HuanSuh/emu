@@ -159,7 +159,8 @@ class DeviceManager {
     throw DeviceException('Timed out waiting for Android emulator to boot.');
   }
 
-  /// Pick an iOS simulator: an explicit [udid] (claimed, then booted if
+  /// Pick an iOS simulator: an explicit [udid] (claimed via [claim] when
+  /// given — callers that already claimed it omit [claim] — then booted if
   /// needed), else the first booted one [claim] accepts, else a shut-down
   /// iPhone claimed before booting. Returns its udid. macOS only.
   Future<String> bootIos({
