@@ -107,8 +107,10 @@ class TempDevices {
     ];
   }
 
-  /// Devices created by the server with [pid].
-  List<TempDevice> ownedBy(int pid) => all().where((d) => d.ownerPid == pid).toList();
+  /// Devices created by the server at [pid] + [port] (both, so a recycled pid
+  /// can't pass another server's leftovers off as this one's).
+  List<TempDevice> ownedBy(int pid, int port) =>
+      all().where((d) => d.ownerPid == pid && d.ownerPort == port).toList();
 
   /// Devices whose creating server is gone (it died without `emu down`).
   Future<List<TempDevice>> orphans() async => [

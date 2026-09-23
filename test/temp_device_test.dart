@@ -109,12 +109,12 @@ void main() {
     late Set<int> alive;
     late TempDevices registry;
 
-    TempDevice device(String name, int pid, {String? udid}) => TempDevice(
+    TempDevice device(String name, int pid, {String? udid, int port = 4577}) => TempDevice(
         platform: udid == null ? 'android' : 'ios',
         name: name,
         udid: udid,
         ownerPid: pid,
-        ownerPort: 4577,
+        ownerPort: port,
         project: '/a');
 
     setUp(() {
@@ -128,11 +128,17 @@ void main() {
     test('records round-trip and are found by owner', () {
       registry.record(device('emu_tmp_a_0001', 1));
       registry.record(device('emu_tmp_a_0002', 2, udid: 'ABC-1'));
-      expect(registry.ownedBy(1).single.name, 'emu_tmp_a_0001');
-      final ios = registry.ownedBy(2).single;
+      expect(registry.ownedBy(1, 4577).single.name, 'emu_tmp_a_0001');
+      final ios = registry.ownedBy(2, 4577).single;
       expect(ios.platform, 'ios');
       expect(ios.udid, 'ABC-1');
-      expect(registry.ownedBy(3), isEmpty);
+      expect(registry.ownedBy(3, 4577), isEmpty);
+    });
+
+    test('ownedBy needs the port to match too (recycled pid)', () {
+      registry.record(device('emu_tmp_a_0001', 1, port: 4580));
+      expect(registry.ownedBy(1, 4577), isEmpty);
+      expect(registry.ownedBy(1, 4580), hasLength(1));
     });
 
     test('orphans are the devices whose owner is dead', () async {

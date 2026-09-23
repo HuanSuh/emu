@@ -832,7 +832,7 @@ Future<int> _up(List<String> args) async {
 Future<void> _teardownFailedServer(Session session, ServerInfo info) async {
   await _post(info, '/api/shutdown');
   session.clearServerInfo();
-  await _removeTempDevices(TempDevices().ownedBy(info.pid), out: stderr);
+  await _removeTempDevices(TempDevices().ownedBy(info.pid, info.port), out: stderr);
 }
 
 /// Poll the server until the app reaches a terminal launch state.
@@ -1831,7 +1831,7 @@ Future<int> _down(List<String> args) async {
   await _post(info, '/api/shutdown');
   print('✓ session stopped');
   // A --temp-device session's device is deleted (which powers it off too).
-  final temp = TempDevices().ownedBy(info.pid);
+  final temp = TempDevices().ownedBy(info.pid, info.port);
   if (temp.isNotEmpty) {
     await _removeTempDevices(temp);
   } else if (killDevice) {
