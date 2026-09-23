@@ -167,7 +167,7 @@ What this loop gives an agent:
 | `emu configs` | List run configs from `.vscode/launch.json` (debug only) + profiles from `emu.yaml`/`emu.local.yaml` |
 | `emu config [--profile <name>]` | Show the merged `emu.yaml` config + learned memory; with `--profile`, preview that named profile's resolved config instead |
 | `emu up [opts]` | Boot device + launch app + start dashboard. Waits for `running`/`failed` + first frame |
-| `emu down [--kill-device]` | End the session. `--kill-device` also powers off **this session's** device (never one another emu session still holds) |
+| `emu down [--kill-device]` | End the session. `--kill-device` also powers off **this session's** device (never one another emu session still holds). A `--temp-device` session's device is always deleted |
 | `emu stop` | Stop only the app (server stays up) |
 | `emu status` | Session/device/app status + VM Service URI |
 | `emu open` | Open the dashboard in a browser |
@@ -201,6 +201,7 @@ What this loop gives an agent:
 | `--dds-port <n>` | bind the Dart Developer Service to this port |
 | `--no-dds` | disable the Dart Developer Service |
 | `--share-device` | Use the device even if another emu session holds it (inputs/screenshots of both sessions may interleave) |
+| `--temp-device` | With `--android`/`--ios`: create a throwaway AVD/simulator (`emu_tmp_<project>_<id>`) for this session and delete it on `emu down` |
 | `--port <n>` | Dashboard port (default 4577, auto-falls back if in use) |
 | `--timeout <s>` | Window to wait for `running`/`failed` (default 240). Raise it for long cold boots |
 | `--open` | Open a browser after launch |
@@ -726,6 +727,13 @@ Each server records a lease in `~/.emu/devices/<device-id>.json`
   `--ios`/`--device` when running sessions in parallel.
 - A lease whose server died (crash, `kill -9`) is reclaimed automatically.
 - `--share-device` opts out (no lease is taken). `emu devices` shows who holds what.
+- `--temp-device` (with `--android`/`--ios`) gives the session its own fresh
+  device instead: emu creates an AVD (newest installed phone system image for
+  the host ABI) or a simulator (newest iOS runtime, base iPhone model), and
+  `emu down` — or a failed `up` — powers it off and deletes it. Each one costs
+  ~2–3GB of disk while it exists and boots cold. Devices are recorded in
+  `~/.emu/temp-devices/`; one left behind by a server that died without
+  `down` is swept by the next `up --temp-device` or `down`.
 
 Design: [`docs/DEVICE_LEASE.md`](docs/DEVICE_LEASE.md).
 

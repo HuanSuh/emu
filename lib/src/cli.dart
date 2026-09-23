@@ -20,6 +20,7 @@ import 'project_config.dart';
 import 'project_memory.dart';
 import 'server.dart';
 import 'session.dart';
+import 'temp_device.dart';
 import 'version.dart';
 
 const _defaultPort = 4577;
@@ -599,6 +600,8 @@ Future<int> _up(List<String> args) async {
     ..addFlag('dds', defaultsTo: true, help: 'Dart Developer Service (use --no-dds to disable)')
     ..addFlag('share-device', negatable: false,
         help: 'use the device even if another emu session holds it')
+    ..addFlag('temp-device', negatable: false,
+        help: 'create a throwaway AVD/simulator for this session, deleted by `emu down`')
     ..addOption('port', defaultsTo: '$_defaultPort')
     ..addOption('timeout', help: 'seconds to wait for running/failed (default 240)')
     ..addFlag('open', negatable: false)
@@ -608,14 +611,22 @@ Future<int> _up(List<String> args) async {
       '                [--profile <name>] [--flavor <name>] [-t, --target <file>] [--dart-define K=V]\n'
       '                [--dart-define-from-file <path>] [-a, --dart-entrypoint-args <arg>]\n'
       '                [--device-timeout <s>] [--device-connection <both|attached|wireless>]\n'
-      '                [--dds-port <n>] [--no-dds] [--share-device] [--port <n>] [--timeout <s>]\n'
-      '                [--open]\n'
+      '                [--dds-port <n>] [--no-dds] [--share-device] [--temp-device]\n'
+      '                [--port <n>] [--timeout <s>] [--open]\n'
       '   Boot a device + start the app, launch the dashboard.\n'
       '   A device held by another emu session is skipped (auto-pick) or refused\n'
-      '   (--device); --share-device overrides that.';
+      '   (--device); --share-device overrides that.\n'
+      '   --temp-device (with --android/--ios) creates a fresh AVD/simulator for\n'
+      '   this session and deletes it on `emu down` (~2-3GB while it exists).';
   final (res, code) = _parseOrUsage(parser, args, usage);
   if (res == null) return code!;
   final session = Session.require();
+
+  final tempDevice = res.flag('temp-device');
+  if (tempDevice && (res.option('device') != null || res.flag('share-device'))) {
+    stderr.writeln('✗ --temp-device creates its own device — drop --device/--share-device');
+    return 2;
+  }
 
   final wantedConfig = res.option('config');
   final wantedProfile = res.option('profile');
@@ -720,13 +731,21 @@ Future<int> _up(List<String> args) async {
           ? 'ios'
           : pc.platform;
   final port = res.wasParsed('port') ? res.option('port')! : '${pc.port ?? _defaultPort}';
+  if (tempDevice) {
+    if (platform == null) {
+      stderr.writeln('✗ --temp-device needs --android or --ios');
+      return 2;
+    }
+    // Sweep devices left by sessions that died without `emu down`.
+    await _removeTempDevices(await TempDevices().orphans(), why: 'orphaned', out: stderr);
+  }
 
   // Build the __serve invocation, re-using how we were launched.
   final serveArgs = <String>[
     '__serve',
     '--port', port,
     if (platform != null) '--platform=$platform',
-    if (device != null) '--device=$device',
+    if (device != null && !tempDevice) '--device=$device',
     if (flavor != null) '--flavor=$flavor',
     if (target != null) '--target=$target',
     for (final d in dartDefines) '--dart-define=$d',
@@ -739,6 +758,7 @@ Future<int> _up(List<String> args) async {
     if (res.option('dds-port') != null) '--dds-port=${res.option('dds-port')}',
     if (!res.flag('dds')) '--no-dds',
     if (res.flag('share-device')) '--share-device',
+    if (tempDevice) '--temp-device',
     '--project=${session.projectRoot.path}',
   ];
 
@@ -812,6 +832,7 @@ Future<int> _up(List<String> args) async {
 Future<void> _teardownFailedServer(Session session, ServerInfo info) async {
   await _post(info, '/api/shutdown');
   session.clearServerInfo();
+  await _removeTempDevices(TempDevices().ownedBy(info.pid), out: stderr);
 }
 
 /// Poll the server until the app reaches a terminal launch state.
@@ -1801,6 +1822,7 @@ Future<int> _down(List<String> args) async {
   if (info == null || !await _ping(info)) {
     print('! no running session');
     session.clearServerInfo();
+    await _removeTempDevices(await TempDevices().orphans(), why: 'orphaned');
     return 0;
   }
   // Learn our own device before shutdown — only it may be powered off.
@@ -1808,8 +1830,43 @@ Future<int> _down(List<String> args) async {
   final deviceId = (status?['status'] as Map?)?['deviceId'] as String?;
   await _post(info, '/api/shutdown');
   print('✓ session stopped');
-  if (killDevice) await _killOwnDevice(deviceId);
+  // A --temp-device session's device is deleted (which powers it off too).
+  final temp = TempDevices().ownedBy(info.pid);
+  if (temp.isNotEmpty) {
+    await _removeTempDevices(temp);
+  } else if (killDevice) {
+    await _killOwnDevice(deviceId);
+  }
   return 0;
+}
+
+/// Power off and delete [list] (see `temp_device.dart`), forgetting each one
+/// that is gone. [why] prefixes the report (e.g. `orphaned`). Reports go to
+/// [out] — stderr from `up`, whose stdout may be `--json`.
+Future<void> _removeTempDevices(List<TempDevice> list, {String? why, IOSink? out}) async {
+  final sink = out ?? stdout;
+  final dm = DeviceManager();
+  final registry = TempDevices();
+  for (final d in list) {
+    // One bad record (e.g. an iOS entry missing its udid) must not stop the rest.
+    bool gone;
+    try {
+      final udid = d.udid;
+      gone = d.platform == 'ios'
+          ? udid != null && await dm.deleteSim(udid)
+          : await dm.deleteAvd(d.name);
+    } catch (_) {
+      gone = false;
+    }
+    final label = '${why == null ? '' : '$why '}temp device ${d.name}';
+    if (gone) {
+      registry.forget(d);
+      sink.writeln('✓ deleted $label');
+    } else {
+      sink.writeln('! could not delete $label — it stays recorded and is retried by the next '
+          '`emu up --temp-device` / `emu down`');
+    }
+  }
 }
 
 /// Power off [deviceId] after our server released it — unless another live
@@ -1957,7 +2014,8 @@ Future<int> runServe(List<String> args) async {
     ..addOption('device-connection')
     ..addOption('dds-port')
     ..addFlag('dds', defaultsTo: true)
-    ..addFlag('share-device', negatable: false);
+    ..addFlag('share-device', negatable: false)
+    ..addFlag('temp-device', negatable: false);
   final res = parser.parse(args);
   final session = Session.require(start: res.option('project'));
   final server = EmuServer(session: session);
@@ -1980,6 +2038,7 @@ Future<int> runServe(List<String> args) async {
         ddsPort: int.tryParse(res.option('dds-port') ?? ''),
         noDds: !res.flag('dds'),
         shareDevice: res.flag('share-device'),
+        tempDevice: res.flag('temp-device'),
       ),
     );
   } catch (e, st) {
@@ -2085,7 +2144,8 @@ COMMANDS
                          Send a deep link to the connected device
                          (adb am start / xcrun simctl openurl). Waits for the
                          resulting navigation to finish (skip with --no-settle)
-  down [--kill-device]   Stop the session (optionally power off this session's device)
+  down [--kill-device]   Stop the session (optionally power off this session's device;
+                         a --temp-device session's device is always deleted)
 
 ENV
   EMU_PROJECT   Project root override (default: auto-detect via pubspec.yaml)

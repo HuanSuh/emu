@@ -11,6 +11,7 @@ import 'dart:io';
 
 import 'env.dart';
 import 'models.dart';
+import 'temp_device.dart';
 
 /// Parse the JSON emitted by `flutter devices --machine` into [DeviceInfo]s.
 /// Pure (no IO) for testability.
@@ -111,9 +112,6 @@ class DeviceManager {
     if (!await _hasCommand('emulator')) {
       throw DeviceException('Android SDK `emulator` not found on PATH.');
     }
-    if (!await _hasCommand('adb')) {
-      throw DeviceException('`adb` not found on PATH.');
-    }
     final avds = await listAndroidAvds();
     final runningAvds = <String>[
       for (final serial in running) ?(await _avdNameOf(serial)),
@@ -123,32 +121,54 @@ class DeviceManager {
       throw DeviceException(avds.isEmpty
           ? 'No Android AVD found. Create one in Android Studio Device Manager.'
           : 'Every Android emulator is in use by another emu session and no other '
-              'AVD is left to boot. Create another AVD, run `emu down` in the other '
-              'project, or pass --share-device.');
+              'AVD is left to boot. Pass --temp-device (a throwaway AVD deleted on '
+              '`emu down`), run `emu down` in the other project, or pass --share-device.');
     }
-    onProgress?.call('booting Android AVD: $target');
+    return bootAvd(target, claim: claim, onProgress: onProgress, running: running);
+  }
+
+  /// Boot the AVD named [avd] and claim the emulator it comes up as (the
+  /// serial that wasn't among [running] before). Returns that serial.
+  Future<String> bootAvd(
+    String avd, {
+    Future<bool> Function(String deviceId)? claim,
+    void Function(String)? onProgress,
+    List<String>? running,
+  }) async {
+    if (!await _hasCommand('emulator')) {
+      throw DeviceException('Android SDK `emulator` not found on PATH.');
+    }
+    if (!await _hasCommand('adb')) {
+      throw DeviceException('`adb` not found on PATH.');
+    }
+    final take = claim ?? (_) async => true;
+    final before = running ?? await _runningAndroidEmulators();
+    onProgress?.call('booting Android AVD: $avd');
     // The emulator binary locates its Qt/qemu libs relative to its own
     // directory, so it must be launched by absolute path AND with that
     // directory as the working dir — otherwise it fails with
     // "Qt library not found" when started from an arbitrary cwd.
-    final emuPath = await _resolvePath('emulator') ?? 'emulator';
+    final emuPath = await _emulatorPath();
     final emuDir = emuPath.contains('/')
         ? emuPath.substring(0, emuPath.lastIndexOf('/'))
         : null;
     // Detached so the emulator outlives this process.
     await Process.start(
       emuPath,
-      ['@$target', '-no-snapshot-save'],
+      ['@$avd', '-no-snapshot-save'],
       mode: ProcessStartMode.detached,
       workingDirectory: emuDir,
     );
     onProgress?.call('waiting for Android boot to complete...');
-    // Other emulators may already be running, so identify ours as the serial
-    // that wasn't there before the boot.
+    // Other emulators may already be running (or booting for another
+    // session), so identify ours as a serial that wasn't there before the
+    // boot and runs [avd].
     for (var i = 0; i < 120; i++) {
       await Future<void>.delayed(const Duration(seconds: 2));
-      final fresh = (await _runningAndroidEmulators()).where((s) => !running.contains(s));
+      final fresh = (await _runningAndroidEmulators()).where((s) => !before.contains(s));
       for (final serial in fresh) {
+        final name = await _avdNameOf(serial);
+        if (name != null && name != avd) continue;
         final res = await Process.run(
             'adb', ['-s', serial, 'shell', 'getprop', 'sys.boot_completed']);
         if ((res.stdout as String).trim() != '1') continue;
@@ -205,7 +225,7 @@ class DeviceManager {
     if (chosen == null) {
       throw DeviceException(sims.any((s) => s.name.contains('iPhone'))
           ? 'Every iPhone simulator is in use by another emu session. Run `emu down` '
-              'in the other project, pass --device <udid>, or pass --share-device.'
+              'in the other project, pass --temp-device, --device <udid>, or --share-device.'
           : 'No available iPhone simulator found (check Xcode > Settings > Platforms).');
     }
     onProgress?.call('booting iOS simulator: $chosen');
@@ -236,6 +256,150 @@ class DeviceManager {
     if (!deviceId.startsWith('emulator-')) return false;
     final res = await Process.run('adb', ['-s', deviceId, 'emu', 'kill']);
     return res.exitCode == 0;
+  }
+
+  /// Android SDK root: `$ANDROID_HOME` / `$ANDROID_SDK_ROOT`, else two levels
+  /// above the `emulator` binary (`<sdk>/emulator/emulator`), else the
+  /// Android Studio default.
+  Future<String> _androidSdk() async {
+    final env = Platform.environment;
+    for (final v in [env['ANDROID_HOME'], env['ANDROID_SDK_ROOT']]) {
+      if (v != null && v.isNotEmpty && Directory(v).existsSync()) return v;
+    }
+    final emu = await _resolvePath('emulator');
+    if (emu != null) {
+      final sdk = File(emu).resolveSymbolicLinksSync().split('/')
+        ..removeLast()
+        ..removeLast();
+      if (Directory('${sdk.join('/')}/system-images').existsSync()) return sdk.join('/');
+    }
+    return '${env['HOME']}/Library/Android/sdk';
+  }
+
+  /// The SDK's current `emulator` (`<sdk>/emulator/emulator`), else whatever
+  /// is on PATH. PATH often still has the legacy `<sdk>/tools/emulator`
+  /// wrapper, which can't start modern (e.g. arm64) images and exits at once.
+  Future<String> _emulatorPath() async {
+    final bundled = '${await _androidSdk()}/emulator/emulator';
+    if (File(bundled).existsSync()) return bundled;
+    return await _resolvePath('emulator') ?? 'emulator';
+  }
+
+  /// Where AVDs live: `$ANDROID_AVD_HOME`, else `<user home>/avd`.
+  String _avdHome() {
+    final env = Platform.environment;
+    final avdHome = env['ANDROID_AVD_HOME'];
+    if (avdHome != null && avdHome.isNotEmpty) return avdHome;
+    final userHome = env['ANDROID_USER_HOME'];
+    return '${userHome != null && userHome.isNotEmpty ? userHome : '${env['HOME']}/.android'}/avd';
+  }
+
+  /// Create AVD [name] from the best installed system image (see
+  /// [chooseSystemImage]). Uses the SDK's `cmdline-tools` avdmanager — the
+  /// legacy `tools/bin` one needs Java 8 and fails on modern JDKs.
+  Future<void> createTempAvd(String name, {void Function(String)? onProgress}) async {
+    final sdk = await _androidSdk();
+    final images = Directory('$sdk/system-images');
+    List<String> subdirs(String rel) {
+      final d = Directory('${images.path}/$rel');
+      if (!d.existsSync()) return const [];
+      return [
+        for (final e in d.listSync().whereType<Directory>())
+          '${rel.isEmpty ? '' : '$rel/'}${e.path.split('/').last}',
+      ];
+    }
+
+    // `<sdk>/system-images/android-<api>/<tag>/<abi>`
+    final installed = [
+      for (final api in subdirs(''))
+        for (final tag in subdirs(api)) ...subdirs(tag),
+    ];
+    final image = chooseSystemImage(installed, hostAndroidAbi());
+    if (image == null) {
+      throw DeviceException('No phone system image for ${hostAndroidAbi()} under '
+          '${images.path} — install one in Android Studio SDK Manager.');
+    }
+    final latest = '$sdk/cmdline-tools/latest/bin/avdmanager';
+    final avdmanager = File(latest).existsSync()
+        ? latest
+        : await _resolvePath('avdmanager') ??
+            (throw DeviceException('avdmanager not found — install "Android SDK '
+                'Command-line Tools (latest)" in Android Studio SDK Manager.'));
+    final profiles = await Process.run(avdmanager, ['list', 'device', '-c']);
+    final profile = profiles.exitCode == 0
+        ? chooseAvdDeviceProfile((profiles.stdout as String).split('\n'))
+        : null;
+    onProgress?.call('creating temp AVD $name ($image${profile == null ? '' : ', $profile'})');
+    final proc = await Process.start(avdmanager, [
+      'create', 'avd', '-n', name, '-k', image,
+      if (profile != null) ...['-d', profile],
+    ]);
+    proc.stdin.writeln('no'); // "Do you wish to create a custom hardware profile?"
+    await proc.stdin.close();
+    final out = StringBuffer();
+    proc.stdout.transform(systemEncoding.decoder).listen(out.write);
+    proc.stderr.transform(systemEncoding.decoder).listen(out.write);
+    if (await proc.exitCode != 0) {
+      throw DeviceException('avdmanager create avd failed: ${out.toString().trim()}');
+    }
+  }
+
+  /// Power off the emulator running AVD [name] (if any), wait for it to exit,
+  /// then delete the AVD's files. True when the AVD is gone.
+  Future<bool> deleteAvd(String name) async {
+    for (final serial in await _runningAndroidEmulators()) {
+      if (await _avdNameOf(serial) != name) continue;
+      await Process.run('adb', ['-s', serial, 'emu', 'kill']);
+      // Deleting under a live emulator leaves it writing to removed files.
+      for (var i = 0; i < 30 && (await _runningAndroidEmulators()).contains(serial); i++) {
+        await Future<void>.delayed(const Duration(seconds: 1));
+      }
+    }
+    final ini = File('${_avdHome()}/$name.ini');
+    var dir = Directory('${_avdHome()}/$name.avd');
+    if (ini.existsSync()) {
+      final path = RegExp(r'^path=(.+)$', multiLine: true)
+          .firstMatch(ini.readAsStringSync())
+          ?.group(1)
+          ?.trim();
+      if (path != null && path.isNotEmpty) dir = Directory(path);
+    }
+    try {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+      if (ini.existsSync()) ini.deleteSync();
+    } on FileSystemException {
+      return false;
+    }
+    return true;
+  }
+
+  /// Create simulator [name] on the newest iOS runtime (see
+  /// [chooseIosSimSpec]). Returns its udid. macOS only.
+  Future<String> createTempSim(String name, {void Function(String)? onProgress}) async {
+    if (!isMacOS) throw DeviceException('iOS simulators are macOS-only.');
+    final list = await _xcrun(['simctl', 'list', 'runtimes', '-j']);
+    final spec = list.exitCode == 0 ? chooseIosSimSpec(list.stdout as String) : null;
+    if (spec == null) {
+      throw DeviceException('No available iOS simulator runtime '
+          '(check Xcode > Settings > Platforms).');
+    }
+    final (runtime, deviceType) = spec;
+    onProgress?.call('creating temp iOS simulator $name '
+        '(${deviceType.split('.').last}, ${runtime.split('.').last})');
+    final res = await _xcrun(['simctl', 'create', name, deviceType, runtime]);
+    final udid = (res.stdout as String).trim();
+    if (res.exitCode != 0 || udid.isEmpty) {
+      throw DeviceException('simctl create failed: ${res.stderr}');
+    }
+    return udid;
+  }
+
+  /// Shut down and delete simulator [udid]. True when it is gone.
+  Future<bool> deleteSim(String udid) async {
+    if (!isMacOS) return false;
+    await _xcrun(['simctl', 'shutdown', udid]); // Fails harmlessly if already off.
+    final res = await _xcrun(['simctl', 'delete', udid]);
+    return res.exitCode == 0 || '${res.stderr}'.contains('Invalid device');
   }
 
   /// Capture a screenshot to [outPath]. Picks adb or simctl by platform.
