@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-23
+
 ### Added
 - `emu up --temp-device`(`--android`/`--ios` 와 함께) — 세션 전용 임시 AVD/시뮬레이터
   (`emu_tmp_<프로젝트>_<id>`)를 만들어 쓰고, `emu down`(또는 실패한 `up`)이 끄고 삭제한다.
@@ -153,7 +155,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/HuanSuh/emu/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/HuanSuh/emu/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/HuanSuh/emu/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/HuanSuh/emu/compare/v0.4.0...v0.5.0
