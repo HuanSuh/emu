@@ -6,6 +6,19 @@
 
 ## [Unreleased]
 
+### Added
+- `emu up --temp-device`(`--android`/`--ios` 와 함께) — 세션 전용 임시 AVD/시뮬레이터
+  (`emu_tmp_<프로젝트>_<id>`)를 만들어 쓰고, `emu down`(또는 실패한 `up`)이 끄고 삭제한다.
+  `~/.emu/temp-devices/` 에 기록해, `down` 없이 서버가 죽어 남은 기기는 다음
+  `up --temp-device`/`down` 이 정리한다. 에이전트가 기기 부족 시 `avdmanager`/`simctl`
+  로 직접 만들고 방치하던 기기(기기당 2–3GB)를 대체.
+
+### Fixed
+- Android 부팅이 PATH의 레거시 `<sdk>/tools/emulator` 를 쓰면 최신(arm64) 이미지를 못 띄우고
+  타임아웃까지 대기하던 문제 — `<sdk>/emulator/emulator` 를 우선 사용.
+- 다른 세션이 동시에 부팅한 에뮬레이터를 자기 것으로 잡을 수 있던 문제 — 새로 뜬 시리얼의
+  AVD 이름까지 확인.
+
 ## [0.7.0] - 2026-09-22
 
 ### Added

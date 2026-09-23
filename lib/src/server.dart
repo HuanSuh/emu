@@ -26,6 +26,7 @@ import 'models.dart';
 import 'probe.dart';
 import 'session.dart';
 import 'settle.dart';
+import 'temp_device.dart';
 import 'web_assets.g.dart';
 
 /// Options for launching the app, passed from `up`.
@@ -43,6 +44,7 @@ class LaunchOptions {
     this.ddsPort,
     this.noDds = false,
     this.shareDevice = false,
+    this.tempDevice = false,
     this.extra = const [],
   });
 
@@ -72,6 +74,10 @@ class LaunchOptions {
   /// Skip the device lease check (`up --share-device`): run on a device even
   /// if another emu session holds it, without taking the lease ourselves.
   final bool shareDevice;
+
+  /// Create a throwaway device for this session (`up --temp-device`), deleted
+  /// by `emu down`. Needs [platform]; see `temp_device.dart`.
+  final bool tempDevice;
   final List<String> extra;
 }
 
@@ -83,6 +89,9 @@ class EmuServer {
 
   /// Machine-wide device ownership, so two sessions never drive one device.
   final DeviceLeases leases;
+
+  /// Where `--temp-device` records the devices it creates.
+  final TempDevices tempDevices = TempDevices();
 
   /// The device this server holds the lease on, released in [dispose].
   String? _leasedDevice;
@@ -169,7 +178,9 @@ class EmuServer {
       if (deviceId != null && !await claim(deviceId)) {
         throw DeviceException(leaseConflictMessage(deviceId, _lastConflict!));
       }
-      if (deviceId == null && opts.platform == 'android') {
+      if (opts.tempDevice) {
+        deviceId = await _bootTempDevice(opts, claim);
+      } else if (deviceId == null && opts.platform == 'android') {
         deviceId = await devices.bootAndroid(claim: claim, onProgress: logStore.system);
       } else if (deviceId == null && opts.platform == 'ios') {
         deviceId = await devices.bootIos(claim: claim, onProgress: logStore.system);
@@ -201,6 +212,38 @@ class EmuServer {
     } catch (e) {
       logStore.add('launch error: $e', level: LogLevel.error, source: 'system');
       engine.markFailed('launch error: $e');
+    }
+  }
+
+  /// Create, record and boot a throwaway device on [opts.platform]. It is
+  /// recorded before booting so `emu down` (or a later orphan sweep) can
+  /// delete it even if the boot fails.
+  Future<String> _bootTempDevice(LaunchOptions opts, Future<bool> Function(String) claim) async {
+    final name = tempDeviceName(session.projectRoot.path);
+    TempDevice record({String? udid}) {
+      final d = TempDevice(
+        platform: opts.platform!,
+        name: name,
+        udid: udid,
+        ownerPid: pid,
+        ownerPort: port,
+        project: session.projectRoot.path,
+      );
+      tempDevices.record(d);
+      return d;
+    }
+
+    switch (opts.platform) {
+      case 'android':
+        await devices.createTempAvd(name, onProgress: logStore.system);
+        record();
+        return devices.bootAvd(name, claim: claim, onProgress: logStore.system);
+      case 'ios':
+        final udid = await devices.createTempSim(name, onProgress: logStore.system);
+        record(udid: udid);
+        return devices.bootIos(udid: udid, claim: claim, onProgress: logStore.system);
+      default:
+        throw DeviceException('--temp-device needs --android or --ios');
     }
   }
 

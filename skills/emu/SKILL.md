@@ -43,7 +43,7 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
      `--dart-define K=V`(반복), `--dart-define-from-file <path>`(반복),
      `-a/--dart-entrypoint-args <arg>`(반복), `--device-timeout <s>`,
      `--device-connection <both|attached|wireless>`, `--dds-port <n>`,
-     `--no-dds`, `--share-device`, `--port <n>`(기본 4577), `--timeout <s>`(기본 240),
+     `--no-dds`, `--share-device`, `--temp-device`, `--port <n>`(기본 4577), `--timeout <s>`(기본 240),
      `--open`.
    - **디바이스 점유**: 한 기기는 한 emu 세션만 쓴다(프로젝트·worktree가 달라도).
      `--android`/`--ios` 는 다른 세션이 쓰는 기기를 건너뛰고 다른 기기를 부팅하고,
@@ -51,6 +51,10 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
      실패한다. 병렬 세션에선 `--android`/`--ios`/`--device` 중 하나를 꼭 준다(안 주면
      flutter가 기기를 고르고 충돌은 사후 error로만 보고됨). 일부러 공유할 때만
      `--share-device`.
+   - **기기가 모자라면 `--temp-device`**: `avdmanager`/`simctl create` 로 직접 기기를
+     만들지 말 것 — 만든 기기는 아무도 지우지 않아 기기당 2–3GB씩 쌓인다.
+     `emu up --android --temp-device`(또는 `--ios`)는 세션 전용 기기를 만들고
+     `emu down` 이 삭제한다(콜드 부팅이라 기동이 느리니 `--timeout` 을 넉넉히).
 2. `emu shot [path] [--no-settle]` — 스크린샷 저장(**물리 픽셀**, 기본
    `.emu/shot-<ts>.png`). 저장 경로를 Read로 확인해 좌표를 눈으로 산출한다.
    기본적으로 애니메이션/리빌드가 멈추길 먼저 기다린다.
@@ -106,7 +110,7 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
      늘어나는 클래스가 있으면 누수 의심. 기본은 앱 자신의 패키지 클래스만,
      `--all` 로 프레임워크 클래스까지 포함.
 5. `emu down [--kill-device]` — 세션 종료. `--kill-device` 는 이 세션의 기기만 끈다
-   (다른 emu 세션이 점유 중이면 끄지 않음).
+   (다른 emu 세션이 점유 중이면 끄지 않음). `--temp-device` 세션이면 기기를 항상 삭제한다.
 
 ## 기타 명령
 
