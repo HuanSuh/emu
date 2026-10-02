@@ -127,6 +127,14 @@ class EmuServer {
   /// The device [setup] was applied to (ports are removed from it on dispose).
   String? _preparedDevice;
 
+  /// [_prepareDevice] in flight — `onAppStarted` waits for it, so its hooks
+  /// never run before the ports and `onDeviceReady` hooks are in place.
+  Future<void>? _preparing;
+
+  /// [_reapplyPorts] in flight — [dispose] waits for it before removing the
+  /// mappings, so a late re-apply can't outlive the session.
+  Future<void>? _reapplyRun;
+
   /// Re-applies port mappings adb dropped (server restart, emulator reboot).
   Timer? _portWatch;
 
@@ -256,7 +264,7 @@ class EmuServer {
       if (deviceId == null) {
         _claimOnceFlutterPicks(opts);
       } else {
-        await _prepareDevice(deviceId);
+        await (_preparing = _prepareDevice(deviceId));
       }
       await engine.start(args, deviceName: deviceName ?? deviceId);
     } on DeviceException catch (e) {
@@ -314,7 +322,8 @@ class EmuServer {
     }
     if (setup.hasPorts && platform == 'android') {
       _portsMissing = await setup.missingPorts(deviceId);
-      _portWatch = Timer.periodic(const Duration(seconds: 15), (_) => _reapplyPorts());
+      _portWatch = Timer.periodic(
+          const Duration(seconds: 15), (_) => _reapplyRun = _reapplyPorts());
     }
   }
 
@@ -326,6 +335,7 @@ class EmuServer {
     try {
       final missing = _portsMissing = await setup.missingPorts(id);
       if (missing == null || missing.isEmpty) return;
+      if (_disposed) return;
       logStore.add('port mappings lost on $id (adb restarted or device rebooted) — re-applying',
           level: LogLevel.warn, source: 'system');
       await DeviceSetup(
@@ -346,10 +356,11 @@ class EmuServer {
     var started = false;
     _setupWatch = engine.statusStream.listen((s) async {
       final id = s.deviceId;
-      if (id != null && _preparedDevice == null) await _prepareDevice(id);
+      if (id != null && _preparedDevice == null) _preparing = _prepareDevice(id);
       if (s.state == AppRunState.running && !started && id != null) {
         started = true;
-        if (setup.onAppStarted.isEmpty) return;
+        await _preparing;
+        if (setup.onAppStarted.isEmpty || _disposed) return;
         final platform = platformForDeviceId(id);
         await setup.runHooks('onAppStarted', setup.onAppStarted,
             deviceId: id,
@@ -899,6 +910,7 @@ class EmuServer {
     await _postHocClaim?.cancel();
     await _setupWatch?.cancel();
     _portWatch?.cancel();
+    await _reapplyRun;
     final prepared = _preparedDevice;
     if (prepared != null && setup.hasPorts && platformForDeviceId(prepared) == 'android') {
       await setup.removePorts(prepared);

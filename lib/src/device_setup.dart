@@ -121,6 +121,25 @@ String? builtAppId(String projectRoot, String platform) {
   return r.exitCode == 0 && id.isNotEmpty ? id : null;
 }
 
+/// `adb [args]`, killed after [timeout] — a device vanishing mid-call can
+/// hang adb, which would stall the watchdog for good. A timeout reads as a
+/// failure (exit code -1).
+Future<ProcessResult> runAdb(List<String> args,
+    {Duration timeout = const Duration(seconds: 10)}) async {
+  final proc = await Process.start('adb', args);
+  final out = StringBuffer(), err = StringBuffer();
+  final drained = Future.wait([
+    proc.stdout.transform(systemEncoding.decoder).forEach(out.write),
+    proc.stderr.transform(systemEncoding.decoder).forEach(err.write),
+  ]);
+  final code = await proc.exitCode.timeout(timeout, onTimeout: () {
+    proc.kill(ProcessSignal.sigkill);
+    return -1;
+  });
+  await drained.timeout(const Duration(seconds: 2), onTimeout: () => const []);
+  return ProcessResult(proc.pid, code, '$out', code == -1 ? 'adb timed out' : '$err');
+}
+
 /// Applies a session's port mappings and runs its hooks on one device.
 class DeviceSetup {
   DeviceSetup({
@@ -154,7 +173,7 @@ class DeviceSetup {
     }
     for (final (list, reverse) in [(reversePorts, true), (forwardPorts, false)]) {
       for (final m in list) {
-        final r = await Process.run('adb', adbMapArgs(serial, m, reverse: reverse));
+        final r = await runAdb(adbMapArgs(serial, m, reverse: reverse));
         if (r.exitCode == 0) {
           log('adb ${reverse ? 'reverse' : 'forward'} $m', false);
         } else {
@@ -170,8 +189,7 @@ class DeviceSetup {
     final missing = <(PortMapping, bool)>[];
     for (final (list, reverse) in [(reversePorts, true), (forwardPorts, false)]) {
       if (list.isEmpty) continue;
-      final r = await Process.run(
-          'adb', reverse ? ['-s', serial, 'reverse', '--list'] : ['forward', '--list']);
+      final r = await runAdb(reverse ? ['-s', serial, 'reverse', '--list'] : ['forward', '--list']);
       if (r.exitCode != 0) return null;
       final active = parseAdbMapList('${r.stdout}', serial, reverse: reverse);
       missing.addAll([for (final m in list) if (!active.contains(m)) (m, reverse)]);
@@ -183,8 +201,7 @@ class DeviceSetup {
   Future<void> removePorts(String serial) async {
     for (final (list, reverse) in [(reversePorts, true), (forwardPorts, false)]) {
       for (final m in list) {
-        await Process.run('adb', adbUnmapArgs(serial, m, reverse: reverse))
-            .timeout(const Duration(seconds: 3), onTimeout: () => ProcessResult(0, 1, '', ''));
+        await runAdb(adbUnmapArgs(serial, m, reverse: reverse), timeout: const Duration(seconds: 3));
       }
     }
   }
