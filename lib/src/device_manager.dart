@@ -319,10 +319,16 @@ class DeviceManager {
     return false;
   }
 
-  /// The device-side VM Service URL the app announced at startup, read back
-  /// from logcat — what `flutter attach --debug-url` needs to re-forward it.
-  Future<String?> androidVmServiceUrl(String serial) async {
-    final r = await Process.run('adb', ['-s', serial, 'logcat', '-d', '-s', 'flutter']);
+  /// The device-side VM Service URL app [appId] announced at startup, read
+  /// back from logcat — what `flutter attach --debug-url` needs to re-forward
+  /// it. Only the app's current process's lines count (`--pid`), so another
+  /// Flutter app's, or an earlier launch's, URL is never picked; null when
+  /// it isn't there (the caller then falls back to `--app-id`).
+  Future<String?> androidVmServiceUrl(String serial, String appId) async {
+    final pid = await Process.run('adb', ['-s', serial, 'shell', 'pidof', appId]);
+    final p = '${pid.stdout}'.trim().split(RegExp(r'\s+')).first;
+    if (pid.exitCode != 0 || int.tryParse(p) == null) return null;
+    final r = await Process.run('adb', ['-s', serial, 'logcat', '-d', '--pid=$p', '-s', 'flutter']);
     return r.exitCode == 0 ? lastVmServiceUrl('${r.stdout}') : null;
   }
 

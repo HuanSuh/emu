@@ -411,6 +411,20 @@ class EmuServer {
   /// adb to see the device again, then attaches through the VM Service URL
   /// the app logged at startup (falling back to its package id).
   Future<ActionResult> reattach() async {
+    // Auto and manual (`emu attach`) can overlap; two `engine.attach` calls
+    // would both spawn `flutter attach` and orphan one.
+    if (_reattaching) return ActionResult(ok: false, message: 'attach already in progress');
+    _reattaching = true;
+    try {
+      return await _reattach();
+    } finally {
+      _reattaching = false;
+    }
+  }
+
+  bool _reattaching = false;
+
+  Future<ActionResult> _reattach() async {
     if (engine.hasProcess) {
       return ActionResult(ok: false, message: 'flutter is still connected (state: ${engine.status.state.name})');
     }
@@ -428,7 +442,7 @@ class EmuServer {
       return ActionResult(
           ok: false, message: '$appId is not running on $id — use `emu cold` to relaunch it');
     }
-    final debugUrl = platform == 'android' ? await devices.androidVmServiceUrl(id) : null;
+    final debugUrl = platform == 'android' ? await devices.androidVmServiceUrl(id, appId) : null;
     final args = FlutterEngine.buildAttachArgs(engine.lastRunArgs,
         deviceId: id, debugUrl: debugUrl, appId: appId);
     try {

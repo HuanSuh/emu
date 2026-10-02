@@ -1870,7 +1870,8 @@ Future<int> _attach(List<String> args) async {
   const usage = 'usage: emu attach [--timeout <s>] [--json]\n'
       '   Re-connect to the app still running on this session\'s device after\n'
       '   flutter lost it (e.g. the adb server was restarted). Use `emu cold` if\n'
-      '   the app itself is gone.';
+      '   the app itself is gone. --timeout bounds only this command\'s wait (default\n'
+      '   120s); the server keeps attaching in the background either way.';
   final i = args.indexOf('--timeout');
   final timeoutSec = i >= 0 && i + 1 < args.length ? int.tryParse(args[i + 1]) : null;
   final rest = [
