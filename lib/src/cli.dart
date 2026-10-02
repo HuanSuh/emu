@@ -114,6 +114,8 @@ Future<int> runCli(List<String> argv) async {
 // version
 // --------------------------------------------------------------------------
 Future<int> _version(List<String> args) async {
+  final bad = _checkArgs(args, 'usage: emu version [--json]');
+  if (bad != null) return bad;
   final json = args.contains('--json');
   final latest = await latestReleaseVersion();
   final updateAvailable = latest != null && isNewer(latest, kEmuVersion);
@@ -140,6 +142,8 @@ Future<int> _version(List<String> args) async {
 // doctor
 // --------------------------------------------------------------------------
 Future<int> _doctor(List<String> args) async {
+  final bad = _checkArgs(args, 'usage: emu doctor [--json]');
+  if (bad != null) return bad;
   final json = args.contains('--json');
   final checks = <String, bool>{};
   for (final tool in ['flutter', 'adb', 'emulator']) {
@@ -188,6 +192,8 @@ Future<int> _doctor(List<String> args) async {
 // update
 // --------------------------------------------------------------------------
 Future<int> _update(List<String> args) async {
+  final bad = _checkArgs(args, 'usage: emu update [-y, --yes] [--json]', flags: const {'--yes', '-y'});
+  if (bad != null) return bad;
   final json = args.contains('--json');
   final yes = args.contains('--yes') || args.contains('-y');
 
@@ -282,6 +288,8 @@ Future<int> _update(List<String> args) async {
 // uninstall
 // --------------------------------------------------------------------------
 Future<int> _uninstall(List<String> args) async {
+  final bad = _checkArgs(args, 'usage: emu uninstall [-y, --yes] [--json]', flags: const {'--yes', '-y'});
+  if (bad != null) return bad;
   final json = args.contains('--json');
   final yes = args.contains('--yes') || args.contains('-y');
 
@@ -382,6 +390,8 @@ Future<int> _uninstall(List<String> args) async {
 // devices
 // --------------------------------------------------------------------------
 Future<int> _devices(List<String> args) async {
+  final bad = _checkArgs(args, 'usage: emu devices [--json]');
+  if (bad != null) return bad;
   final json = args.contains('--json');
   final dm = DeviceManager();
   final list = await dm.listDevices();
@@ -506,6 +516,8 @@ Future<int> _config(List<String> args) async {
 // configs (read .vscode/launch.json + emu.yaml/emu.local.yaml profiles)
 // --------------------------------------------------------------------------
 Future<int> _configs(List<String> args) async {
+  final bad = _checkArgs(args, 'usage: emu configs [--json]');
+  if (bad != null) return bad;
   final json = args.contains('--json');
   final session = Session.require();
   final configs = readLaunchConfigs(session.projectRoot.path);
@@ -579,6 +591,29 @@ Future<int> _configs(List<String> args) async {
   return (res, null);
 }
 
+/// Strict check for the hand-parsed subcommands: `--help`/`-h` prints
+/// [usage] (exit 0); an option outside [flags] (plus `--json`) or more than
+/// [positional] bare arguments prints it to stderr (exit 2). Without this,
+/// `emu shot --port 4591` silently saved the screenshot to a file named
+/// `4591`. Returns null when [args] are fine.
+int? _checkArgs(List<String> args, String usage,
+    {Set<String> flags = const {}, int positional = 0}) {
+  if (args.contains('--help') || args.contains('-h')) {
+    print(usage);
+    return 0;
+  }
+  final unknown = args.where((a) => a.startsWith('-') && a != '--json' && !flags.contains(a));
+  final bare = args.where((a) => !a.startsWith('-')).length;
+  if (unknown.isNotEmpty || bare > positional) {
+    stderr.writeln(unknown.isNotEmpty
+        ? '✗ unknown option ${unknown.first}'
+        : '✗ unexpected argument ${args.where((a) => !a.startsWith('-')).skip(positional).first}');
+    stderr.writeln(usage);
+    return 2;
+  }
+  return null;
+}
+
 // --------------------------------------------------------------------------
 // up
 // --------------------------------------------------------------------------
@@ -602,6 +637,7 @@ Future<int> _up(List<String> args) async {
         help: 'use the device even if another emu session holds it')
     ..addFlag('temp-device', negatable: false,
         help: 'create a throwaway AVD/simulator for this session, deleted by `emu down`')
+    ..addOption('boot-avd', help: 'boot (or take, if running) this Android AVD and claim it')
     ..addOption('port', defaultsTo: '$_defaultPort')
     ..addOption('timeout', help: 'seconds to wait for running/failed (default 240)')
     ..addFlag('open', negatable: false)
@@ -612,12 +648,14 @@ Future<int> _up(List<String> args) async {
       '                [--dart-define-from-file <path>] [-a, --dart-entrypoint-args <arg>]\n'
       '                [--device-timeout <s>] [--device-connection <both|attached|wireless>]\n'
       '                [--dds-port <n>] [--no-dds] [--share-device] [--temp-device]\n'
-      '                [--port <n>] [--timeout <s>] [--open]\n'
+      '                [--boot-avd <name>] [--port <n>] [--timeout <s>] [--open]\n'
       '   Boot a device + start the app, launch the dashboard.\n'
       '   A device held by another emu session is skipped (auto-pick) or refused\n'
       '   (--device); --share-device overrides that.\n'
       '   --temp-device (with --android/--ios) creates a fresh AVD/simulator for\n'
-      '   this session and deletes it on `emu down` (~2-3GB while it exists).';
+      '   this session and deletes it on `emu down` (~2-3GB while it exists).\n'
+      '   --boot-avd <name> boots that AVD (or takes it if already running) and\n'
+      '   claims it in one step, so no other session grabs it in between.';
   final (res, code) = _parseOrUsage(parser, args, usage);
   if (res == null) return code!;
   final session = Session.require();
@@ -625,6 +663,11 @@ Future<int> _up(List<String> args) async {
   final tempDevice = res.flag('temp-device');
   if (tempDevice && (res.option('device') != null || res.flag('share-device'))) {
     stderr.writeln('✗ --temp-device creates its own device — drop --device/--share-device');
+    return 2;
+  }
+  final bootAvd = res.option('boot-avd');
+  if (bootAvd != null && (res.option('device') != null || tempDevice || res.flag('ios'))) {
+    stderr.writeln('✗ --boot-avd picks the Android device itself — drop --device/--temp-device/--ios');
     return 2;
   }
 
@@ -725,7 +768,7 @@ Future<int> _up(List<String> args) async {
   }
   session.clearServerInfo();
 
-  final platform = res.flag('android')
+  final platform = res.flag('android') || bootAvd != null
       ? 'android'
       : res.flag('ios')
           ? 'ios'
@@ -745,7 +788,8 @@ Future<int> _up(List<String> args) async {
     '__serve',
     '--port', port,
     if (platform != null) '--platform=$platform',
-    if (device != null && !tempDevice) '--device=$device',
+    if (device != null && !tempDevice && bootAvd == null) '--device=$device',
+    if (bootAvd != null) '--boot-avd=$bootAvd',
     if (flavor != null) '--flavor=$flavor',
     if (target != null) '--target=$target',
     for (final d in dartDefines) '--dart-define=$d',
@@ -909,6 +953,8 @@ Future<String> _streamUntilReady(ServerInfo info, int timeoutSec) async {
 // --------------------------------------------------------------------------
 Future<int> _action(List<String> args, String endpoint, String label,
     {bool drain = true, bool reloadHint = false}) async {
+  final bad = _checkArgs(args, 'usage: emu ${endpoint.split('/').last} [--json]   ($label)');
+  if (bad != null) return bad;
   final json = args.contains('--json');
   final info = _requireServer();
   final before = drain ? await _lastSeq(info) : 0;
@@ -1519,6 +1565,8 @@ Future<int> _memory(List<String> args) async {
 // status
 // --------------------------------------------------------------------------
 Future<int> _status(List<String> args) async {
+  final bad = _checkArgs(args, 'usage: emu status [--json]');
+  if (bad != null) return bad;
   final json = args.contains('--json');
   final session = Session.require();
   final info = session.readServerInfo();
@@ -1553,6 +1601,8 @@ Future<int> _status(List<String> args) async {
 // shot / open / down
 // --------------------------------------------------------------------------
 Future<int> _shot(List<String> args) async {
+  final bad = _checkArgs(args, 'usage: emu shot [path] [--no-settle] [--json]', flags: const {'--no-settle'}, positional: 1);
+  if (bad != null) return bad;
   final json = args.contains('--json');
   final settle = !args.contains('--no-settle');
   final out = args.firstWhere((a) => !a.startsWith('-'), orElse: () => '');
@@ -1761,6 +1811,8 @@ Future<int> _inject(String path, String label, {required bool json}) async {
 }
 
 Future<int> _open(List<String> args) async {
+  final bad = _checkArgs(args, 'usage: emu open');
+  if (bad != null) return bad;
   final info = _requireServer();
   await _openUrl(info.baseUrl);
   print(info.baseUrl);
@@ -1773,6 +1825,8 @@ Future<int> _open(List<String> args) async {
 /// through a shell. Waits for the resulting navigation to settle unless
 /// `--no-settle` is passed, same as `tap`/`shot`.
 Future<int> _openUrlCmd(List<String> args) async {
+  final bad = _checkArgs(args, 'usage: emu open-url <url> [--no-settle] [--json]', flags: const {'--no-settle'}, positional: 1);
+  if (bad != null) return bad;
   final json = args.contains('--json');
   final settle = !args.contains('--no-settle');
   final url = args.firstWhere((a) => !a.startsWith('-'), orElse: () => '');
@@ -1816,7 +1870,14 @@ Future<int> _openUrlCmd(List<String> args) async {
 }
 
 Future<int> _down(List<String> args) async {
+  const usage = 'usage: emu down [--kill-device] [--keep-device]\n'
+      '   Stop the session. --kill-device also powers off this session\'s device.\n'
+      '   A --temp-device session\'s device is deleted unless --keep-device, which\n'
+      '   keeps it as a regular AVD/simulator (delete it yourself when done).';
+  final bad = _checkArgs(args, usage, flags: const {'--kill-device', '--keep-device'});
+  if (bad != null) return bad;
   final killDevice = args.contains('--kill-device');
+  final keepDevice = args.contains('--keep-device');
   final session = Session.require();
   final info = session.readServerInfo();
   if (info == null || !await _ping(info)) {
@@ -1830,9 +1891,17 @@ Future<int> _down(List<String> args) async {
   final deviceId = (status?['status'] as Map?)?['deviceId'] as String?;
   await _post(info, '/api/shutdown');
   print('✓ session stopped');
-  // A --temp-device session's device is deleted (which powers it off too).
   final temp = TempDevices().ownedBy(info.pid, info.port);
-  if (temp.isNotEmpty) {
+  if (temp.isNotEmpty && keepDevice) {
+    // Unrecorded, so no later orphan sweep deletes it.
+    for (final d in temp) {
+      TempDevices().forget(d);
+      print('✓ kept temp device ${d.name} as a regular '
+          '${d.platform == 'ios' ? 'simulator — reuse: emu up --device ${d.udid}' : 'AVD — reuse: emu up --boot-avd ${d.name}'}');
+    }
+    if (killDevice) await _killOwnDevice(deviceId);
+  } else if (temp.isNotEmpty) {
+    // A --temp-device session's device is deleted (which powers it off too).
     await _removeTempDevices(temp);
   } else if (killDevice) {
     await _killOwnDevice(deviceId);
@@ -2015,7 +2084,8 @@ Future<int> runServe(List<String> args) async {
     ..addOption('dds-port')
     ..addFlag('dds', defaultsTo: true)
     ..addFlag('share-device', negatable: false)
-    ..addFlag('temp-device', negatable: false);
+    ..addFlag('temp-device', negatable: false)
+    ..addOption('boot-avd');
   final res = parser.parse(args);
   final session = Session.require(start: res.option('project'));
   final server = EmuServer(session: session);
@@ -2039,6 +2109,7 @@ Future<int> runServe(List<String> args) async {
         noDds: !res.flag('dds'),
         shareDevice: res.flag('share-device'),
         tempDevice: res.flag('temp-device'),
+        bootAvd: res.option('boot-avd'),
       ),
     );
   } catch (e, st) {
@@ -2144,8 +2215,9 @@ COMMANDS
                          Send a deep link to the connected device
                          (adb am start / xcrun simctl openurl). Waits for the
                          resulting navigation to finish (skip with --no-settle)
-  down [--kill-device]   Stop the session (optionally power off this session's device;
-                         a --temp-device session's device is always deleted)
+  down [--kill-device] [--keep-device]
+                         Stop the session (optionally power off this session's device;
+                         a --temp-device session's device is deleted unless --keep-device)
 
 ENV
   EMU_PROJECT   Project root override (default: auto-detect via pubspec.yaml)

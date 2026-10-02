@@ -127,8 +127,13 @@ class DeviceManager {
     return bootAvd(target, claim: claim, onProgress: onProgress, running: running);
   }
 
-  /// Boot the AVD named [avd] and claim the emulator it comes up as (the
-  /// serial that wasn't among [running] before). Returns that serial.
+  /// Boot the AVD named [avd] and claim the emulator it comes up as. Returns
+  /// that serial. An AVD can only run once, so if it is already running
+  /// (e.g. booted by hand) that emulator is claimed instead.
+  ///
+  /// The claim is taken as soon as the new serial shows up — not after boot
+  /// completes: a booting emulator is already listed by `adb devices` as
+  /// `device`, so waiting would let another session's `up --android` take it.
   Future<String> bootAvd(
     String avd, {
     Future<bool> Function(String deviceId)? claim,
@@ -143,6 +148,15 @@ class DeviceManager {
     }
     final take = claim ?? (_) async => true;
     final before = running ?? await _runningAndroidEmulators();
+    for (final serial in before) {
+      if (await _avdNameOf(serial) != avd) continue;
+      if (!await take(serial)) {
+        throw DeviceException('AVD $avd is already running as $serial and is in use by '
+            'another emu session.');
+      }
+      onProgress?.call('Android emulator already running: $serial ($avd)');
+      return serial;
+    }
     onProgress?.call('booting Android AVD: $avd');
     // The emulator binary locates its Qt/qemu libs relative to its own
     // directory, so it must be launched by absolute path AND with that
@@ -161,22 +175,32 @@ class DeviceManager {
     );
     onProgress?.call('waiting for Android boot to complete...');
     // Other emulators may already be running (or booting for another
-    // session), so identify ours as a serial that wasn't there before the
-    // boot and runs [avd].
+    // session), so ours is a serial that wasn't there before and runs [avd].
+    String? ours;
     for (var i = 0; i < 120; i++) {
       await Future<void>.delayed(const Duration(seconds: 2));
-      final fresh = (await _runningAndroidEmulators()).where((s) => !before.contains(s));
-      for (final serial in fresh) {
-        final name = await _avdNameOf(serial);
-        if (name != null && name != avd) continue;
-        final res = await Process.run(
-            'adb', ['-s', serial, 'shell', 'getprop', 'sys.boot_completed']);
-        if ((res.stdout as String).trim() != '1') continue;
-        if (await take(serial)) return serial;
-        throw DeviceException('booted $serial but another emu session claimed it first.');
+      if (ours == null) {
+        final fresh = (await _runningAndroidEmulators()).where((s) => !before.contains(s));
+        for (final serial in fresh) {
+          final name = await _avdNameOf(serial);
+          // Its console may not answer yet; then only a finished boot (the
+          // old rule) identifies it.
+          if (name == null ? !await _bootCompleted(serial) : name != avd) continue;
+          if (!await take(serial)) {
+            throw DeviceException('booted $serial but another emu session claimed it first.');
+          }
+          ours = serial;
+          break;
+        }
       }
+      if (ours != null && await _bootCompleted(ours)) return ours;
     }
     throw DeviceException('Timed out waiting for Android emulator to boot.');
+  }
+
+  Future<bool> _bootCompleted(String serial) async {
+    final res = await Process.run('adb', ['-s', serial, 'shell', 'getprop', 'sys.boot_completed']);
+    return (res.stdout as String).trim() == '1';
   }
 
   /// Pick an iOS simulator: an explicit [udid] (claimed via [claim] when

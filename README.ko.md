@@ -159,7 +159,7 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 | `emu configs` | `.vscode/launch.json` 의 실행 구성 목록 (debug만 실행 가능) + `emu.yaml`/`emu.local.yaml` 의 profile 목록 |
 | `emu config [--profile <name>]` | `emu.yaml` 계층 병합 결과 + 학습된 메모리 표시. `--profile` 주면 그 profile로 resolve된 값을 대신 미리보기 |
 | `emu up [opts]` | 기기 부팅 + 앱 실행 + 대시보드 기동. `running`/`failed` + 첫 프레임까지 대기 |
-| `emu down [--kill-device]` | 세션 종료. `--kill-device` 면 **이 세션의** 기기 전원도 끔(다른 emu 세션이 아직 점유한 기기는 끄지 않음). `--temp-device` 세션의 기기는 항상 삭제 |
+| `emu down [--kill-device]` | 세션 종료. `--kill-device` 면 **이 세션의** 기기 전원도 끔(다른 emu 세션이 아직 점유한 기기는 끄지 않음). `--temp-device` 세션의 기기는 `--keep-device` 가 아니면 삭제 |
 | `emu stop` | 앱만 정지(서버는 유지) |
 | `emu status` | 세션/기기/앱 상태 + VM Service URI |
 | `emu open` | 대시보드를 브라우저로 열기 |
@@ -194,6 +194,7 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 | `--no-dds` | Dart Developer Service 비활성화 |
 | `--share-device` | 다른 emu 세션이 점유한 기기라도 사용(두 세션의 입력·스크린샷이 섞일 수 있음) |
 | `--temp-device` | `--android`/`--ios` 와 함께: 이 세션 전용 임시 AVD/시뮬레이터(`emu_tmp_<프로젝트>_<id>`)를 만들고 `emu down` 때 삭제 |
+| `--boot-avd <이름>` | 그 Android AVD를 부팅(이미 실행 중이면 그대로)하고 한 번에 점유 |
 | `--port <n>` | 대시보드 포트(기본 4577, 사용 중이면 자동 폴백) |
 | `--timeout <s>` | `running`/`failed` 도달까지 대기하는 창(기본 240). 콜드부트가 길면 늘린다 |
 | `--open` | 기동 후 브라우저 열기 |
@@ -675,7 +676,11 @@ emu memory --diff-across "emu tap --text '상세보기' && emu tap --text '뒤�
   최신 폰 시스템 이미지) 또는 시뮬레이터(최신 iOS 런타임의 기본 iPhone)를 만들고, `emu down` —
   또는 실패한 `up` — 이 전원을 끄고 삭제한다. 존재하는 동안 기기당 디스크 ~2–3GB, 콜드 부팅.
   `~/.emu/temp-devices/` 에 기록되며, `down` 없이 서버가 죽어 남은 기기는 다음
-  `up --temp-device` 나 `down` 이 정리한다.
+  `up --temp-device` 나 `down` 이 정리한다. `emu down --keep-device` 면 일반 AVD/시뮬레이터로
+  남긴다(`--boot-avd`/`--device` 로 재사용).
+- 기기는 부팅 완료가 아니라 **보이는 즉시** 점유한다 — 부팅 중인 에뮬레이터를 다른 세션의
+  `up --android` 가 가로채지 못한다. AVD를 직접 띄워 쓰려면 손으로 부팅 후 `emu up -d` 대신
+  `emu up --boot-avd <이름>` 을 쓴다.
 
 설계: [`docs/DEVICE_LEASE.md`](docs/DEVICE_LEASE.md).
 

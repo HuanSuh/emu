@@ -45,6 +45,7 @@ class LaunchOptions {
     this.noDds = false,
     this.shareDevice = false,
     this.tempDevice = false,
+    this.bootAvd,
     this.extra = const [],
   });
 
@@ -78,6 +79,9 @@ class LaunchOptions {
   /// Create a throwaway device for this session (`up --temp-device`), deleted
   /// by `emu down`. Needs [platform]; see `temp_device.dart`.
   final bool tempDevice;
+
+  /// Boot (or take, if running) this AVD and claim it (`up --boot-avd`).
+  final String? bootAvd;
   final List<String> extra;
 }
 
@@ -180,6 +184,13 @@ class EmuServer {
       }
       if (opts.tempDevice) {
         deviceId = await _bootTempDevice(opts, claim);
+      } else if (opts.bootAvd != null) {
+        final avds = await devices.listAndroidAvds();
+        if (!avds.contains(opts.bootAvd)) {
+          throw DeviceException('no AVD named "${opts.bootAvd}"'
+              '${avds.isEmpty ? '' : ' — available: ${avds.join(', ')}'}');
+        }
+        deviceId = await devices.bootAvd(opts.bootAvd!, claim: claim, onProgress: logStore.system);
       } else if (deviceId == null && opts.platform == 'android') {
         deviceId = await devices.bootAndroid(claim: claim, onProgress: logStore.system);
       } else if (deviceId == null && opts.platform == 'ios') {
