@@ -5,7 +5,7 @@ void main() {
   group('locateExpr', () {
     test('by --text checks Semantics label, Text data, and Tooltip message', () {
       final e = locateExpr(text: '닫기');
-      expect(e, contains('_emuMatchText(w, "닫기")'));
+      expect(e, contains('_emuMatchText(w, "닫기", loose)'));
       expect(e, contains('d.data == want'));
       expect(e, contains('d.properties.label == want'));
       expect(e, contains('d.message == want'));
@@ -20,7 +20,7 @@ void main() {
     });
 
     test('escapes injection-prone query text', () {
-      expect(locateExpr(text: 'a"b'), contains(r'_emuMatchText(w, "a\"b")'));
+      expect(locateExpr(text: 'a"b'), contains(r'_emuMatchText(w, "a\"b", loose)'));
     });
 
     test('by --type checks the widget runtime type name', () {
@@ -58,6 +58,19 @@ void main() {
       expect(dumpVarAt, lessThan(firstWriteAt));
     });
 
+    test('by --text falls back to a whitespace-normalized substring pass', () {
+      final e = locateExpr(text: '동의');
+      expect(e, contains('_emuMatchText(w, "동의", loose)'));
+      expect(e, contains('d.textSpan?.toPlainText()'));
+      expect(e, contains('loose = true; visit(root)'));
+      expect(e, contains('return "~" + out.toString()'));
+    });
+
+    test('--key/--type have no substring fallback', () {
+      expect(locateExpr(key: 'k'), isNot(contains('loose = true')));
+      expect(locateExpr(type: 'Text'), isNot(contains('loose = true')));
+    });
+
     test('without --dump no toString() field is emitted', () {
       expect(locateExpr(text: 'x'), isNot(contains('w.toString()')));
     });
@@ -72,6 +85,14 @@ void main() {
   });
 
   group('parseLocateMatches', () {
+    test('a leading ~ marks every match as partial', () {
+      final m = parseLocateMatches('~1|2|3|4|Text;5|6|7|8|Semantics');
+      expect(m.map((x) => x.partial), [true, true]);
+      expect(m.first.toJson()['partial'], true);
+      expect(parseLocateMatches('1|2|3|4|Text').single.toJson().containsKey('partial'), isFalse);
+      expect(parseLocateMatches('~'), isEmpty);
+    });
+
     test('empty string means no matches', () {
       expect(parseLocateMatches(''), isEmpty);
     });

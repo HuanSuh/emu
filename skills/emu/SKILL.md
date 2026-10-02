@@ -56,6 +56,10 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
      `emu up --android --temp-device`(또는 `--ios`)는 세션 전용 기기를 만들고
      `emu down` 이 삭제한다(콜드 부팅이라 기동이 느리니 `--timeout` 을 넉넉히).
      기기·설치 상태를 남기려면 `emu down --keep-device`, 앱만 다시 띄우려면 `down` 말고 `emu cold`.
+   - **로컬 서버에 붙는 앱**: Android 에뮬레이터는 `adb reverse` 가 필요하다. 직접 치지 말고
+     `emu.yaml`(또는 profile)에 `reversePorts: [8000]` 을 선언하거나 `emu up --reverse-port 8000`.
+     adb가 재시작돼 풀려도 emu가 다시 건다(`emu status` 에 active 여부). 권한 부여 등 기기
+     준비는 `onDeviceReady`/`onAppStarted` hook(`$EMU_DEVICE`, `$EMU_APP_ID` 제공).
    - 특정 AVD를 쓰려면 손으로 부팅 후 `-d` 하지 말고 `emu up --boot-avd <AVD>` —
      부팅과 점유를 한 번에 해서 다른 세션이 끼어들지 못한다.
 2. `emu shot [path] [--no-settle]` — 스크린샷 저장(**물리 픽셀**, 기본
@@ -66,7 +70,9 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
    - `emu tap --text <라벨> | --key <key> [--index <n>] [--no-settle]` — 좌표 대신
      위젯의 Semantics/Text/Tooltip 라벨이나 `ValueKey` 로 탭. 레이아웃이 바뀌어도
      안 깨지므로 라벨/키를 아는 위젯이면 좌표 산출보다 이걸 우선 쓴다. 여러 개
-     매칭되면 에러가 나며 개수를 알려주니 `--index` 로 선택.
+     매칭되면 에러가 나며 개수를 알려주니 `--index` 로 선택. 정확히 일치하는 게
+     없으면 부분 일치로 다시 찾고 결과에 partial 로 표시한다(`Row(Checkbox, Text)` 처럼
+     라벨이 합쳐진 경우).
    - `emu find --text <라벨> | --key <key> | --type <위젯타입> [--index <n>] [--dump]`
      — `tap --text` 와 같은 탐색을 탭 없이 수행해 매칭 위젯 목록과 탭 좌표를 출력.
      화면 검증이나, 여러 개 매칭될 때 `--index` 를 정하기 전 확인용. `--type` 은

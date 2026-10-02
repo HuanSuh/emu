@@ -12,6 +12,7 @@ import 'package:http/http.dart' as http;
 import 'assertions.dart';
 import 'device_lease.dart';
 import 'device_manager.dart';
+import 'device_setup.dart';
 import 'launch_config.dart';
 import 'memory_diff.dart';
 import 'models.dart';
@@ -467,6 +468,10 @@ Future<int> _config(List<String> args) async {
         'timeout': pc.timeoutSec,
         'port': pc.port,
         'platform': pc.platform,
+        'reversePorts': pc.reversePorts,
+        'forwardPorts': pc.forwardPorts,
+        'onDeviceReady': pc.onDeviceReady,
+        'onAppStarted': pc.onAppStarted,
       },
       'availableProfiles': names.toList()..sort(),
       'memory': mem.toJson(),
@@ -490,10 +495,14 @@ Future<int> _config(List<String> args) async {
   row('timeout', pc.timeoutSec);
   row('port', pc.port);
   row('platform', pc.platform);
+  row('reversePorts', pc.reversePorts.isEmpty ? null : pc.reversePorts.join(', '));
+  row('forwardPorts', pc.forwardPorts.isEmpty ? null : pc.forwardPorts.join(', '));
+  row('onDeviceReady', pc.onDeviceReady.isEmpty ? null : pc.onDeviceReady.join(' ; '));
+  row('onAppStarted', pc.onAppStarted.isEmpty ? null : pc.onAppStarted.join(' ; '));
   if ([pc.deviceId, pc.flavor, pc.target, pc.timeoutSec, pc.port, pc.platform]
           .every((v) => v == null) &&
-      pc.dartDefines.isEmpty &&
-      pc.dartDefineFromFile.isEmpty) {
+      [pc.dartDefines, pc.dartDefineFromFile, pc.reversePorts, pc.forwardPorts,
+        pc.onDeviceReady, pc.onAppStarted].every((l) => l.isEmpty)) {
     print('  (no emu.yaml / emu.local.yaml / ~/.emu/config.yaml — built-in defaults apply)');
   }
 
@@ -638,6 +647,8 @@ Future<int> _up(List<String> args) async {
     ..addFlag('temp-device', negatable: false,
         help: 'create a throwaway AVD/simulator for this session, deleted by `emu down`')
     ..addOption('boot-avd', help: 'boot (or take, if running) this Android AVD and claim it')
+    ..addMultiOption('reverse-port', help: 'adb reverse on Android: 8000, 8000:9000 or tcp:8000:tcp:9000')
+    ..addMultiOption('forward-port', help: 'adb forward on Android, same forms as --reverse-port')
     ..addOption('port', defaultsTo: '$_defaultPort')
     ..addOption('timeout', help: 'seconds to wait for running/failed (default 240)')
     ..addFlag('open', negatable: false)
@@ -648,14 +659,18 @@ Future<int> _up(List<String> args) async {
       '                [--dart-define-from-file <path>] [-a, --dart-entrypoint-args <arg>]\n'
       '                [--device-timeout <s>] [--device-connection <both|attached|wireless>]\n'
       '                [--dds-port <n>] [--no-dds] [--share-device] [--temp-device]\n'
-      '                [--boot-avd <name>] [--port <n>] [--timeout <s>] [--open]\n'
+      '                [--boot-avd <name>] [--reverse-port <p>] [--forward-port <p>]\n'
+      '                [--port <n>] [--timeout <s>] [--open]\n'
       '   Boot a device + start the app, launch the dashboard.\n'
       '   A device held by another emu session is skipped (auto-pick) or refused\n'
       '   (--device); --share-device overrides that.\n'
       '   --temp-device (with --android/--ios) creates a fresh AVD/simulator for\n'
       '   this session and deletes it on `emu down` (~2-3GB while it exists).\n'
       '   --boot-avd <name> boots that AVD (or takes it if already running) and\n'
-      '   claims it in one step, so no other session grabs it in between.';
+      '   claims it in one step, so no other session grabs it in between.\n'
+      '   --reverse-port/--forward-port (or reversePorts/forwardPorts in emu.yaml) map\n'
+      '   ports on an Android device before launch, e.g. --reverse-port 8000 lets the\n'
+      '   app reach the Mac\'s localhost:8000. Re-applied if adb drops them.';
   final (res, code) = _parseOrUsage(parser, args, usage);
   if (res == null) return code!;
   final session = Session.require();
@@ -768,6 +783,19 @@ Future<int> _up(List<String> args) async {
   }
   session.clearServerInfo();
 
+  // Port mappings: flags replace the config's list wholesale, like dart-defines.
+  final reversePorts =
+      res.multiOption('reverse-port').isNotEmpty ? res.multiOption('reverse-port') : pc.reversePorts;
+  final forwardPorts =
+      res.multiOption('forward-port').isNotEmpty ? res.multiOption('forward-port') : pc.forwardPorts;
+  for (final p in [...reversePorts, ...forwardPorts]) {
+    if (parsePortMapping(p) == null) {
+      stderr.writeln('✗ bad port mapping "$p" — use 8000, 8000:9000 (device:host) '
+          'or tcp:8000:tcp:9000');
+      return 2;
+    }
+  }
+
   final platform = res.flag('android') || bootAvd != null
       ? 'android'
       : res.flag('ios')
@@ -790,6 +818,10 @@ Future<int> _up(List<String> args) async {
     if (platform != null) '--platform=$platform',
     if (device != null && !tempDevice && bootAvd == null) '--device=$device',
     if (bootAvd != null) '--boot-avd=$bootAvd',
+    for (final p in reversePorts) '--reverse-port=${parsePortMapping(p)!.spec}',
+    for (final p in forwardPorts) '--forward-port=${parsePortMapping(p)!.spec}',
+    for (final c in pc.onDeviceReady) '--on-device-ready=$c',
+    for (final c in pc.onAppStarted) '--on-app-started=$c',
     if (flavor != null) '--flavor=$flavor',
     if (target != null) '--target=$target',
     for (final d in dartDefines) '--dart-define=$d',
@@ -1176,7 +1208,7 @@ Future<int> _find(List<String> args) async {
   for (var i = 0; i < matches.length; i++) {
     final m = matches[i];
     print('[$i] ${m['widgetType']}   ${m['x']},${m['y']}   '
-        '${m['width']}×${m['height']}');
+        '${m['width']}×${m['height']}${m['partial'] == true ? '   (partial match)' : ''}');
     if (m['dump'] != null) print('    ${m['dump']}');
   }
   return 0;
@@ -1594,6 +1626,19 @@ Future<int> _status(List<String> args) async {
     if (st['vmServiceUri'] != null) print('vmService: ${st['vmServiceUri']}');
     if (st['lastReloadAt'] != null) print('reloaded:  ${st['lastReloadAt']}');
   }
+  final ports = (data?['ports'] as Map?)?.cast<String, dynamic>();
+  if (ports != null) {
+    final active = (ports['active'] as Map?)?.cast<String, dynamic>();
+    final declared = (ports['declared'] as Map).cast<String, dynamic>();
+    for (final kind in ['reverse', 'forward']) {
+      for (final m in (declared[kind] as List).cast<String>()) {
+        final on = active == null
+            ? 'not checked yet'
+            : ((active[kind] as List).contains(m) ? 'active' : 'NOT active');
+        print('$kind:${' ' * (10 - kind.length)}$m   ($on)');
+      }
+    }
+  }
   return 0;
 }
 
@@ -1668,7 +1713,9 @@ void _rememberProject(void Function(ProjectMemory) mutate) {
 /// use `--index` to pick one.
 Future<int> _tap(List<String> args) async {
   final parser = ArgParser()
-    ..addOption('text', help: 'tap the widget whose Semantics label / Text / Tooltip matches this')
+    ..addOption('text',
+        help: 'tap the widget whose Semantics label / Text / Tooltip equals this '
+            '(else contains it, whitespace-normalized)')
     ..addOption('key', help: 'tap the widget whose ValueKey matches this')
     ..addOption('index', help: '0-based match to tap when --text/--key matches more than one')
     ..addFlag('json', negatable: false)
@@ -1806,7 +1853,10 @@ Future<int> _inject(String path, String label, {required bool json}) async {
     }
     return 1;
   }
-  print(json ? jsonEncode(res) : '✓ $label   (seq ${res['seq']})');
+  print(json
+      ? jsonEncode(res)
+      : '✓ $label   (seq ${res['seq']})'
+          '${res['partial'] == true ? '   (partial match: no widget equals it exactly)' : ''}');
   return 0;
 }
 
@@ -2086,7 +2136,11 @@ Future<int> runServe(List<String> args) async {
     ..addFlag('dds', defaultsTo: true)
     ..addFlag('share-device', negatable: false)
     ..addFlag('temp-device', negatable: false)
-    ..addOption('boot-avd');
+    ..addOption('boot-avd')
+    ..addMultiOption('reverse-port', splitCommas: false)
+    ..addMultiOption('forward-port', splitCommas: false)
+    ..addMultiOption('on-device-ready', splitCommas: false)
+    ..addMultiOption('on-app-started', splitCommas: false);
   final res = parser.parse(args);
   final session = Session.require(start: res.option('project'));
   final server = EmuServer(session: session);
@@ -2111,6 +2165,10 @@ Future<int> runServe(List<String> args) async {
         shareDevice: res.flag('share-device'),
         tempDevice: res.flag('temp-device'),
         bootAvd: res.option('boot-avd'),
+        reversePorts: res.multiOption('reverse-port').map(parsePortMapping).nonNulls.toList(),
+        forwardPorts: res.multiOption('forward-port').map(parsePortMapping).nonNulls.toList(),
+        onDeviceReady: res.multiOption('on-device-ready'),
+        onAppStarted: res.multiOption('on-app-started'),
       ),
     );
   } catch (e, st) {

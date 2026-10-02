@@ -31,13 +31,18 @@ class LocateException implements Exception {
 /// plus enough context (size, widget type) to tell matches apart. [dump] holds
 /// the widget's `toString()` when the query asked for it, and is null otherwise.
 class LocateMatch {
-  LocateMatch(this.x, this.y, this.width, this.height, this.widgetType, [this.dump]);
+  LocateMatch(this.x, this.y, this.width, this.height, this.widgetType,
+      [this.dump, this.partial = false]);
   final int x;
   final int y;
   final double width;
   final double height;
   final String widgetType;
   final String? dump;
+
+  /// A `--text` match found only by the substring fallback (nothing matched
+  /// exactly), so the caller can say it wasn't an exact hit.
+  final bool partial;
 
   Map<String, dynamic> toJson() => {
         'x': x,
@@ -46,11 +51,13 @@ class LocateMatch {
         'height': height,
         'widgetType': widgetType,
         if (dump != null) 'dump': dump,
+        if (partial) 'partial': true,
       };
 }
 
-/// Find every on-screen widget whose Semantics label, `Text` data, or
-/// `Tooltip` message equals [text] — or, when [key] is given instead, whose
+/// Find every on-screen widget whose Semantics label, `Text` data (plain or
+/// `Text.rich`), or `Tooltip` message equals [text] — or, when none does,
+/// contains it, whitespace-normalized (marked [LocateMatch.partial]) — or, when [key] is given instead, whose
 /// `ValueKey` renders to that string, or when [type] is given, whose runtime
 /// type name equals it — and return each match's tap point.
 ///
@@ -131,18 +138,29 @@ bool _exactlyOne(String? a, String? b, String? c) =>
 String locateExpr({String? text, String? key, String? type, bool dump = false}) {
   assert(_exactlyOne(text, key, type), 'locateExpr: give exactly one of text/key/type');
   final matchCall = text != null
-      ? '_emuMatchText(w, ${dartStringLiteral(text)})'
+      ? '_emuMatchText(w, ${dartStringLiteral(text)}, loose)'
       : key != null
           ? '_emuMatchKey(w.key, ${dartStringLiteral(key)})'
           : '_emuMatchType(w, ${dartStringLiteral(type!)})';
   return '(() {'
-      'bool _emuMatchText(Widget w, String want) {'
+      // Exact first; [loose] is the fallback pass, run only when the exact
+      // pass found nothing: whitespace-normalized substring, so a label
+      // inside a longer/merged one (`Row(Checkbox, Text)`, a trailing space,
+      // a line break) still resolves.
+      'bool _emuMatchText(Widget w, String want, bool loose) {'
       'final d = w as dynamic;'
       'final t = w.runtimeType.toString();'
+      'bool hit(Object? s) {'
+      'if (s is! String) return false;'
+      'if (!loose) return s == want;'
+      'String n(String x) => x.replaceAll(RegExp(r"\\s+"), " ").trim();'
+      'final nw = n(want);'
+      'return nw.isNotEmpty && n(s).contains(nw);'
+      '}'
       'try {'
-      'if (t == "Text") return d.data == want;'
-      'if (t == "Semantics") return d.properties.label == want;'
-      'if (t == "Tooltip") return d.message == want;'
+      'if (t == "Text") return d.data == want || hit(d.data ?? d.textSpan?.toPlainText());'
+      'if (t == "Semantics") return d.properties.label == want || hit(d.properties.label);'
+      'if (t == "Tooltip") return d.message == want || hit(d.message);'
       '} catch (_) {}'
       'return false;'
       '}'
@@ -153,6 +171,7 @@ String locateExpr({String? text, String? key, String? type, bool dump = false}) 
       'return w.runtimeType.toString() == want;'
       '}'
       'final out = StringBuffer();'
+      'var loose = false;'
       'void visit(Element e) {'
       'final w = e.widget;'
       'if ($matchCall) {'
@@ -183,6 +202,7 @@ String locateExpr({String? text, String? key, String? type, bool dump = false}) 
       '}'
       'final root = WidgetsBinding.instance.rootElement;'
       'if (root != null) visit(root);'
+      '${text != null ? 'if (out.isEmpty && root != null) { loose = true; visit(root); if (out.isNotEmpty) return "~" + out.toString(); }' : ''}'
       'return out.toString();'
       '})()';
 }
@@ -208,7 +228,10 @@ const _dumpFieldSrc = 'out.write("|");'
 /// Parse the `x|y|width|height|widgetType[|dump]` records `locateExpr` returns.
 /// Pure, unit-tested against malformed/empty input separately from any live
 /// VM Service connection.
+/// A leading `~` marks matches from the substring fallback.
 List<LocateMatch> parseLocateMatches(String raw) {
+  final partial = raw.startsWith('~');
+  if (partial) raw = raw.substring(1);
   if (raw.isEmpty) return const [];
   final out = <LocateMatch>[];
   for (final rec in raw.split(';')) {
@@ -219,7 +242,8 @@ List<LocateMatch> parseLocateMatches(String raw) {
     final w = double.tryParse(f[2]);
     final h = double.tryParse(f[3]);
     if (x == null || y == null || w == null || h == null) continue;
-    out.add(LocateMatch(x.round(), y.round(), w, h, f[4], f.length == 6 ? f[5] : null));
+    out.add(LocateMatch(
+        x.round(), y.round(), w, h, f[4], f.length == 6 ? f[5] : null, partial));
   }
   return out;
 }
