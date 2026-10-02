@@ -42,4 +42,34 @@ void main() {
       });
     }
   });
+
+  // The hand-parsed subcommands used to ignore unknown options and treat a
+  // stray value as a positional — `emu shot --port 4591` saved a file named
+  // `4591` (https://github.com/HuanSuh/emu/issues/13).
+  group('hand-parsed subcommands are strict', () {
+    const manual = [
+      'version', 'doctor', 'update', 'uninstall', 'devices', 'configs', 'status',
+      'shot', 'open', 'open-url', 'down', 'reload', 'restart', 'cold', 'stop',
+    ];
+    for (final cmd in manual) {
+      test('$cmd --help exits 0 with usage', () async {
+        final (code, out) = await _run([cmd, '--help']);
+        expect(code, 0);
+        expect(out.toLowerCase(), contains('usage'));
+      });
+      test('$cmd rejects an unknown option', () async {
+        final (code, _) = await _run([cmd, '--this-flag-does-not-exist']);
+        expect(code, 2);
+      });
+    }
+
+    test('shot --port 4591 is rejected, not saved as "4591"', () async {
+      expect((await _run(['shot', '--port', '4591'])).$1, 2);
+    });
+
+    test('a second positional is rejected', () async {
+      expect((await _run(['shot', 'a.png', 'b.png'])).$1, 2);
+      expect((await _run(['status', 'extra'])).$1, 2);
+    });
+  });
 }
