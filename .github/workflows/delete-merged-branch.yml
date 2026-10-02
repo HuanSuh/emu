@@ -1,0 +1,38 @@
+name: Delete merged branch
+
+# develop 에 머지된 작업 브랜치를 지운다. GitHub의 "Automatically delete head branches"
+# 설정은 쓰지 않는다 — release PR(develop → main)이 머지될 때 develop 까지 지우려 들기 때문.
+
+on:
+  pull_request:
+    branches: [develop]
+    types: [closed]
+
+permissions:
+  contents: write
+
+jobs:
+  delete:
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref != 'main' &&
+      github.head_ref != 'develop'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete the head branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.head_ref }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Another open PR may still be based on this branch (stacked PRs) —
+          # deleting it would close that PR, so leave it for later.
+          open=$(gh pr list --repo "$REPO" --base "$BRANCH" --state open --json number -q length)
+          if [ "$open" != "0" ]; then
+            echo "::notice::$BRANCH is the base of $open open PR(s) — not deleting."
+            exit 0
+          fi
+          gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" \
+            && echo "deleted $BRANCH" \
+            || echo "::notice::$BRANCH already gone"

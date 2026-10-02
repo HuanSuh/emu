@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-02
+
 ### Added
 - 세션 재연결 — adb 서버 재시작 등으로 `flutter run` 이 `Lost connection to device` 로 끝나도
   앱이 기기에 살아 있으면 서버가 `flutter attach` 로 자동으로 다시 붙는다(1분에 한 번). 수동
@@ -180,7 +182,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/HuanSuh/emu/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/HuanSuh/emu/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/HuanSuh/emu/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/HuanSuh/emu/compare/v0.5.0...v0.6.0
