@@ -7,6 +7,9 @@
 ## [Unreleased]
 
 ### Added
+- 세션 재연결 — adb 서버 재시작 등으로 `flutter run` 이 `Lost connection to device` 로 끝나도
+  앱이 기기에 살아 있으면 서버가 `flutter attach` 로 자동으로 다시 붙는다(1분에 한 번). 수동
+  재시도 `emu attach`. 설계: `docs/ATTACH.md` (#13).
 - `emu.yaml`(최상위·profile) `reversePorts`/`forwardPorts` 와 `emu up --reverse-port`/`--forward-port`
   — Android 기기가 정해지면 `flutter run` 전에 `adb reverse`/`forward` 를 건다. 15초마다 확인해
   adb 재시작·재부팅으로 풀린 연결을 다시 걸고, `emu status` 에 상태를 보여주며 `emu down` 이

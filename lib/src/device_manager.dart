@@ -295,6 +295,37 @@ class DeviceManager {
     return res.exitCode == 0;
   }
 
+  /// Whether the app [appId] (package / bundle id) still has a live process
+  /// on [deviceId] — i.e. only the `flutter` tool lost it, not the device.
+  Future<bool> appAlive(String deviceId, String appId) async {
+    if (platformForDeviceId(deviceId) == 'ios') {
+      if (!isMacOS) return false;
+      final r = await _xcrun(['simctl', 'spawn', deviceId, 'launchctl', 'list']);
+      return r.exitCode == 0 && '${r.stdout}'.contains('UIKitApplication:$appId');
+    }
+    final r = await Process.run('adb', ['-s', deviceId, 'shell', 'pidof', appId]);
+    return r.exitCode == 0 && '${r.stdout}'.trim().isNotEmpty;
+  }
+
+  /// Wait (up to [timeout]) until adb sees [serial] as `device` again — after
+  /// an adb server restart it takes a moment to re-enumerate.
+  Future<bool> waitAndroidOnline(String serial, {Duration timeout = const Duration(seconds: 60)}) async {
+    final end = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(end)) {
+      final r = await Process.run('adb', ['-s', serial, 'get-state']);
+      if (r.exitCode == 0 && '${r.stdout}'.trim() == 'device') return true;
+      await Future<void>.delayed(const Duration(seconds: 2));
+    }
+    return false;
+  }
+
+  /// The device-side VM Service URL the app announced at startup, read back
+  /// from logcat — what `flutter attach --debug-url` needs to re-forward it.
+  Future<String?> androidVmServiceUrl(String serial) async {
+    final r = await Process.run('adb', ['-s', serial, 'logcat', '-d', '-s', 'flutter']);
+    return r.exitCode == 0 ? lastVmServiceUrl('${r.stdout}') : null;
+  }
+
   /// Android SDK root: `$ANDROID_HOME` / `$ANDROID_SDK_ROOT`, else two levels
   /// above the `emulator` binary (`<sdk>/emulator/emulator`), else the
   /// Android Studio default.
@@ -527,6 +558,13 @@ List<String> parseAdbEmulators(String adbDevicesOutput) => [
         if (line.trim().startsWith('emulator-') && line.trim().endsWith('device'))
           line.trim().split(RegExp(r'\s+')).first,
     ];
+
+/// The last `The Dart VM service is listening on <url>` announcement in
+/// [log] (the app prints one per launch), or null.
+String? lastVmServiceUrl(String log) {
+  final all = RegExp(r'Dart VM [Ss]ervice is listening on (http://\S+)').allMatches(log);
+  return all.isEmpty ? null : all.last.group(1);
+}
 
 /// Lease id that reserves AVD [name] while its emulator boots and has no
 /// serial to claim yet.

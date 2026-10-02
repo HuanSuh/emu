@@ -93,6 +93,9 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
      기다린다. 필요 없으면 `--no-settle` 로 끈다.
 4. 검증:
    - `emu reload` / `emu restart` / `emu cold` / `emu stop` — 코드 반영/정지.
+   - 상태가 갑자기 `stopped`/`failed` 이고 로그에 `Lost connection to device` 가 있으면(다른 세션이
+     adb를 재시작) 서버가 한 번 자동으로 다시 붙는다. 그래도 끊겨 있으면 `emu attach` — 앱이
+     살아 있으면 재빌드 없이 붙고, 앱이 죽었으면 `emu cold` 를 안내한다.
    - `emu logs [opts]` — 앱 로그.
      - `-g/--grep <regex>`, `-l/--level <e|w|i>`, `-n/--lines <N>`(기본 200),
        `-f/--follow`(스트리밍), `--clear`(버퍼 비우기).

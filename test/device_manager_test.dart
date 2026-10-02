@@ -136,4 +136,14 @@ void main() {
     expect(avdReservation('Pixel_8a'), 'avd:Pixel_8a');
     expect(platformForDeviceId(avdReservation('Pixel_8a')), 'android');
   });
+
+  test('lastVmServiceUrl picks the latest announcement', () {
+    const log = '''
+I/flutter ( 1234): The Dart VM service is listening on http://127.0.0.1:41000/aaa=/
+I/flutter ( 1234): hello
+I/flutter ( 5678): The Dart VM service is listening on http://127.0.0.1:42000/bbb=/
+''';
+    expect(lastVmServiceUrl(log), 'http://127.0.0.1:42000/bbb=/');
+    expect(lastVmServiceUrl('nothing here'), isNull);
+  });
 }

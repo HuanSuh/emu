@@ -161,6 +161,7 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 | `emu up [opts]` | 기기 부팅 + 앱 실행 + 대시보드 기동. `running`/`failed` + 첫 프레임까지 대기 |
 | `emu down [--kill-device]` | 세션 종료. `--kill-device` 면 **이 세션의** 기기 전원도 끔(다른 emu 세션이 아직 점유한 기기는 끄지 않음). `--temp-device` 세션의 기기는 `--keep-device` 가 아니면 삭제 |
 | `emu stop` | 앱만 정지(서버는 유지) |
+| `emu attach` | `flutter` 가 앱을 놓쳤을 때(예: 다른 세션이 adb 서버를 재시작 → `Lost connection to device`) 기기에 살아 있는 앱에 다시 연결. 서버가 한 번은 자동으로 시도한다 — [`docs/ATTACH.md`](docs/ATTACH.md) |
 | `emu status` | 세션/기기/앱 상태 + VM Service URI |
 | `emu open` | 대시보드를 브라우저로 열기 |
 | `emu open-url <url> [--no-settle]` | 연결된 기기로 딥링크 전송(`adb shell am start` / `xcrun simctl openurl`). 이스케이프는 emu가 처리. 기본적으로 전환이 끝나길 기다렸다가 반환 |

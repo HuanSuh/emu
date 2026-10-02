@@ -351,10 +351,24 @@ class EmuServer {
   }
 
   /// Late device setup (flutter picked the device) and `onAppStarted` hooks
-  /// the first time the app reaches `running`.
+  /// the first time the app reaches `running`; and auto re-attach when the
+  /// `flutter` process dies under a running app (see [reattach]).
   void _watchSetup() {
     var started = false;
+    var wasRunning = false;
     _setupWatch = engine.statusStream.listen((s) async {
+      // Sticky until a new launch: the daemon may report `app.stop` while
+      // the dying `flutter` process is still up, before the exit we act on.
+      if (s.state == AppRunState.running) wasRunning = true;
+      if (s.state == AppRunState.starting) wasRunning = false;
+      final lost = wasRunning &&
+          (s.state == AppRunState.stopped || s.state == AppRunState.failed) &&
+          !engine.stoppedDeliberately &&
+          !engine.hasProcess;
+      if (lost && !_disposed) {
+        wasRunning = false;
+        unawaited(_autoReattach());
+      }
       final id = s.deviceId;
       if (id != null && _preparedDevice == null) _preparing = _prepareDevice(id);
       if (s.state == AppRunState.running && !started && id != null) {
@@ -368,6 +382,61 @@ class EmuServer {
             appId: builtAppId(session.projectRoot.path, platform));
       }
     });
+  }
+
+  DateTime? _lastAutoReattach;
+
+  /// The `flutter` process went away while the app was running (adb server
+  /// restarted by another session, `Lost connection to device`). If the app
+  /// is still alive on the device, attach to it again — at most once a
+  /// minute, so an app that really keeps dying isn't retried in a loop.
+  Future<void> _autoReattach() async {
+    final now = DateTime.now();
+    if (_lastAutoReattach != null && now.difference(_lastAutoReattach!) < const Duration(minutes: 1)) {
+      logStore.add('flutter lost the app again within a minute — not re-attaching automatically '
+          '(run `emu attach` to retry)', level: LogLevel.warn, source: 'system');
+      return;
+    }
+    _lastAutoReattach = now;
+    logStore.add('flutter lost the connection to the app — trying to re-attach',
+        level: LogLevel.warn, source: 'system');
+    final r = await reattach();
+    if (!r.ok) {
+      logStore.add('re-attach failed: ${r.message}', level: LogLevel.error, source: 'system');
+    }
+  }
+
+  /// Re-connect to the app still running on this session's device with
+  /// `flutter attach` (`emu attach`, or automatically). Android: waits for
+  /// adb to see the device again, then attaches through the VM Service URL
+  /// the app logged at startup (falling back to its package id).
+  Future<ActionResult> reattach() async {
+    if (engine.hasProcess) {
+      return ActionResult(ok: false, message: 'flutter is still connected (state: ${engine.status.state.name})');
+    }
+    final id = engine.status.deviceId ?? _preparedDevice;
+    if (id == null) return ActionResult(ok: false, message: 'no device known for this session');
+    final platform = platformForDeviceId(id);
+    if (platform == 'android' && !await devices.waitAndroidOnline(id)) {
+      return ActionResult(ok: false, message: 'adb does not see $id (device gone?)');
+    }
+    final appId = builtAppId(session.projectRoot.path, platform);
+    if (appId == null) {
+      return ActionResult(ok: false, message: 'cannot tell the app id from the build outputs');
+    }
+    if (!await devices.appAlive(id, appId)) {
+      return ActionResult(
+          ok: false, message: '$appId is not running on $id — use `emu cold` to relaunch it');
+    }
+    final debugUrl = platform == 'android' ? await devices.androidVmServiceUrl(id) : null;
+    final args = FlutterEngine.buildAttachArgs(engine.lastRunArgs,
+        deviceId: id, debugUrl: debugUrl, appId: appId);
+    try {
+      await engine.attach(args, deviceName: engine.status.deviceName ?? id);
+    } catch (e) {
+      return ActionResult(ok: false, message: 'flutter attach failed to start: $e');
+    }
+    return ActionResult(ok: true, message: 'attaching to $appId on $id');
   }
 
   /// With neither `--device` nor a platform, `flutter run` picks the device
@@ -474,6 +543,8 @@ class EmuServer {
         return _json((await engine.hotRestart()).toJson());
       case '/api/cold':
         return _json((await engine.coldRestart()).toJson());
+      case '/api/attach':
+        return _json((await reattach()).toJson());
       case '/api/stop':
         await engine.stop();
         return _json({'ok': true, 'message': 'stopped'});

@@ -49,7 +49,7 @@ void main() {
   group('hand-parsed subcommands are strict', () {
     const manual = [
       'version', 'doctor', 'update', 'uninstall', 'devices', 'configs', 'status',
-      'shot', 'open', 'open-url', 'down', 'reload', 'restart', 'cold', 'stop',
+      'shot', 'open', 'open-url', 'down', 'reload', 'restart', 'cold', 'stop', 'attach',
     ];
     for (final cmd in manual) {
       test('$cmd --help exits 0 with usage', () async {

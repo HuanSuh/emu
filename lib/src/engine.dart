@@ -53,6 +53,13 @@ class FlutterEngine {
 
   bool get isRunning => _process != null && _status.state == AppRunState.running;
 
+  /// True while a `flutter` process is live (running, starting or attaching).
+  bool get hasProcess => _process != null;
+
+  /// Whether the last stop was asked for ([stop]/cold restart) rather than
+  /// the `flutter` process dying on its own.
+  bool get stoppedDeliberately => _stopping;
+
   void _setStatus(AppStatus next) {
     _status = next;
     if (!_statusController.isClosed) _statusController.add(next);
@@ -96,13 +103,52 @@ class FlutterEngine {
     ];
   }
 
+  /// `flutter attach --machine` args that re-connect to the app [runArgs]
+  /// launched: same entry point and Dart defines (hot reload recompiles
+  /// against them), the device, and how to find the VM Service — the
+  /// device-side [debugUrl] when known (flutter forwards its port), else the
+  /// app's package/bundle id [appId]. Run-only flags (flavor, `-a`) are
+  /// dropped: attach doesn't build. Pure, for testing.
+  static List<String> buildAttachArgs(List<String> runArgs,
+      {required String deviceId, String? debugUrl, String? appId}) {
+    final keep = <String>[];
+    for (var i = 0; i < runArgs.length; i++) {
+      final a = runArgs[i];
+      if (a == '-t' && i + 1 < runArgs.length) {
+        keep.addAll([a, runArgs[++i]]);
+      } else if (a.startsWith('--dart-define=') ||
+          a.startsWith('--dart-define-from-file=') ||
+          a.startsWith('--dds-port=') ||
+          a == '--no-dds') {
+        keep.add(a);
+      }
+    }
+    return [
+      'attach',
+      '--machine',
+      '-d', deviceId,
+      ...keep,
+      if (debugUrl != null) ...['--debug-url', debugUrl],
+      if (debugUrl == null && appId != null) ...['--app-id', appId],
+    ];
+  }
+
+  /// Args of the last `flutter run` (what [buildAttachArgs] starts from).
+  List<String> get lastRunArgs => _lastRunArgs;
+
+  /// Re-connect to the still-running app with `flutter attach` (see
+  /// [buildAttachArgs]), after the `flutter run` process was lost. A later
+  /// cold restart still relaunches with the original run args.
+  Future<void> attach(List<String> attachArgs, {String? deviceName}) =>
+      start(attachArgs, deviceName: deviceName, attaching: true);
+
   /// Start the app. Throws [StateError] if already running.
-  Future<void> start(List<String> runArgs, {String? deviceName}) async {
+  Future<void> start(List<String> runArgs, {String? deviceName, bool attaching = false}) async {
     if (_process != null) {
       throw StateError('engine already running');
     }
     _stopping = false;
-    _lastRunArgs = runArgs;
+    if (!attaching) _lastRunArgs = runArgs;
     _setStatus(AppStatus(
       state: AppRunState.starting,
       deviceName: deviceName,
