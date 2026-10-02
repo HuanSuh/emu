@@ -61,6 +61,8 @@ Future<int> runCli(List<String> argv) async {
         return await _action(rest, '/api/cold', 'cold restart');
       case 'stop':
         return await _action(rest, '/api/stop', 'stop', drain: false);
+      case 'attach':
+        return await _attach(rest);
       case 'logs':
         return await _logs(rest);
       case 'errors':
@@ -1860,6 +1862,53 @@ Future<int> _inject(String path, String label, {required bool json}) async {
   return 0;
 }
 
+/// `emu attach` — re-connect the session to its app with `flutter attach`
+/// after the `flutter run` process was lost (adb server restarted, `Lost
+/// connection to device`) while the app kept running on the device. The
+/// server also tries this once by itself; this is the manual retry.
+Future<int> _attach(List<String> args) async {
+  const usage = 'usage: emu attach [--timeout <s>] [--json]\n'
+      '   Re-connect to the app still running on this session\'s device after\n'
+      '   flutter lost it (e.g. the adb server was restarted). Use `emu cold` if\n'
+      '   the app itself is gone. --timeout bounds only this command\'s wait (default\n'
+      '   120s); the server keeps attaching in the background either way.';
+  final i = args.indexOf('--timeout');
+  final timeoutSec = i >= 0 && i + 1 < args.length ? int.tryParse(args[i + 1]) : null;
+  final rest = [
+    for (var k = 0; k < args.length; k++)
+      if (!(i >= 0 && (k == i || k == i + 1))) args[k],
+  ];
+  final bad = _checkArgs(rest, usage);
+  if (bad != null) return bad;
+  if (i >= 0 && timeoutSec == null) {
+    stderr.writeln(usage);
+    return 2;
+  }
+  final json = args.contains('--json');
+  final info = _requireServer();
+  final res = await _post(info, '/api/attach');
+  if (res == null || res['ok'] != true) {
+    final msg = res?['message'] ?? 'no response';
+    if (json) {
+      print(jsonEncode({'ok': false, 'error': msg}));
+    } else {
+      stderr.writeln('✗ attach: $msg');
+    }
+    return 1;
+  }
+  if (!json) print('» ${res['message']}');
+  final state = await _awaitLaunchState(info, timeoutSec ?? 120);
+  final ok = state == 'running';
+  if (json) {
+    print(jsonEncode({'ok': ok, 'state': state}));
+  } else if (ok) {
+    print('✓ attached — hot reload/restart work again');
+  } else {
+    stderr.writeln('✗ attach ended in state $state (see `emu logs -n 30`)');
+  }
+  return ok ? 0 : 1;
+}
+
 Future<int> _open(List<String> args) async {
   final bad = _checkArgs(args, 'usage: emu open');
   if (bad != null) return bad;
@@ -2220,6 +2269,8 @@ COMMANDS
   restart                Hot restart (reports errors logged just after)
   cold                   Cold restart (full relaunch)
   stop                   Stop the app (server stays up)
+  attach                 Re-connect to the still-running app after flutter lost it
+                         (adb restarted); also done automatically once
   logs [opts]            Show/search logs
      -g, --grep <regex>    Filter (case-insensitive)
      -l, --level <e|w|i>   Minimum level

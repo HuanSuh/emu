@@ -169,6 +169,7 @@ What this loop gives an agent:
 | `emu up [opts]` | Boot device + launch app + start dashboard. Waits for `running`/`failed` + first frame |
 | `emu down [--kill-device]` | End the session. `--kill-device` also powers off **this session's** device (never one another emu session still holds). A `--temp-device` session's device is deleted unless `--keep-device` |
 | `emu stop` | Stop only the app (server stays up) |
+| `emu attach` | Re-connect to the app still running on the device after `flutter` lost it (e.g. another session restarted the adb server → `Lost connection to device`). The server already tries this once by itself — see [`docs/ATTACH.md`](docs/ATTACH.md) |
 | `emu status` | Session/device/app status + VM Service URI |
 | `emu open` | Open the dashboard in a browser |
 | `emu open-url <url> [--no-settle]` | Send a deep link to the connected device (`adb shell am start` / `xcrun simctl openurl`). No escaping to get wrong — emu quotes the URL for you. Waits for the resulting navigation to finish before returning by default |
