@@ -131,4 +131,9 @@ void main() {
     expect(await DeviceManager().shutdownDevice('R5CT30ABCDE'), isFalse);
     expect(await DeviceManager().shutdownDevice('192.168.0.5:5555'), isFalse);
   });
+
+  test('avdReservation is a lease id distinct from any serial or udid', () {
+    expect(avdReservation('Pixel_8a'), 'avd:Pixel_8a');
+    expect(platformForDeviceId(avdReservation('Pixel_8a')), 'android');
+  });
 }

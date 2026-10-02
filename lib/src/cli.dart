@@ -1873,7 +1873,8 @@ Future<int> _down(List<String> args) async {
   const usage = 'usage: emu down [--kill-device] [--keep-device]\n'
       '   Stop the session. --kill-device also powers off this session\'s device.\n'
       '   A --temp-device session\'s device is deleted unless --keep-device, which\n'
-      '   keeps it as a regular AVD/simulator (delete it yourself when done).';
+      '   keeps it as a regular AVD/simulator (delete it yourself when done);\n'
+      '   with --kill-device too, it is kept but powered off.';
   final bad = _checkArgs(args, usage, flags: const {'--kill-device', '--keep-device'});
   if (bad != null) return bad;
   final killDevice = args.contains('--kill-device');

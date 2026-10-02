@@ -103,6 +103,13 @@ class DeviceManager {
     final take = claim ?? (_) async => true;
     final running = await _runningAndroidEmulators();
     for (final serial in running) {
+      // An emulator another session is still booting is reserved under its
+      // AVD name (see [bootAvd]) until that session can claim the serial.
+      final name = await _avdNameOf(serial);
+      if (name != null && !await take(avdReservation(name))) {
+        onProgress?.call('Android emulator $serial is being booted by another emu session — skipping');
+        continue;
+      }
       if (await take(serial)) {
         onProgress?.call('Android emulator already running: $serial');
         return serial;
@@ -157,6 +164,12 @@ class DeviceManager {
       onProgress?.call('Android emulator already running: $serial ($avd)');
       return serial;
     }
+    // Reserve the AVD by name before it exists as a serial, so a concurrent
+    // `up --android` that sees the new emulator first skips it. Claiming the
+    // serial below replaces this reservation.
+    if (!await take(avdReservation(avd))) {
+      throw DeviceException('AVD $avd is being booted by another emu session.');
+    }
     onProgress?.call('booting Android AVD: $avd');
     // The emulator binary locates its Qt/qemu libs relative to its own
     // directory, so it must be launched by absolute path AND with that
@@ -177,8 +190,8 @@ class DeviceManager {
     // Other emulators may already be running (or booting for another
     // session), so ours is a serial that wasn't there before and runs [avd].
     String? ours;
-    for (var i = 0; i < 120; i++) {
-      await Future<void>.delayed(const Duration(seconds: 2));
+    for (var i = 0; i < 240; i++) {
+      await Future<void>.delayed(const Duration(seconds: 1));
       if (ours == null) {
         final fresh = (await _runningAndroidEmulators()).where((s) => !before.contains(s));
         for (final serial in fresh) {
@@ -514,6 +527,10 @@ List<String> parseAdbEmulators(String adbDevicesOutput) => [
         if (line.trim().startsWith('emulator-') && line.trim().endsWith('device'))
           line.trim().split(RegExp(r'\s+')).first,
     ];
+
+/// Lease id that reserves AVD [name] while its emulator boots and has no
+/// serial to claim yet.
+String avdReservation(String name) => 'avd:$name';
 
 /// The AVD to boot when every running emulator is taken: the preferred one
 /// among those not already running (an AVD can only run once).
