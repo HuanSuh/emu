@@ -1,0 +1,86 @@
+name: Release
+
+# main 은 develop 에서 오는 release PR 로만 바뀐다. 버전업 커밋은 develop 에서 만들고
+# (pubspec.yaml · .claude-plugin/plugin.json · CHANGELOG), 이 workflow 는
+#   1) PR 단계: 출발 브랜치와 버전 일치를 검사해 머지를 막거나 열어 주고
+#   2) 머지 후: 그 머지 커밋에 v<버전> 태그와 GitHub Release 를 만든다.
+# main 에는 커밋하지 않으므로 bot 이 브랜치 보호를 우회할 필요가 없다. 절차: docs/RELEASING.md
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, synchronize, reopened, closed]
+
+permissions:
+  contents: read
+
+jobs:
+  release-gate:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Only develop may open a PR into main
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ "$HEAD_REF" != "develop" ]; then
+            echo "::error::PRs into main must come from develop (this one is from '$HEAD_REF'). Target develop instead."
+            exit 1
+          fi
+
+      - name: Title, pubspec, plugin.json and CHANGELOG agree on the version
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -eu
+          VERSION=$(printf '%s' "$TITLE" | sed -nE 's/^release: v([0-9]+\.[0-9]+\.[0-9]+)$/\1/p')
+          if [ -z "$VERSION" ]; then
+            echo "::error::Release PR title must be exactly 'release: vX.Y.Z' (got: '$TITLE')."
+            exit 1
+          fi
+          PUBSPEC=$(sed -nE 's/^version: *([^ ]+) *$/\1/p' pubspec.yaml | head -1)
+          PLUGIN=$(jq -r .version .claude-plugin/plugin.json)
+          fail=0
+          [ "$PUBSPEC" = "$VERSION" ] || { echo "::error file=pubspec.yaml::version is $PUBSPEC, title says $VERSION"; fail=1; }
+          [ "$PLUGIN" = "$VERSION" ] || { echo "::error file=.claude-plugin/plugin.json::version is $PLUGIN, title says $VERSION"; fail=1; }
+          grep -qE "^## \[$VERSION\] - [0-9]{4}-[0-9]{2}-[0-9]{2}" CHANGELOG.md \
+            || { echo "::error file=CHANGELOG.md::no '## [$VERSION] - YYYY-MM-DD' section"; fail=1; }
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "::error::tag v$VERSION already exists — bump the version."; fail=1
+          fi
+          exit $fail
+
+  tag-and-release:
+    if: >-
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      github.head_ref == 'develop'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+
+      - name: Tag the merge commit and publish a GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ github.event.pull_request.title }}
+          SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          set -eu
+          VERSION=$(printf '%s' "$TITLE" | sed -nE 's/^release: v([0-9]+\.[0-9]+\.[0-9]+)$/\1/p')
+          [ -n "$VERSION" ] || { echo "::error::not a release PR title: '$TITLE'"; exit 1; }
+          # Release notes = this version's CHANGELOG section (up to the next '## [').
+          awk -v v="$VERSION" '
+            index($0, "## [" v "]") == 1 { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          gh release create "v$VERSION" --target "$SHA" --title "v$VERSION" --notes-file notes.md
