@@ -2,6 +2,8 @@
 
 ## 브랜치
 - `develop` — 작업이 모이는 브랜치. 기능·수정 PR은 모두 `develop` 을 대상으로 연다.
+  머지되면 작업 브랜치는 workflow(`delete-merged-branch.yml`)가 지운다. 그 브랜치를 base로 하는
+  열린 PR(쌓인 PR)이 있으면 남겨 둔다. force push·삭제 금지(관리자는 예외).
 - `main` — 배포본. 플러그인 마켓플레이스가 읽는 브랜치라 **`develop` 에서 오는 release PR로만**
   바뀐다. force push·삭제 금지, PR 필수(관리자는 예외).
 
