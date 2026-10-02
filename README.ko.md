@@ -166,7 +166,7 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 | `emu open-url <url> [--no-settle]` | 연결된 기기로 딥링크 전송(`adb shell am start` / `xcrun simctl openurl`). 이스케이프는 emu가 처리. 기본적으로 전환이 끝나길 기다렸다가 반환 |
 | `emu shot [path] [--no-settle]` | 스크린샷 저장(기본 `.emu/`). 상대 경로는 프로젝트 루트 기준. 기본적으로 먼저 애니메이션/리빌드가 멈추길 기다림 |
 | `emu tap <x> <y> [--no-settle]` | 좌표 탭 (물리 픽셀 — `shot`과 같은 좌표계). Android·iOS. 기본적으로 탭이 유발한 전환이 끝날 때까지 기다렸다가 반환 |
-| `emu tap --text <label> \| --key <key> [--index <n>] [--no-settle]` | Semantics/Text/Tooltip 라벨 또는 `ValueKey` 로 위젯을 찾아 탭 — 스크린샷·픽셀 계산 불필요. 여러 개 매칭되면 `--index` 로 선택 |
+| `emu tap --text <label> \| --key <key> [--index <n>] [--no-settle]` | Semantics/Text/Tooltip 라벨(`Text.rich` 포함) 또는 `ValueKey` 로 위젯을 찾아 탭 — 스크린샷·픽셀 계산 불필요. `--text` 는 정확히 일치하는 게 없으면 공백 정규화한 부분 일치로 다시 찾는다(partial 표시). 여러 개 매칭되면 `--index` 로 선택 |
 | `emu find --text <label> \| --key <key> \| --type <Widget> [--index <n>] [--dump]` | 질의에 매칭되는 화면 위젯 목록 + 탭 좌표 — `tap --text` 와 같은 탐색을 탭 없이 수행. `--dump` 면 각 위젯의 `toString()` 도 출력 |
 | `emu eval <dart-expr>` | 실행 중인 앱의 루트 라이브러리 스코프에서 Dart 표현식을 지금 즉시 평가 — 브레이크포인트도 일시정지도 없음(`probe` 와 다름) |
 | `emu swipe <x1> <y1> <x2> <y2>` | 스와이프/스크롤. `--duration <ms>`. Android·iOS |
@@ -296,6 +296,36 @@ emu up --profile staging          # 그대로 기동
   device만 자기 것으로 override하는 식.
 - 존재하지 않는 `--profile` 이름은 실제 존재하는 profile 목록과 함께 에러.
 
+#### 기기 준비 — 포트 연결과 hook
+
+Mac의 서버(예: `http://localhost:8000`)에 붙는 앱을 Android 에뮬레이터에서 돌리려면
+`adb reverse` 가 필요하다(에뮬레이터 안의 `localhost` 는 에뮬레이터 자신). 실행마다 치지 말고
+최상위나 profile에 한 번 선언한다:
+
+```yaml
+profiles:
+  local:
+    flavor: development
+    dartDefineFromFile: [config.local.json]
+    reversePorts: [8000]          # 8000 | "8000:9000"(기기:호스트) | "tcp:8000:tcp:9000"
+    forwardPorts: ["9222:9222"]   # adb forward, 같은 형식
+    onDeviceReady:                # 기기가 정해진 뒤, 설치·실행 전
+      - echo "preparing $EMU_DEVICE"
+    onAppStarted:                 # 앱이 처음 실행된 뒤(이제 설치돼 있음)
+      - adb -s $EMU_DEVICE shell pm grant $EMU_APP_ID android.permission.POST_NOTIFICATIONS
+```
+
+- 포트 연결은 Android에서 기기가 정해지면 `flutter run` 전에 건다. iOS는 무시한다(시뮬레이터가
+  Mac 네트워크를 그대로 씀). `emu up --reverse-port 8000` / `--forward-port` 로 명령줄에서도
+  지정할 수 있다(설정의 목록을 대체).
+- adb 서버가 재시작되거나 에뮬레이터가 재부팅되면 연결이 풀리는데, emu가 15초마다 확인해
+  다시 건다. `emu status` 가 각 연결의 active/NOT active 를 보여주고 `emu down` 이 해제한다.
+- hook은 프로젝트 루트에서 `sh -c` 로 실행되고 `EMU_DEVICE`, `EMU_PLATFORM`, `EMU_PROJECT`,
+  (`onAppStarted` 에서는) `EMU_APP_ID`(방금 설치된 빌드의 Android `applicationId` / iOS
+  bundle id)를 받는다. 실패한 hook은 `up` verdict의 error로 보고되지만 실행을 막지 않는다.
+  `flutter run` 이 설치와 실행을 한 번에 하므로 "설치 후·실행 전" 시점은 없다 — 권한 부여는
+  `onAppStarted` 에서 하고, 앱이 시작 시점에 봐야 하면 이어서 `emu cold`.
+
 **학습 메모리(`.emu/memory.json`, git-ignore됨)** — 도구가 실행하며 주워담는 재계산용
 힌트(`lastScreen`·`lastDpr`·`lastInspect`·`seenKeys`). **권위가 아니다**: 다음 실행이
 이걸 믿고 스크린샷 없이 탭하지 않는다. 좌표는 부팅마다 썩으므로 여기 저장하지 않는다.
@@ -395,6 +425,7 @@ emu text "hello world"               # 포커스된 필드에 입력 — 필드�
 
 ```bash
 emu tap --text "닫기"        # 라벨/텍스트/툴팁이 "닫기"인 위젯을 탭
+emu tap --text "약관"       # 정확히 일치하는 게 없으면 "포함"으로 다시 찾음(partial 표시)
 emu tap --key myButtonKey    # ValueKey 가 "myButtonKey"로 렌더되는 위젯을 탭
 ```
 

@@ -174,7 +174,7 @@ What this loop gives an agent:
 | `emu open-url <url> [--no-settle]` | Send a deep link to the connected device (`adb shell am start` / `xcrun simctl openurl`). No escaping to get wrong — emu quotes the URL for you. Waits for the resulting navigation to finish before returning by default |
 | `emu shot [path] [--no-settle]` | Save a screenshot (default `.emu/`). Relative paths resolve to the project root. Waits for animations/rebuilds to stop first by default |
 | `emu tap <x> <y> [--no-settle]` | Tap a coordinate (physical pixels — same space as `shot`). Android & iOS. Waits for the resulting transition to finish before returning by default |
-| `emu tap --text <label> \| --key <key> [--index <n>] [--no-settle]` | Tap the widget whose Semantics/Text/Tooltip label, or `ValueKey`, matches — no screenshot/pixel math needed. `--index` picks one when several match |
+| `emu tap --text <label> \| --key <key> [--index <n>] [--no-settle]` | Tap the widget whose Semantics/Text/Tooltip label (incl. `Text.rich`), or `ValueKey`, matches — no screenshot/pixel math needed. `--text` falls back to a whitespace-normalized substring match when nothing equals it (reported as partial). `--index` picks one when several match |
 | `emu find --text <label> \| --key <key> \| --type <Widget> [--index <n>] [--dump]` | List the on-screen widgets matching that query, with their tap points — the same lookup `tap --text` does, without tapping. `--dump` also prints each widget's `toString()` |
 | `emu eval <dart-expr>` | Evaluate a Dart expression against the running app now, in its root library's scope — no breakpoint, no pause (unlike `probe`) |
 | `emu swipe <x1> <y1> <x2> <y2>` | Swipe/scroll. `--duration <ms>`. Android & iOS |
@@ -311,6 +311,41 @@ emu up --profile staging          # launch with it
   share a `staging` profile while each machine overrides just its own device).
 - An unknown `--profile` name fails with the list of profiles that do exist.
 
+#### Device setup — port mappings and hooks
+
+For an app that talks to a server on the Mac (e.g. `http://localhost:8000`),
+an Android emulator needs `adb reverse` — its `localhost` is the emulator
+itself. Declare it once (top level or per profile) instead of typing it
+before every run:
+
+```yaml
+profiles:
+  local:
+    flavor: development
+    dartDefineFromFile: [config.local.json]
+    reversePorts: [8000]          # 8000 | "8000:9000" (device:host) | "tcp:8000:tcp:9000"
+    forwardPorts: ["9222:9222"]   # adb forward, same forms
+    onDeviceReady:                # after the device is chosen, before install/launch
+      - echo "preparing $EMU_DEVICE"
+    onAppStarted:                 # once the app first runs (it is installed now)
+      - adb -s $EMU_DEVICE shell pm grant $EMU_APP_ID android.permission.POST_NOTIFICATIONS
+```
+
+- Mappings are applied on Android once the device is known, before `flutter
+  run`; iOS ignores them (the simulator shares the Mac's network). `emu up
+  --reverse-port 8000` / `--forward-port` do the same from the command line
+  (replacing the config's list).
+- adb drops mappings when its server restarts or the emulator reboots; emu
+  checks every 15s and re-applies them. `emu status` shows each one as
+  active/NOT active; `emu down` removes them.
+- Hooks run with `sh -c` in the project root, with `EMU_DEVICE`,
+  `EMU_PLATFORM`, `EMU_PROJECT` and (in `onAppStarted`) `EMU_APP_ID` — the
+  Android `applicationId` / iOS bundle id of the build just installed. A
+  failing hook is reported as an error in `up`'s verdict but doesn't stop the
+  launch. `flutter run` installs and launches in one step, so there is no
+  "after install, before launch" point: grant permissions in `onAppStarted`
+  (then `emu cold` if the app must see them at startup).
+
 **Learned memory (`.emu/memory.json`, git-ignored)** — recomputation hints the
 tool picks up while running (`lastScreen`, `lastDpr`, `lastInspect`, `seenKeys`).
 It is **not authoritative**: a later run does not trust it and skip a screenshot
@@ -420,6 +455,7 @@ on the live tree and taps its center:
 
 ```bash
 emu tap --text "닫기"        # tap the widget whose label/text/tooltip is "닫기"
+emu tap --text "terms"      # no exact match? falls back to "contains" (marked partial)
 emu tap --key myButtonKey    # tap the widget whose ValueKey renders to "myButtonKey"
 ```
 

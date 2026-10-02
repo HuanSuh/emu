@@ -14,6 +14,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'device_lease.dart';
 import 'device_manager.dart';
+import 'device_setup.dart';
 import 'engine.dart';
 import 'error_parser.dart';
 import 'eval.dart';
@@ -46,6 +47,10 @@ class LaunchOptions {
     this.shareDevice = false,
     this.tempDevice = false,
     this.bootAvd,
+    this.reversePorts = const [],
+    this.forwardPorts = const [],
+    this.onDeviceReady = const [],
+    this.onAppStarted = const [],
     this.extra = const [],
   });
 
@@ -82,6 +87,12 @@ class LaunchOptions {
 
   /// Boot (or take, if running) this AVD and claim it (`up --boot-avd`).
   final String? bootAvd;
+
+  /// adb port mappings + hooks (see `device_setup.dart`).
+  final List<PortMapping> reversePorts;
+  final List<PortMapping> forwardPorts;
+  final List<String> onDeviceReady;
+  final List<String> onAppStarted;
   final List<String> extra;
 }
 
@@ -110,6 +121,21 @@ class EmuServer {
   /// The status listener of [_claimOnceFlutterPicks], cancelled in [dispose].
   StreamSubscription<AppStatus>? _postHocClaim;
 
+  /// Port mappings and hooks for this session's device.
+  late final DeviceSetup setup;
+
+  /// The device [setup] was applied to (ports are removed from it on dispose).
+  String? _preparedDevice;
+
+  /// Re-applies port mappings adb dropped (server restart, emulator reboot).
+  Timer? _portWatch;
+
+  /// Declared mappings not active at the last check (null: not checked yet
+  /// or adb unreachable) — what `/api/status` reports, so polling it never
+  /// shells out to adb.
+  List<(PortMapping, bool)>? _portsMissing;
+  StreamSubscription<AppStatus>? _setupWatch;
+
   late final LogStore logStore;
   late final FlutterEngine engine;
   final DeviceManager devices = DeviceManager();
@@ -132,6 +158,18 @@ class EmuServer {
     session.writeServerInfo(port: _http!.port, pid: pid);
     shelf_io.serveRequests(_http!, _handler());
     logStore.system('emu server listening on http://127.0.0.1:${_http!.port}');
+
+    setup = DeviceSetup(
+      reversePorts: opts.reversePorts,
+      forwardPorts: opts.forwardPorts,
+      onDeviceReady: opts.onDeviceReady,
+      onAppStarted: opts.onAppStarted,
+      projectRoot: session.projectRoot.path,
+      log: (m, isError) => isError
+          ? logStore.add(m, level: LogLevel.error, source: 'system')
+          : logStore.system(m),
+    );
+    _watchSetup();
 
     // Resolve a device and launch.
     await _launch(opts);
@@ -215,7 +253,11 @@ class EmuServer {
         noDds: opts.noDds,
         extra: opts.extra,
       );
-      if (deviceId == null) _claimOnceFlutterPicks(opts);
+      if (deviceId == null) {
+        _claimOnceFlutterPicks(opts);
+      } else {
+        await _prepareDevice(deviceId);
+      }
       await engine.start(args, deviceName: deviceName ?? deviceId);
     } on DeviceException catch (e) {
       logStore.add('device error: ${e.message}', level: LogLevel.error, source: 'system');
@@ -256,6 +298,65 @@ class EmuServer {
       default:
         throw DeviceException('--temp-device needs --android or --ios');
     }
+  }
+
+  /// Map ports and run `onDeviceReady` hooks on [deviceId], once. Normally
+  /// before `flutter run`; when flutter picks the device itself, as soon as
+  /// it reports which (the app is then already installed).
+  Future<void> _prepareDevice(String deviceId) async {
+    if (_preparedDevice != null) return;
+    _preparedDevice = deviceId;
+    final platform = platformForDeviceId(deviceId);
+    await setup.applyPorts(deviceId, platform);
+    if (setup.onDeviceReady.isNotEmpty) {
+      await setup.runHooks('onDeviceReady', setup.onDeviceReady,
+          deviceId: deviceId, platform: platform);
+    }
+    if (setup.hasPorts && platform == 'android') {
+      _portsMissing = await setup.missingPorts(deviceId);
+      _portWatch = Timer.periodic(const Duration(seconds: 15), (_) => _reapplyPorts());
+    }
+  }
+
+  bool _reapplying = false;
+  Future<void> _reapplyPorts() async {
+    final id = _preparedDevice;
+    if (id == null || _reapplying || _disposed) return;
+    _reapplying = true;
+    try {
+      final missing = _portsMissing = await setup.missingPorts(id);
+      if (missing == null || missing.isEmpty) return;
+      logStore.add('port mappings lost on $id (adb restarted or device rebooted) — re-applying',
+          level: LogLevel.warn, source: 'system');
+      await DeviceSetup(
+        reversePorts: [for (final (m, r) in missing) if (r) m],
+        forwardPorts: [for (final (m, r) in missing) if (!r) m],
+        projectRoot: setup.projectRoot,
+        log: setup.log,
+      ).applyPorts(id, 'android');
+      _portsMissing = await setup.missingPorts(id);
+    } finally {
+      _reapplying = false;
+    }
+  }
+
+  /// Late device setup (flutter picked the device) and `onAppStarted` hooks
+  /// the first time the app reaches `running`.
+  void _watchSetup() {
+    var started = false;
+    _setupWatch = engine.statusStream.listen((s) async {
+      final id = s.deviceId;
+      if (id != null && _preparedDevice == null) await _prepareDevice(id);
+      if (s.state == AppRunState.running && !started && id != null) {
+        started = true;
+        if (setup.onAppStarted.isEmpty) return;
+        final platform = platformForDeviceId(id);
+        await setup.runHooks('onAppStarted', setup.onAppStarted,
+            deviceId: id,
+            platform: platform,
+            appId: builtAppId(session.projectRoot.path, platform));
+      }
+    });
   }
 
   /// With neither `--device` nor a platform, `flutter run` picks the device
@@ -331,10 +432,30 @@ class EmuServer {
   Future<Response> _api(Request req, String path) async {
     switch (path) {
       case '/api/status':
+        final missing = _portsMissing;
         return _json({
           'status': engine.status.toJson(),
           'serverPort': port,
           'lastSeq': logStore.lastSeq,
+          if (setup.hasPorts)
+            'ports': {
+              'declared': {
+                'reverse': [for (final m in setup.reversePorts) '$m'],
+                'forward': [for (final m in setup.forwardPorts) '$m'],
+              },
+              'active': missing == null
+                  ? null
+                  : {
+                      'reverse': [
+                        for (final m in setup.reversePorts)
+                          if (!missing.contains((m, true))) '$m'
+                      ],
+                      'forward': [
+                        for (final m in setup.forwardPorts)
+                          if (!missing.contains((m, false))) '$m'
+                      ],
+                    },
+            },
         });
       case '/api/reload':
         return _json((await engine.hotReload()).toJson());
@@ -475,7 +596,8 @@ class EmuServer {
         final matches = await locate(uri, text: text, key: key);
         final m = pickMatch(matches, index, query: query);
         return await _inject(() => runTap(uri, m.x, m.y),
-            {'x': m.x, 'y': m.y, 'widgetType': m.widgetType, 'matchCount': matches.length});
+            {'x': m.x, 'y': m.y, 'widgetType': m.widgetType, 'matchCount': matches.length,
+              if (m.partial) 'partial': true});
       } on LocateException catch (e) {
         return _json({'ok': false, 'error': e.message}, status: 422);
       }
@@ -775,6 +897,12 @@ class EmuServer {
   Future<void> dispose() async {
     _disposed = true;
     await _postHocClaim?.cancel();
+    await _setupWatch?.cancel();
+    _portWatch?.cancel();
+    final prepared = _preparedDevice;
+    if (prepared != null && setup.hasPorts && platformForDeviceId(prepared) == 'android') {
+      await setup.removePorts(prepared);
+    }
     session.clearServerInfo();
     if (_leasedDevice != null) leases.release(_leasedDevice!, pid);
     for (final s in _sockets) {

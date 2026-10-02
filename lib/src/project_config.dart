@@ -32,6 +32,10 @@ class EmuConfig {
     this.timeoutSec,
     this.port,
     this.platform,
+    this.reversePorts = const [],
+    this.forwardPorts = const [],
+    this.onDeviceReady = const [],
+    this.onAppStarted = const [],
   });
 
   final String? deviceId;
@@ -44,6 +48,16 @@ class EmuConfig {
 
   /// `android` | `ios`, or null to let device selection decide.
   final String? platform;
+
+  /// adb port mappings applied once the Android device is known (raw
+  /// entries; see `parsePortMapping` in `device_setup.dart`).
+  final List<String> reversePorts;
+  final List<String> forwardPorts;
+
+  /// Shell commands run after the device is ready (before install/launch)
+  /// and after the app has started (installed — e.g. `pm grant`).
+  final List<String> onDeviceReady;
+  final List<String> onAppStarted;
 
   static const empty = EmuConfig();
 
@@ -66,6 +80,10 @@ class EmuConfig {
       timeoutSec: asInt(m['timeout']),
       port: asInt(m['port']),
       platform: m['platform'] as String?,
+      reversePorts: stringList(m['reversePorts']),
+      forwardPorts: stringList(m['forwardPorts']),
+      onDeviceReady: stringList(m['onDeviceReady']),
+      onAppStarted: stringList(m['onAppStarted']),
     );
   }
 }

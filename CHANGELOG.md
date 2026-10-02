@@ -7,6 +7,15 @@
 ## [Unreleased]
 
 ### Added
+- `emu.yaml`(최상위·profile) `reversePorts`/`forwardPorts` 와 `emu up --reverse-port`/`--forward-port`
+  — Android 기기가 정해지면 `flutter run` 전에 `adb reverse`/`forward` 를 건다. 15초마다 확인해
+  adb 재시작·재부팅으로 풀린 연결을 다시 걸고, `emu status` 에 상태를 보여주며 `emu down` 이
+  해제한다. iOS는 무시 (#13).
+- `emu.yaml` `onDeviceReady`/`onAppStarted` hook — `sh -c` 로 실행, `EMU_DEVICE`/`EMU_PLATFORM`/
+  `EMU_PROJECT`/`EMU_APP_ID`(빌드 산출물에서 읽은 applicationId·bundle id) 제공. 실패는 verdict의
+  error로 보고 (#13).
+- `tap --text`/`find --text` 가 정확히 일치하는 위젯이 없으면 공백을 정규화한 부분 일치로 다시
+  찾고 결과를 partial 로 표시. `Text.rich` 도 매칭 (#13).
 - `emu up --boot-avd <AVD>` — 그 AVD를 부팅(이미 실행 중이면 그대로)하고 한 번에 점유.
   손으로 부팅한 뒤 `up -d` 하는 사이에 다른 세션이 기기를 가져가던 문제의 해법 (#13).
 - `emu down --keep-device` — `--temp-device` 기기를 지우지 않고 일반 AVD/시뮬레이터로 남김 (#13).
