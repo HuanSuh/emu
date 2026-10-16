@@ -6,6 +6,23 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-16
+
+### Added
+- 대시보드 딥링크 입력 — screen 패널 하단에 URL을 넣고 `open`(또는 Enter)하면 `emu open-url` 과
+  같은 방식(argv 배열, Android는 기기 셸용 인용)으로 기기에 보내고, settle 후 화면을 새로 고친다.
+  최근 10개는 브라우저별로 기억해 자동완성으로 제공. 서버 API `POST /api/open-url?url=` (#20).
+- 대시보드가 앱이 `running` 이 되면 첫 스크린샷을 자동으로 불러온다(↻ 를 누르지 않아도 됨) (#20).
+- 대시보드 screen 패널 로딩 표시 — 앱 기동 중·첫 화면을 불러오는 동안 emu 아이콘이 눈을 깜빡이는
+  Lottie 애니메이션(`web/loading.json`, 재생기 `web/vendor/lottie_light.min.js` 동봉)을 보여준다 (#20).
+
+### Fixed
+- 대시보드 첫 진입 시 screen 패널에 깨진 이미지 아이콘과 "device screen" 대체 텍스트가 보이던
+  문제 — `#shot-img { display: block }` 이 `hidden` 속성을 덮어쓰고 있었다 (#20).
+
+### Changed
+- README 로고를 대시보드 로딩 애니메이션과 같은 눈 깜빡임 GIF(`docs/assets/emu_icon.gif`)로 교체 (#20).
+
 ## [0.9.0] - 2026-10-02
 
 ### Added
@@ -182,7 +199,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/HuanSuh/emu/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/HuanSuh/emu/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/HuanSuh/emu/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/HuanSuh/emu/compare/v0.6.0...v0.7.0

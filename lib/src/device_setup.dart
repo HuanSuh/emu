@@ -125,8 +125,14 @@ String? builtAppId(String projectRoot, String platform) {
 /// hang adb, which would stall the watchdog for good. A timeout reads as a
 /// failure (exit code -1).
 Future<ProcessResult> runAdb(List<String> args,
+        {Duration timeout = const Duration(seconds: 10)}) =>
+    runWithTimeout('adb', args, timeout: timeout);
+
+/// [executable] with [args], killed after [timeout] (see [runAdb]). A timeout
+/// reads as a failure: exit code -1, stderr `<executable> timed out`.
+Future<ProcessResult> runWithTimeout(String executable, List<String> args,
     {Duration timeout = const Duration(seconds: 10)}) async {
-  final proc = await Process.start('adb', args);
+  final proc = await Process.start(executable, args);
   final out = StringBuffer(), err = StringBuffer();
   final drained = Future.wait([
     proc.stdout.transform(systemEncoding.decoder).forEach(out.write),
@@ -137,7 +143,8 @@ Future<ProcessResult> runAdb(List<String> args,
     return -1;
   });
   await drained.timeout(const Duration(seconds: 2), onTimeout: () => const []);
-  return ProcessResult(proc.pid, code, '$out', code == -1 ? 'adb timed out' : '$err');
+  return ProcessResult(
+      proc.pid, code, '$out', code == -1 ? '$executable timed out' : '$err');
 }
 
 /// Applies a session's port mappings and runs its hooks on one device.

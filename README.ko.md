@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/emu_icon.png" alt="emu" width="140" height="140" />
+  <img src="docs/assets/emu_icon.gif" alt="emu" width="140" height="140" />
 </p>
 
 <h1 align="center">emu — Flutter 디버그 드라이버</h1>
@@ -667,6 +667,9 @@ emu memory --diff-across "emu tap --text '상세보기' && emu tap --text '뒤�
 - **인터랙티브 스크린샷 패널** — 기기 화면을 표시하고 **클릭=탭 / 드래그=스와이프**로 직접 몬다.
   하단 입력창으로 포커스된 필드에 텍스트 입력(유니코드). 좌표 변환은 대시보드가 알아서 한다
   (에이전트가 겪는 스크린샷 배율 함정이 사람에겐 없다). `auto` 체크 시 주기적으로 새로고침.
+  앱이 running 이 되면 첫 화면은 자동으로 불러온다.
+- **딥링크 입력** — 텍스트 입력창 아래에 URL을 넣고 `open`(또는 Enter)하면 `emu open-url` 과
+  같이 기기에 보내고, 화면 전환이 끝나면 스크린샷을 새로 고친다. 최근 10개는 브라우저별로 기억.
 - 상태바 — 기기, 앱 상태, **DevTools 링크**(`devtools.serve` 로 띄운 실제 DevTools)
 
 ## 동작 원리

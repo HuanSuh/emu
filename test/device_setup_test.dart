@@ -92,6 +92,23 @@ void main() {
     });
   });
 
+  group('runWithTimeout', () {
+    test('passes through output and exit code', () async {
+      final r = await runWithTimeout('sh', ['-c', 'echo out; echo err >&2; exit 3']);
+      expect(r.exitCode, 3);
+      expect('${r.stdout}'.trim(), 'out');
+      expect('${r.stderr}'.trim(), 'err');
+    });
+
+    test('kills a hung process and reports a timeout', () async {
+      final sw = Stopwatch()..start();
+      final r = await runWithTimeout('sleep', ['30'], timeout: const Duration(milliseconds: 200));
+      expect(r.exitCode, -1);
+      expect(r.stderr, 'sleep timed out');
+      expect(sw.elapsed, lessThan(const Duration(seconds: 5)));
+    });
+  });
+
   test('DeviceSetup runs hooks with the env and reports failures as errors', () async {
     final root = Directory.systemTemp.createTempSync('emu_hook_test');
     addTearDown(() => root.deleteSync(recursive: true));

@@ -52,18 +52,28 @@
       </div>
       <div class="screen-view" id="screen-view">
         <img id="shot-img" alt="device screen" hidden />
+        <div class="screen-loading" id="screen-loading" hidden>
+          <div class="screen-loading-anim" id="screen-loading-anim"></div>
+          <div class="screen-loading-label" id="screen-loading-label">loading screen…</div>
+        </div>
         <div class="screen-empty" id="screen-empty">no screen yet — press ↻ (needs a running app)</div>
       </div>
       <div class="screen-hint">click to tap · drag to swipe</div>
       <div class="screen-input">
-        <input id="text-input" type="text" placeholder="type into focused field…" autocomplete="off" />
+        <input id="text-input" class="field" type="text" placeholder="type into focused field…" autocomplete="off" />
         <button id="text-send" title="Send text (tap a field first)">send</button>
+      </div>
+      <div class="screen-input">
+        <input id="url-input" class="field" type="text" list="url-history" placeholder="deep link, e.g. myapp://home?tab=1" autocomplete="off" spellcheck="false" />
+        <datalist id="url-history"></datalist>
+        <button id="url-open" title="Open deep link on the device (emu open-url)">open</button>
       </div>
     </aside>
   </div>
 
   <div class="actionbar" id="toast" hidden></div>
 
+  <script src="vendor/lottie_light.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

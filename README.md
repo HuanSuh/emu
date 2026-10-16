@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/emu_icon.png" alt="emu" width="140" height="140" />
+  <img src="docs/assets/emu_icon.gif" alt="emu" width="140" height="140" />
 </p>
 
 <h1 align="center">emu — Flutter debug driver</h1>
@@ -721,7 +721,10 @@ to its starting state is the leak signal this is built to catch.
   with **click = tap / drag = swipe**. The input box at the bottom types into the
   focused field (unicode). Coordinate conversion is handled by the dashboard (the
   screenshot-ratio trap agents hit doesn't exist for humans). Check `auto` to
-  refresh periodically.
+  refresh periodically. The first screenshot loads on its own once the app is running.
+- **Deep link box** — under the text box: enter a URL and press `open` (or Enter) to
+  send it like `emu open-url`; the screen refreshes once the app settles. The last
+  10 URLs are remembered per browser.
 - Status bar — device, app state, **DevTools link** (a real DevTools served via
   `devtools.serve`).
 

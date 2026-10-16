@@ -65,6 +65,7 @@ button {
 button:hover { background: #30363d; }
 button:active { transform: translateY(1px); }
 button.danger:hover { background: #8b2c28; border-color: var(--error); }
+button:disabled { opacity: .5; cursor: default; pointer-events: none; }
 
 .toolbar { background: var(--bg); }
 #search {
@@ -107,14 +108,22 @@ button.danger:hover { background: #8b2c28; border-color: var(--error); }
   border: 1px solid var(--border); border-radius: 6px; touch-action: none;
   user-select: none; -webkit-user-drag: none;
 }
+/* `display: block` above outranks the UA's [hidden] rule — without this the
+   src-less <img> renders as a broken-image icon next to the empty message. */
+#shot-img[hidden] { display: none; }
 .screen-empty { color: var(--muted); font-size: 12px; text-align: center; margin: auto; padding: 20px; }
+.screen-loading { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.screen-loading[hidden] { display: none; }
+.screen-loading-anim { width: 96px; height: 96px; }
+.screen-loading-label { color: var(--muted); font-size: 12px; }
 .screen-hint { color: var(--muted); font-size: 11px; text-align: center; padding: 4px; border-top: 1px solid var(--border); }
 .screen-input { display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border); }
-#text-input {
-  flex: 1; background: var(--bg); color: var(--fg);
+.screen-input + .screen-input { border-top: none; padding-top: 0; }
+.field {
+  flex: 1; min-width: 0; background: var(--bg); color: var(--fg);
   border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 12px;
 }
-#text-input:focus { outline: none; border-color: var(--accent); }
+.field:focus { outline: none; border-color: var(--accent); }
 .row {
   display: flex; gap: 8px; padding: 1px 12px; white-space: pre-wrap; word-break: break-word;
 }

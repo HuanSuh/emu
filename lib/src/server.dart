@@ -24,6 +24,7 @@ import 'locate.dart';
 import 'log_store.dart';
 import 'memory_diff.dart' as mem;
 import 'models.dart';
+import 'open_url.dart';
 import 'probe.dart';
 import 'session.dart';
 import 'settle.dart';
@@ -605,6 +606,8 @@ class EmuServer {
         return _swipe(req);
       case '/api/text':
         return _text(req);
+      case '/api/open-url':
+        return _openUrl(req);
       case '/api/first-frame':
         return _firstFrame(req);
       case '/api/settle':
@@ -797,6 +800,43 @@ class EmuServer {
       () => runText(uri, text, append: append),
       {'text': text, 'append': append},
     );
+  }
+
+  /// Deep link from the dashboard — same argv-only invocation as `emu open-url`
+  /// (see [buildOpenUrlCommand]), then a best-effort settle so the caller's
+  /// next screenshot shows the destination rather than the transition. The
+  /// settle is capped well below the CLI's 10s: an app that never goes quiet
+  /// (looping animation, streaming list) would otherwise stall the button. The
+  /// outer timeout matters too — `timeout` only bounds the poll loop, and right
+  /// after launch the first VM `evaluate` alone can take 10s+.
+  Future<Response> _openUrl(Request req) async {
+    final url = req.url.queryParameters['url'];
+    if (url == null || url.isEmpty) {
+      return _json({'ok': false, 'error': 'url is required'}, status: 400);
+    }
+    final deviceId = engine.status.deviceId;
+    if (deviceId == null) {
+      return _json({'ok': false, 'error': 'no device connected'}, status: 409);
+    }
+    final cmd = buildOpenUrlCommand(platform: _platform, deviceId: deviceId, url: url);
+    final seq = logStore.lastSeq;
+    final ProcessResult result;
+    try {
+      // Bounded: an offline/unauthorized device can hang adb, and with it the
+      // dashboard's request.
+      result = await runWithTimeout(cmd.executable, cmd.arguments);
+    } catch (e) {
+      return _json({'ok': false, 'url': url, 'error': '$e'}, status: 500);
+    }
+    if (result.exitCode != 0) {
+      return _json({'ok': false, 'url': url, 'error': '${result.stderr}'.trim()}, status: 500);
+    }
+    final uri = engine.status.vmServiceUri;
+    if (uri != null) {
+      await waitForSettle(uri, timeout: const Duration(seconds: 3))
+          .timeout(const Duration(seconds: 4), onTimeout: () => false);
+    }
+    return _json({'ok': true, 'url': url, 'seq': seq});
   }
 
   /// Whether the app has painted yet — `running` alone doesn't mean tappable.
@@ -1047,6 +1087,7 @@ String _contentType(String path) {
   if (path.endsWith('.html')) return 'text/html; charset=utf-8';
   if (path.endsWith('.js')) return 'application/javascript; charset=utf-8';
   if (path.endsWith('.css')) return 'text/css; charset=utf-8';
+  if (path.endsWith('.json')) return 'application/json';
   if (path.endsWith('.svg')) return 'image/svg+xml';
   if (path.endsWith('.png')) return 'image/png';
   return 'application/octet-stream';
