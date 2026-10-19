@@ -147,6 +147,7 @@ function connect() {
     const msg = JSON.parse(ev.data);
     if (msg.type === 'log') appendEntry(msg.entry);
     else if (msg.type === 'status') setStatus(msg.status);
+    else if (msg.type === 'diff') onDiffChanged(); // files edited, or a launch/reload snapshotted the tree
   };
 }
 
@@ -307,6 +308,174 @@ els.textInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendTe
 els.urlOpen.onclick = openUrl;
 els.urlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') openUrl(); });
 renderUrlHistory();
+
+// ---- changes tab ------------------------------------------------------------
+// git diff of the project in four scopes (see lib/src/diff.dart). The server
+// snapshots the working tree on every launch/reload and watches the project
+// for edits; either pushes a `diff` message, so the tab stays live.
+
+const diffEls = {
+  tab: document.getElementById('tab-changes'),
+  badge: document.getElementById('diff-badge'),
+  scope: document.getElementById('diff-scope'),
+  base: document.getElementById('diff-base'),
+  hideGen: document.getElementById('diff-hide-gen'),
+  note: document.getElementById('diff-note'),
+  files: document.getElementById('diff-files'),
+  view: document.getElementById('diff-view'),
+};
+const diffState = { files: [], range: null, current: null, loading: false, again: false, shown: null, stale: false };
+const DIFF_PREFS_KEY = 'emu.diffPrefs';
+
+function loadDiffPrefs() {
+  try {
+    const p = JSON.parse(localStorage.getItem(DIFF_PREFS_KEY)) || {};
+    if (p.scope) diffEls.scope.value = p.scope;
+    if (typeof p.hideGen === 'boolean') diffEls.hideGen.checked = p.hideGen;
+    if (p.base) diffEls.base.value = p.base;
+  } catch (_) {}
+}
+function saveDiffPrefs() {
+  try {
+    localStorage.setItem(DIFF_PREFS_KEY, JSON.stringify({
+      scope: diffEls.scope.value, hideGen: diffEls.hideGen.checked, base: diffEls.base.value.trim(),
+    }));
+  } catch (_) {}
+}
+
+function diffQuery(extra = {}) {
+  const q = new URLSearchParams({ scope: diffEls.scope.value, ...extra });
+  const base = diffEls.base.value.trim();
+  if (diffEls.scope.value === 'base' && base) q.set('base', base);
+  return q.toString();
+}
+
+// Every listing snapshots the working tree (`git add -A` into a scratch
+// index), so only re-list while the tab is on screen; otherwise remember it's
+// out of date and catch up when the tab is opened.
+function onDiffChanged() {
+  if (document.getElementById('changes').hidden) diffState.stale = true;
+  else loadDiffFiles();
+}
+
+function visibleDiffFiles() {
+  return diffState.files.filter(f => !(diffEls.hideGen.checked && f.generated));
+}
+
+async function loadDiffFiles() {
+  // A reload notification can land mid-request; re-run once it finishes
+  // rather than dropping it (the in-flight answer may predate the reload).
+  if (diffState.loading) { diffState.again = true; return; }
+  diffState.loading = true;
+  diffState.stale = false;
+  diffEls.base.hidden = diffEls.scope.value !== 'base';
+  const query = diffQuery();
+  try {
+    const r = await fetch(`/api/diff/files?${query}`);
+    const j = await r.json();
+    // The scope/base changed while this was in flight: its answer is for the
+    // old selection — drop it and fetch again (finally) instead of mislabeling.
+    if (diffQuery() !== query) { diffState.again = true; return; }
+    if (j.git === false) { diffEls.tab.hidden = true; return; }
+    diffEls.tab.hidden = false;
+    if (j.error) {
+      diffState.files = [];
+      diffState.range = null;
+      diffEls.note.textContent = j.error;
+    } else {
+      diffState.files = j.files;
+      diffState.range = j.from && j.to ? { from: j.from, to: j.to } : null;
+      if (j.base && !diffEls.base.value) diffEls.base.placeholder = j.base;
+      diffEls.note.textContent = j.note || snapshotNote(j.snapshots);
+    }
+    renderDiffFiles();
+  } catch (_) {
+    // Server unreachable — the websocket reconnect will bring us back.
+  } finally {
+    diffState.loading = false;
+    if (diffState.again) { diffState.again = false; loadDiffFiles(); }
+  }
+}
+
+function snapshotNote(snaps) {
+  const scope = diffEls.scope.value;
+  if ((scope !== 'reload' && scope !== 'pending') || !snaps?.length) return '';
+  const last = snaps[snaps.length - 1];
+  const t = new Date(last.at).toLocaleTimeString();
+  return scope === 'reload' ? `${last.reason} at ${t}` : `since ${last.reason} at ${t}`;
+}
+
+function renderDiffFiles() {
+  const rows = visibleDiffFiles();
+  const hidden = diffState.files.length - rows.length;
+  diffEls.badge.textContent = rows.length || '';
+  if (!rows.some(f => f.path === diffState.current)) diffState.current = rows[0]?.path ?? null;
+  diffEls.files.innerHTML = rows.map(f => `
+    <div class="fitem${f.path === diffState.current ? ' active' : ''}" data-path="${escapeHtml(f.path)}" title="${escapeHtml(f.path)}">
+      <span class="fname">${escapeHtml(f.path)}</span>
+      ${f.binary ? '<span class="flag">bin</span>' : `<span class="plus">+${f.added}</span><span class="minus">−${f.deleted}</span>`}
+    </div>`).join('')
+    + (rows.length ? '' : '<div class="diff-note">no changes</div>')
+    + (hidden ? `<div class="diff-note">${hidden} generated file${hidden > 1 ? 's' : ''} hidden</div>` : '');
+  diffEls.files.querySelectorAll('.fitem').forEach(el => {
+    el.onclick = () => { diffState.current = el.dataset.path; renderDiffFiles(); };
+  });
+  loadDiffPatch(rows.find(f => f.path === diffState.current));
+}
+
+async function loadDiffPatch(file) {
+  const view = diffEls.view;
+  if (!file) { view.innerHTML = ''; return; }
+  const head = `<div class="dfile-head"><span class="path">${escapeHtml(file.path)}</span>`
+    + (file.binary ? '' : `<span class="plus">+${file.added}</span><span class="minus">−${file.deleted}</span>`) + '</div>';
+  if (file.binary) { view.innerHTML = head + '<div class="diff-note">binary file — contents not compared</div>'; return; }
+  const path = file.path;
+  try {
+    // The listing's own trees: counts and patch agree, and no re-snapshot per click.
+    const r = await fetch(`/api/diff/file?${diffQuery({ path, ...(diffState.range || {}) })}`);
+    const j = await r.json();
+    if (diffState.current !== path) return; // the user moved on while this loaded
+    view.innerHTML = head + (j.error ? `<div class="diff-note">${escapeHtml(j.error)}</div>` : renderPatch(j.patch || ''));
+    // A live refresh of the same file keeps the reader's place; a new file starts at the top.
+    if (diffState.shown !== path) view.scrollTop = 0;
+    diffState.shown = path;
+  } catch (e) {
+    view.innerHTML = head + `<div class="diff-note">failed to load: ${escapeHtml(String(e))}</div>`;
+  }
+}
+
+// One file's unified diff → rows with old/new line numbers.
+function renderPatch(patch) {
+  let o = 0, n = 0, inHunk = false;
+  const out = [];
+  for (const line of patch.split('\n')) {
+    const m = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (m) { o = +m[1]; n = +m[2]; inHunk = true; out.push(`<div class="hunk">${escapeHtml(line)}</div>`); continue; }
+    if (!inHunk || line.startsWith('\\')) continue; // file headers, "\ No newline at end of file"
+    const t = line[0], code = escapeHtml(line.slice(1)) || ' ';
+    if (t === '+') out.push(`<div class="dl add"><span class="ln"></span><span class="ln">${n++}</span><span class="code">${code}</span></div>`);
+    else if (t === '-') out.push(`<div class="dl del"><span class="ln">${o++}</span><span class="ln"></span><span class="code">${code}</span></div>`);
+    else if (t === ' ') out.push(`<div class="dl"><span class="ln">${o++}</span><span class="ln">${n++}</span><span class="code">${code}</span></div>`);
+  }
+  return out.join('') || '<div class="diff-note">no textual changes</div>';
+}
+
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.getElementById('log').hidden = name !== 'logs';
+  document.getElementById('log-tools').hidden = name !== 'logs';
+  document.getElementById('changes').hidden = name !== 'changes';
+  document.getElementById('diff-tools').hidden = name !== 'changes';
+  if (name === 'changes' && diffState.stale) loadDiffFiles();
+}
+
+document.querySelectorAll('.tab').forEach(t => { t.onclick = () => showTab(t.dataset.tab); });
+diffEls.scope.addEventListener('change', () => { saveDiffPrefs(); loadDiffFiles(); });
+diffEls.hideGen.addEventListener('change', () => { saveDiffPrefs(); renderDiffFiles(); });
+diffEls.base.addEventListener('keydown', (e) => { if (e.key === 'Enter') { saveDiffPrefs(); loadDiffFiles(); } });
+document.getElementById('diff-refresh').onclick = loadDiffFiles;
+loadDiffPrefs();
+loadDiffFiles(); // also decides whether the tab exists (git repo or not)
 
 let toastTimer;
 function toast(text) {

@@ -96,6 +96,10 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
    - 상태가 갑자기 `stopped`/`failed` 이고 로그에 `Lost connection to device` 가 있으면(다른 세션이
      adb를 재시작) 서버가 한 번 자동으로 다시 붙는다. 그래도 끊겨 있으면 `emu attach` — 앱이
      살아 있으면 재빌드 없이 붙고, 앱이 죽었으면 `emu cold` 를 안내한다.
+   - `emu diff [--scope head|base|reload|pending] [--stat] [--all] [path...]` — 코드 변경.
+     `reload` 는 마지막 reload가 실제로 반영한 변경, `pending` 은 아직 앱에 안 들어간 변경
+     (서버가 기동·reload 때 찍는 스냅샷 기준이라 plain `git diff` 로는 못 본다). reload 후 화면이
+     예상과 다르면 `emu diff --scope reload` 로 반영 범위부터 확인. 기본 `head`, 생성 파일은 `--all` 없으면 숨김.
    - `emu logs [opts]` — 앱 로그.
      - `-g/--grep <regex>`, `-l/--level <e|w|i>`, `-n/--lines <N>`(기본 200),
        `-f/--follow`(스트리밍), `--clear`(버퍼 비우기).

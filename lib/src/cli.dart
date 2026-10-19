@@ -13,6 +13,7 @@ import 'assertions.dart';
 import 'device_lease.dart';
 import 'device_manager.dart';
 import 'device_setup.dart';
+import 'diff.dart';
 import 'launch_config.dart';
 import 'memory_diff.dart';
 import 'models.dart';
@@ -95,6 +96,8 @@ Future<int> runCli(List<String> argv) async {
         return await _open(rest);
       case 'open-url':
         return await _openUrlCmd(rest);
+      case 'diff':
+        return await _diffCmd(rest);
       case 'down':
         return await _down(rest);
       case 'help':
@@ -1968,6 +1971,105 @@ Future<int> _openUrlCmd(List<String> args) async {
   return ok ? 0 : 1;
 }
 
+/// `emu diff` — the dashboard's Changes tab for the terminal. `--scope reload`
+/// answers "what did the last reload apply", `pending` "what hasn't the app
+/// picked up yet"; both come from the snapshots the server takes on every
+/// launch/reload, which plain `git diff` can't see.
+Future<int> _diffCmd(List<String> args) async {
+  final parser = ArgParser()
+    ..addOption('scope', defaultsTo: 'head', allowed: [for (final s in DiffScope.values) s.wire])
+    ..addOption('base', help: 'base branch for --scope base (default: develop/main/master)')
+    ..addFlag('stat', negatable: false, help: 'list changed files only')
+    ..addFlag('all', negatable: false, help: 'include generated/vendored files')
+    ..addFlag('json', negatable: false)
+    ..addFlag('help', abbr: 'h', negatable: false);
+  const usage = 'usage: emu diff [--scope head|base|reload|pending] [--base <ref>] [--stat] [--all] [path...]\n'
+      '   head    uncommitted changes, untracked files included (default)\n'
+      '   base    everything since the branch forked from --base\n'
+      '   reload  what the last hot reload/restart (or launch) applied\n'
+      '   pending edits made since the last reload — not in the app yet';
+  final (res, code) = _parseOrUsage(parser, args, usage);
+  if (res == null) return code!;
+  final info = _requireServer();
+  final query = {
+    'scope': res.option('scope')!,
+    if (res.option('base') != null) 'base': res.option('base')!,
+  };
+
+  Future<Map<String, dynamic>?> fetch(String path, Map<String, String> q) async {
+    try {
+      final uri = Uri.parse('${info.baseUrl}$path').replace(queryParameters: q);
+      final r = await http.get(uri).timeout(const Duration(seconds: 60));
+      return jsonDecode(r.body) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  final listing = await fetch('/api/diff/files', query);
+  if (listing == null || listing['error'] != null || listing['git'] == false) {
+    final why = listing == null
+        ? 'no response'
+        : listing['git'] == false
+            ? 'not a git repository'
+            : '${listing['error']}';
+    if (res.flag('json')) {
+      print(jsonEncode({'ok': false, 'error': why}));
+    } else {
+      stderr.writeln('✗ diff: $why');
+    }
+    return 1;
+  }
+  // A path selects that file or everything under it (`emu diff lib/`).
+  final only = [
+    for (final p in res.rest) p.replaceFirst(RegExp(r'^\.(/|$)'), '').replaceFirst(RegExp(r'/+$'), ''),
+  ];
+  bool selected(String path) => only.isEmpty || only.any((p) => p.isEmpty || path == p || path.startsWith('$p/'));
+  final files = [
+    for (final f in (listing['files'] as List).cast<Map<String, dynamic>>())
+      if (selected(f['path'] as String) && (res.flag('all') || f['generated'] != true)) f,
+  ];
+  final hidden = (listing['files'] as List).length - files.length;
+
+  final patches = <String, String>{};
+  if (!res.flag('stat')) {
+    for (final f in files) {
+      if (f['binary'] == true) continue;
+      final r = await fetch('/api/diff/file', {
+        ...query,
+        'path': f['path'] as String,
+        // Same trees as the listing: consistent counts, no re-snapshot per file.
+        if (listing['from'] != null) 'from': listing['from'] as String,
+        if (listing['to'] != null) 'to': listing['to'] as String,
+      });
+      patches[f['path'] as String] = (r?['patch'] as String?) ?? '';
+    }
+  }
+
+  if (res.flag('json')) {
+    print(jsonEncode({
+      'ok': true,
+      'scope': listing['scope'],
+      if (listing['base'] != null) 'base': listing['base'],
+      if (listing['note'] != null) 'note': listing['note'],
+      'files': files,
+      if (!res.flag('stat')) 'patches': patches,
+    }));
+    return 0;
+  }
+  if (listing['note'] != null) print('(${listing['note']})');
+  for (final f in files) {
+    final counts = f['binary'] == true ? 'binary' : '+${f['added']} -${f['deleted']}';
+    print('${f['path']}  $counts');
+  }
+  if (files.isEmpty && listing['note'] == null) print('(no changes)');
+  if (hidden > 0 && only.isEmpty) print('($hidden generated/vendored file(s) hidden — --all to include)');
+  for (final p in patches.values) {
+    if (p.isNotEmpty) stdout.write('\n$p');
+  }
+  return 0;
+}
+
 Future<int> _down(List<String> args) async {
   const usage = 'usage: emu down [--kill-device] [--keep-device]\n'
       '   Stop the session. --kill-device also powers off this session\'s device.\n'
@@ -2321,6 +2423,11 @@ COMMANDS
      --timeout <s>         max time to wait (default 10)
      --quiet <ms>          quiet window with no scheduled frames (default 150)
   open                   Open the dashboard in the browser
+  diff [--scope head|base|reload|pending] [--stat] [--all] [path...]
+                         Changed code: uncommitted (head), since the base
+                         branch (base), applied by the last reload (reload) or
+                         not reloaded yet (pending). Generated files hidden
+                         unless --all
   open-url <url> [--no-settle]
                          Send a deep link to the connected device
                          (adb am start / xcrun simctl openurl). Waits for the

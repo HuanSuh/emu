@@ -172,6 +172,7 @@ What this loop gives an agent:
 | `emu attach` | Re-connect to the app still running on the device after `flutter` lost it (e.g. another session restarted the adb server → `Lost connection to device`). The server already tries this once by itself — see [`docs/ATTACH.md`](docs/ATTACH.md) |
 | `emu status` | Session/device/app status + VM Service URI |
 | `emu open` | Open the dashboard in a browser |
+| `emu diff [--scope head\|base\|reload\|pending] [--base <ref>] [--stat] [--all] [path...]` | What changed in the code: `head` uncommitted (untracked included, default), `base` since the branch forked (`--base`, default develop/development/main/master), `reload` what the last hot reload/restart (or launch) applied, `pending` edits the app hasn't picked up yet. Generated/vendored files hidden unless `--all` |
 | `emu open-url <url> [--no-settle]` | Send a deep link to the connected device (`adb shell am start` / `xcrun simctl openurl`). No escaping to get wrong — emu quotes the URL for you. Waits for the resulting navigation to finish before returning by default |
 | `emu shot [path] [--no-settle]` | Save a screenshot (default `.emu/`). Relative paths resolve to the project root. Waits for animations/rebuilds to stop first by default |
 | `emu tap <x> <y> [--no-settle]` | Tap a coordinate (physical pixels — same space as `shot`). Android & iOS. Waits for the resulting transition to finish before returning by default |
@@ -725,6 +726,13 @@ to its starting state is the leak signal this is built to catch.
 - **Deep link box** — under the text box: enter a URL and press `open` (or Enter) to
   send it like `emu open-url`; the screen refreshes once the app settles. The last
   10 URLs are remembered per browser.
+- **Changes tab** (next to Logs, git projects only) — changed files with +/− counts and
+  a unified diff, in four scopes: uncommitted, since the base branch, **applied by the
+  last reload**, **not reloaded yet**. The server snapshots the working tree (untracked
+  files included, via a throwaway index — your index and files are untouched) on every
+  launch and hot reload/restart and watches the project, so the tab updates live as you
+  edit and reload.
+  Generated files (`*.g.dart`, `*.freezed.dart`, vendored, lock files) are hidden by default.
 - Status bar — device, app state, **DevTools link** (a real DevTools served via
   `devtools.serve`).
 

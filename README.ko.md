@@ -164,6 +164,7 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 | `emu attach` | `flutter` 가 앱을 놓쳤을 때(예: 다른 세션이 adb 서버를 재시작 → `Lost connection to device`) 기기에 살아 있는 앱에 다시 연결. 서버가 한 번은 자동으로 시도한다 — [`docs/ATTACH.md`](docs/ATTACH.md) |
 | `emu status` | 세션/기기/앱 상태 + VM Service URI |
 | `emu open` | 대시보드를 브라우저로 열기 |
+| `emu diff [--scope head\|base\|reload\|pending] [--base <ref>] [--stat] [--all] [path...]` | 코드 변경 보기: `head` 커밋 안 한 변경(새 파일 포함, 기본), `base` 브랜치가 갈라진 뒤 전부(`--base`, 기본 develop/development/main/master), `reload` 마지막 hot reload/restart(또는 기동)가 반영한 변경, `pending` 아직 앱에 반영 안 된 변경. 생성·vendor 파일은 `--all` 없으면 숨김 |
 | `emu open-url <url> [--no-settle]` | 연결된 기기로 딥링크 전송(`adb shell am start` / `xcrun simctl openurl`). 이스케이프는 emu가 처리. 기본적으로 전환이 끝나길 기다렸다가 반환 |
 | `emu shot [path] [--no-settle]` | 스크린샷 저장(기본 `.emu/`). 상대 경로는 프로젝트 루트 기준. 기본적으로 먼저 애니메이션/리빌드가 멈추길 기다림 |
 | `emu tap <x> <y> [--no-settle]` | 좌표 탭 (물리 픽셀 — `shot`과 같은 좌표계). Android·iOS. 기본적으로 탭이 유발한 전환이 끝날 때까지 기다렸다가 반환 |
@@ -670,6 +671,11 @@ emu memory --diff-across "emu tap --text '상세보기' && emu tap --text '뒤�
   앱이 running 이 되면 첫 화면은 자동으로 불러온다.
 - **딥링크 입력** — 텍스트 입력창 아래에 URL을 넣고 `open`(또는 Enter)하면 `emu open-url` 과
   같이 기기에 보내고, 화면 전환이 끝나면 스크린샷을 새로 고친다. 최근 10개는 브라우저별로 기억.
+- **Changes 탭**(Logs 옆, git 프로젝트만) — 바뀐 파일 목록(+/− 줄 수)과 diff를 네 범위로 본다:
+  커밋 안 한 변경, 기준 브랜치 이후, **마지막 reload에 반영된 변경**, **아직 reload 안 된 변경**.
+  서버가 기동·hot reload/restart 때마다 작업 트리를 스냅샷(새 파일 포함, 임시 인덱스 사용 —
+  실제 인덱스·파일은 건드리지 않음)해 두고 프로젝트를 감시하므로, 파일을 저장하거나 reload하면 탭이 실시간으로 갱신된다.
+  생성 파일(`*.g.dart`, `*.freezed.dart`, vendor, lock)은 기본으로 숨긴다.
 - 상태바 — 기기, 앱 상태, **DevTools 링크**(`devtools.serve` 로 띄운 실제 DevTools)
 
 ## 동작 원리

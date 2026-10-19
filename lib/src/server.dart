@@ -15,6 +15,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'device_lease.dart';
 import 'device_manager.dart';
 import 'device_setup.dart';
+import 'diff.dart';
 import 'engine.dart';
 import 'error_parser.dart';
 import 'eval.dart';
@@ -147,6 +148,18 @@ class EmuServer {
 
   late final LogStore logStore;
   late final FlutterEngine engine;
+
+  /// The dashboard's Changes tab / `emu diff`. Snapshots the working tree on
+  /// every launch and reload so "what did that reload apply" is answerable.
+  late final GitDiff diff;
+  AppRunState? _lastRunState;
+
+  /// Watches the project so the Changes tab updates as files are edited,
+  /// not only on reload. Debounced: an editor save or a formatter run is a
+  /// burst of events.
+  StreamSubscription<FileSystemEvent>? _fileWatch;
+  Timer? _fileWatchDebounce;
+  StreamSubscription<AppStatus>? _snapshotSub;
   final DeviceManager devices = DeviceManager();
 
   HttpServer? _http;
@@ -162,6 +175,10 @@ class EmuServer {
     // Fan out engine activity to connected dashboards.
     logStore.stream.listen((e) => _broadcast({'type': 'log', 'entry': e.toJson()}));
     engine.statusStream.listen((s) => _broadcast({'type': 'status', 'status': s.toJson()}));
+
+    diff = GitDiff(session.projectRoot.path);
+    _snapshotSub = engine.statusStream.listen(_snapshotOnReload);
+    unawaited(_watchFiles());
 
     _http = await _bind(requestedPort);
     session.writeServerInfo(port: _http!.port, pid: pid);
@@ -608,6 +625,10 @@ class EmuServer {
         return _text(req);
       case '/api/open-url':
         return _openUrl(req);
+      case '/api/diff/files':
+        return _diffFiles(req);
+      case '/api/diff/file':
+        return _diffFile(req);
       case '/api/first-frame':
         return _firstFrame(req);
       case '/api/settle':
@@ -800,6 +821,94 @@ class EmuServer {
       () => runText(uri, text, append: append),
       {'text': text, 'append': append},
     );
+  }
+
+  /// Entering `starting` (launch, cold restart) or `restarting` (hot
+  /// reload/restart) is when new code reaches the app — capture the working
+  /// tree then. Both the CLI and the dashboard drive reloads through the
+  /// engine, so this sees every one.
+  Future<void> _snapshotOnReload(AppStatus s) async {
+    final prev = _lastRunState;
+    _lastRunState = s.state;
+    if (s.state == prev) return;
+    final reason = switch (s.state) {
+      AppRunState.starting => 'launch',
+      AppRunState.restarting => 'reload',
+      _ => null,
+    };
+    if (reason == null) return;
+    await diff.record(reason);
+    _broadcast({'type': 'diff', 'snapshots': diff.snapshots.map((e) => e.toJson()).toList()});
+  }
+
+  Future<void> _watchFiles() async {
+    if (!await diff.isRepo() || _disposed) return;
+    final root = session.projectRoot.path;
+    try {
+      _fileWatch = session.projectRoot.watch(recursive: true).listen((e) {
+        // `root/` (not bare `root`): a sibling like `myapp2/` must not match `myapp`.
+        final under = e.path.startsWith('$root/') || e.path.startsWith('$root${Platform.pathSeparator}');
+        final rel = under ? e.path.substring(root.length + 1) : e.path;
+        if (isWatchNoise(rel)) return;
+        _fileWatchDebounce?.cancel();
+        _fileWatchDebounce = Timer(const Duration(milliseconds: 400), () => _broadcast({'type': 'diff', 'reason': 'files'}));
+      }, onError: (_) {});
+    } catch (_) {
+      // No recursive watch on this platform — the tab still updates on reload
+      // and on its refresh button.
+    }
+  }
+
+  /// Resolves `scope`/`base` query params to a range (null: nothing to compare
+  /// yet); throws [DiffException] for a bad scope or base.
+  Future<(DiffScope, String?, (String, String)?)> _diffRange(Map<String, String> q) async {
+    final scope = DiffScope.fromWire(q['scope'] ?? 'head');
+    if (scope == null) throw DiffException('unknown scope: ${q['scope']} (head|base|reload|pending)');
+    final base = q['base'] ?? (scope == DiffScope.base ? await diff.defaultBase() : null);
+    return (scope, base, await diff.range(scope, base: base));
+  }
+
+  Future<Response> _diffFiles(Request req) async {
+    if (!await diff.isRepo()) return _json({'git': false, 'files': []});
+    try {
+      final (scope, base, range) = await _diffRange(req.url.queryParameters);
+      return _json({
+        'git': true,
+        'scope': scope.wire,
+        if (base != null) 'base': base,
+        'snapshots': diff.snapshots.map((e) => e.toJson()).toList(),
+        // The exact trees compared: passing them back to /api/diff/file keeps
+        // each patch consistent with this listing and skips re-snapshotting.
+        if (range != null) ...{'from': range.$1, 'to': range.$2},
+        'files': range == null ? [] : (await diff.files(range)).map((f) => f.toJson()).toList(),
+        if (range == null) 'note': scope == DiffScope.base ? 'no base branch found' : 'no reload recorded yet',
+      });
+    } on DiffException catch (e) {
+      return _json({'git': true, 'error': e.message}, status: 400);
+    }
+  }
+
+  Future<Response> _diffFile(Request req) async {
+    final path = req.url.queryParameters['path'];
+    if (path == null || path.isEmpty) return _json({'error': 'path is required'}, status: 400);
+    if (!isProjectRelativePath(path)) return _json({'error': 'path must be relative to the project'}, status: 400);
+    if (!await diff.isRepo()) return _json({'git': false, 'patch': ''});
+    try {
+      final q = req.url.queryParameters;
+      final (from, to) = (q['from'], q['to']);
+      final (String, String)? range;
+      if (from != null || to != null) {
+        if (from == null || to == null || !isObjectId(from) || !isObjectId(to)) {
+          throw DiffException('from/to must both be tree ids from /api/diff/files');
+        }
+        range = (from, to);
+      } else {
+        (_, _, range) = await _diffRange(q);
+      }
+      return _json({'git': true, 'path': path, 'patch': range == null ? '' : await diff.patch(range, path)});
+    } on DiffException catch (e) {
+      return _json({'git': true, 'error': e.message}, status: 400);
+    }
   }
 
   /// Deep link from the dashboard — same argv-only invocation as `emu open-url`
@@ -1033,6 +1142,9 @@ class EmuServer {
   Future<void> dispose() async {
     _disposed = true;
     await _postHocClaim?.cancel();
+    _fileWatchDebounce?.cancel();
+    await _fileWatch?.cancel();
+    await _snapshotSub?.cancel(); // no git snapshots while shutting down
     await _setupWatch?.cancel();
     _portWatch?.cancel();
     await _reapplyRun;

@@ -142,3 +142,61 @@ button:disabled { opacity: .5; cursor: default; pointer-events: none; }
   background: var(--bg-alt); border: 1px solid var(--border); color: var(--fg);
   padding: 8px 14px; border-radius: 8px; font-size: 12px; box-shadow: 0 4px 16px #0008;
 }
+
+/* Logs | Changes tabs (left of the toolbar) and per-tab tool groups. */
+.tabs { display: flex; gap: 2px; margin-right: 6px; }
+.tab { background: none; border: 1px solid transparent; color: var(--muted); }
+.tab:hover { background: #21262d; color: var(--fg); }
+.tab.active { color: #fff; border-color: var(--border); background: var(--bg-alt); }
+.tab[hidden] { display: none; }
+.tab .badge {
+  margin-left: 6px; padding: 0 6px; border-radius: 999px; background: #30363d;
+  font-size: 10px; color: var(--fg);
+}
+.tab .badge:empty { display: none; }
+.tool-group { flex: 1; display: flex; align-items: center; gap: 10px; min-width: 0; }
+.tool-group[hidden] { display: none; }
+#diff-scope, #diff-base {
+  background: var(--bg-alt); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 5px 8px; font-size: 12px;
+}
+#diff-base { width: 140px; }
+#diff-base[hidden] { display: none; }
+
+/* Changes tab: file list + unified diff. */
+.log[hidden], .changes[hidden] { display: none; }
+.changes { flex: 1; display: flex; min-height: 0; min-width: 0; }
+.file-list {
+  width: 280px; flex: 0 0 auto; overflow-y: auto; border-right: 1px solid var(--border);
+  font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; font-size: 12px;
+}
+.fitem {
+  display: flex; align-items: center; gap: 6px; padding: 5px 10px; cursor: pointer;
+  border-left: 2px solid transparent;
+}
+.fitem:hover { background: var(--bg-row-alt); }
+.fitem.active { background: #1c2430; border-left-color: var(--accent); }
+/* rtl ellipsis keeps the file name (the end of the path) visible */
+.fitem .fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.fitem .flag { font-size: 10px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+.plus { color: var(--system); }
+.minus { color: var(--error); }
+.diff-view {
+  flex: 1; overflow: auto; min-width: 0;
+  font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5;
+}
+.dfile-head {
+  position: sticky; top: 0; z-index: 1; display: flex; gap: 10px; align-items: center;
+  padding: 6px 12px; background: var(--bg-alt); border-bottom: 1px solid var(--border);
+}
+.dfile-head .path { color: #fff; font-weight: 600; }
+.hunk { color: var(--accent); background: #2f81f71a; padding: 2px 12px; }
+.dl { display: flex; white-space: pre; }
+.dl .ln { flex: 0 0 44px; text-align: right; padding-right: 8px; color: var(--muted); user-select: none; opacity: .7; }
+.dl .code { flex: 1; padding-left: 14px; position: relative; }
+.dl .code::before { position: absolute; left: 3px; }
+.dl.add { background: #2ea04326; }
+.dl.add .code::before { content: "+"; color: var(--system); }
+.dl.del { background: #f8514926; }
+.dl.del .code::before { content: "−"; color: var(--error); }
+.diff-note { padding: 24px; color: var(--muted); font-size: 12px; text-align: center; }
