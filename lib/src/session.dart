@@ -45,14 +45,16 @@ class Session {
     if (!gitignore.existsSync()) gitignore.writeAsStringSync('*\n');
   }
 
-  /// Record the running server so CLI clients can find it.
-  void writeServerInfo({required int port, required int pid}) {
+  /// Record the running server so CLI clients can find it — and the session
+  /// token they must send (see `api_guard.dart`).
+  void writeServerInfo({required int port, required int pid, String? token}) {
     ensureState();
     serverInfoFile.writeAsStringSync(jsonEncode({
       'port': port,
       'pid': pid,
       'project': projectRoot.path,
       'startedAt': DateTime.now().toIso8601String(),
+      'token': ?token,
     }));
   }
 
@@ -65,6 +67,7 @@ class Session {
         port: m['port'] as int,
         pid: m['pid'] as int,
         project: m['project'] as String?,
+        token: m['token'] as String?,
       );
     } catch (_) {
       return null;
@@ -106,10 +109,16 @@ UpSessionAction decideUpAction({required bool serverAlive, String? appState}) {
 }
 
 class ServerInfo {
-  ServerInfo({required this.port, required this.pid, this.project});
+  ServerInfo({required this.port, required this.pid, this.project, this.token});
   final int port;
   final int pid;
   final String? project;
 
+  /// Null for a server from before session tokens (it doesn't check one).
+  final String? token;
+
   String get baseUrl => 'http://127.0.0.1:$port';
+
+  /// Headers every API request to this server carries.
+  Map<String, String> get headers => {'X-Emu-Token': ?token};
 }

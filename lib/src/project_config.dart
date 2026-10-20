@@ -36,6 +36,7 @@ class EmuConfig {
     this.forwardPorts = const [],
     this.onDeviceReady = const [],
     this.onAppStarted = const [],
+    this.pages,
   });
 
   final String? deviceId;
@@ -58,6 +59,9 @@ class EmuConfig {
   /// and after the app has started (installed — e.g. `pm grant`).
   final List<String> onDeviceReady;
   final List<String> onAppStarted;
+
+  /// Dashboard pages, raw — `parsePages` in `pages.dart` reads them.
+  final Object? pages;
 
   static const empty = EmuConfig();
 
@@ -84,6 +88,7 @@ class EmuConfig {
       forwardPorts: stringList(m['forwardPorts']),
       onDeviceReady: stringList(m['onDeviceReady']),
       onAppStarted: stringList(m['onAppStarted']),
+      pages: m['pages'],
     );
   }
 }

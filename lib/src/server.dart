@@ -12,6 +12,7 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_web_socket/shelf_web_socket.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import 'api_guard.dart';
 import 'device_lease.dart';
 import 'device_manager.dart';
 import 'device_setup.dart';
@@ -26,6 +27,8 @@ import 'log_store.dart';
 import 'memory_diff.dart' as mem;
 import 'models.dart';
 import 'open_url.dart';
+import 'pages.dart';
+import 'pages_api.dart';
 import 'probe.dart';
 import 'session.dart';
 import 'settle.dart';
@@ -53,6 +56,7 @@ class LaunchOptions {
     this.forwardPorts = const [],
     this.onDeviceReady = const [],
     this.onAppStarted = const [],
+    this.profile,
     this.extra = const [],
   });
 
@@ -95,6 +99,9 @@ class LaunchOptions {
   final List<PortMapping> forwardPorts;
   final List<String> onDeviceReady;
   final List<String> onAppStarted;
+
+  /// `up --profile`: the server re-reads `emu.yaml` for dashboard pages with it.
+  final String? profile;
   final List<String> extra;
 }
 
@@ -162,8 +169,21 @@ class EmuServer {
   StreamSubscription<AppStatus>? _snapshotSub;
   final DeviceManager devices = DeviceManager();
 
+  /// Dashboard pages from `emu.yaml` (`pages.dart`) and the runs of their items.
+  late final PagesApi pages;
+  Timer? _pagesChangedDebounce;
+
+  /// Changed paths not yet checked against the pages' `watch:` globs.
+  final Set<String> _pageWatchPaths = {};
+  Timer? _pageWatchDebounce;
+
   HttpServer? _http;
   final Set<WebSocketChannel> _sockets = {};
+
+  /// Every API call but the liveness ping must carry this (see
+  /// `api_guard.dart`). New on every start, so a dashboard left open from an
+  /// earlier session can't drive this one.
+  final String token = newSessionToken();
 
   int get port => _http!.port;
 
@@ -178,10 +198,22 @@ class EmuServer {
 
     diff = GitDiff(session.projectRoot.path);
     _snapshotSub = engine.statusStream.listen(_snapshotOnReload);
+    pages = PagesApi(
+      projectRoot: session.projectRoot.path,
+      profile: opts.profile,
+      environment: _pageEnvironment,
+      followUp: _pageFollowUp,
+      openUrl: (url) async => (await _openDeepLink(url)).$2,
+      broadcast: _broadcast,
+      log: (text, level) => logStore.add(text, level: level, source: 'ext'),
+    );
+    for (final problem in pages.load().problems) {
+      logStore.add('emu.yaml pages: $problem', level: LogLevel.warn, source: 'system');
+    }
     unawaited(_watchFiles());
 
     _http = await _bind(requestedPort);
-    session.writeServerInfo(port: _http!.port, pid: pid);
+    session.writeServerInfo(port: _http!.port, pid: pid, token: token);
     shelf_io.serveRequests(_http!, _handler());
     logStore.system('emu server listening on http://127.0.0.1:${_http!.port}');
 
@@ -506,22 +538,8 @@ class EmuServer {
   }
 
   Handler _handler() {
-    return const Pipeline().addMiddleware(_cors()).addHandler(_route);
+    return const Pipeline().addMiddleware(apiGuard(token)).addHandler(_route);
   }
-
-  Middleware _cors() => (Handler inner) => (Request req) async {
-        if (req.method == 'OPTIONS') {
-          return Response.ok('', headers: _corsHeaders);
-        }
-        final res = await inner(req);
-        return res.change(headers: _corsHeaders);
-      };
-
-  static const _corsHeaders = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-  };
 
   Future<Response> _route(Request req) async {
     final path = '/${req.url.path}';
@@ -544,6 +562,12 @@ class EmuServer {
   Future<Response> _api(Request req, String path) async {
     switch (path) {
       case '/api/status':
+        // Without the token, only that the server is up (the device-lease
+        // liveness ping): the full status holds the VM Service URI, whose
+        // auth code is what lets a client run code in the app.
+        if (req.context[authedContextKey] != true) {
+          return _json({'ok': true, 'state': engine.status.state.name, 'serverPort': port});
+        }
         final missing = _portsMissing;
         return _json({
           'status': engine.status.toJson(),
@@ -569,6 +593,10 @@ class EmuServer {
                     },
             },
         });
+      case '/api/session':
+        // Token check only (the guard already ran): lets the dashboard tell a
+        // restarted server (new token → 401) from one that is down.
+        return _json({'ok': true});
       case '/api/reload':
         return _json((await engine.hotReload()).toJson());
       case '/api/restart':
@@ -649,8 +677,33 @@ class EmuServer {
         });
         return _json({'ok': true, 'message': 'shutting down'});
       default:
+        if (path == '/api/pages' || path.startsWith('/api/pages/')) return pages.handle(req, path);
         return _json({'error': 'not found'}, status: 404);
     }
+  }
+
+  /// What page commands see, like the hooks: the project, this server, and
+  /// the device and app once known.
+  Map<String, String> _pageEnvironment() {
+    final id = engine.status.deviceId;
+    final platform = id == null ? null : platformForDeviceId(id);
+    return {
+      'EMU_PROJECT': session.projectRoot.path,
+      'EMU_PORT': '$port',
+      'EMU_DEVICE': ?id,
+      'EMU_PLATFORM': ?platform,
+      'EMU_APP_ID': ?(platform == null ? null : builtAppId(session.projectRoot.path, platform)),
+    };
+  }
+
+  /// A page item's `then:` — the same reload/restart as the buttons.
+  Future<Map<String, dynamic>> _pageFollowUp(Then then) async {
+    final r = switch (then) {
+      Then.reload => await engine.hotReload(),
+      Then.restart => await engine.hotRestart(),
+      Then.none => null,
+    };
+    return {'action': then.name, ...?r?.toJson()};
   }
 
   String get _platform => platformForDeviceId(engine.status.deviceId);
@@ -842,14 +895,21 @@ class EmuServer {
   }
 
   Future<void> _watchFiles() async {
-    if (!await diff.isRepo() || _disposed) return;
+    final repo = await diff.isRepo();
+    if (_disposed || (!repo && pages.load().pages.isEmpty)) return;
     final root = session.projectRoot.path;
     try {
       _fileWatch = session.projectRoot.watch(recursive: true).listen((e) {
         // `root/` (not bare `root`): a sibling like `myapp2/` must not match `myapp`.
         final under = e.path.startsWith('$root/') || e.path.startsWith('$root${Platform.pathSeparator}');
         final rel = under ? e.path.substring(root.length + 1) : e.path;
-        if (isWatchNoise(rel)) return;
+        if (rel == 'emu.yaml' || rel == 'emu.local.yaml') {
+          // Dashboards re-read the pages (the server reads the file per request).
+          _pagesChangedDebounce?.cancel();
+          _pagesChangedDebounce = Timer(const Duration(milliseconds: 400), () => _broadcast({'type': 'pages'}));
+        }
+        _queuePageWatch(rel);
+        if (!repo || isWatchNoise(rel)) return;
         _fileWatchDebounce?.cancel();
         _fileWatchDebounce = Timer(const Duration(milliseconds: 400), () => _broadcast({'type': 'diff', 'reason': 'files'}));
       }, onError: (_) {});
@@ -857,6 +917,25 @@ class EmuServer {
       // No recursive watch on this platform — the tab still updates on reload
       // and on its refresh button.
     }
+  }
+
+  /// A page block may watch any project path — `build/` or a git-ignored work
+  /// folder included — but not emu's or git's own churn. Checked in batches:
+  /// a save or a formatter run is a burst of events.
+  void _queuePageWatch(String rel) {
+    if (rel.isEmpty || rel.split(RegExp(r'[/\\]')).any(const {'.git', '.dart_tool', '.emu'}.contains)) return;
+    _pageWatchPaths.add(rel.replaceAll(r'\', '/'));
+    _pageWatchDebounce?.cancel();
+    _pageWatchDebounce = Timer(const Duration(milliseconds: 300), () {
+      final hits = pages.watching(_pageWatchPaths);
+      _pageWatchPaths.clear();
+      if (hits.isNotEmpty) {
+        _broadcast({
+          'type': 'ext-watch',
+          'blocks': {for (final e in hits.entries) e.key: e.value.toList()},
+        });
+      }
+    });
   }
 
   /// Resolves `scope`/`base` query params to a range (null: nothing to compare
@@ -911,21 +990,28 @@ class EmuServer {
     }
   }
 
-  /// Deep link from the dashboard — same argv-only invocation as `emu open-url`
-  /// (see [buildOpenUrlCommand]), then a best-effort settle so the caller's
-  /// next screenshot shows the destination rather than the transition. The
-  /// settle is capped well below the CLI's 10s: an app that never goes quiet
-  /// (looping animation, streaming list) would otherwise stall the button. The
-  /// outer timeout matters too — `timeout` only bounds the poll loop, and right
-  /// after launch the first VM `evaluate` alone can take 10s+.
+  /// The dashboard's deep link box.
   Future<Response> _openUrl(Request req) async {
     final url = req.url.queryParameters['url'];
     if (url == null || url.isEmpty) {
       return _json({'ok': false, 'error': 'url is required'}, status: 400);
     }
+    final (status, body) = await _openDeepLink(url);
+    return _json(body, status: status);
+  }
+
+  /// Deep link from the dashboard's box or a page's `openUrl:` action — same
+  /// argv-only invocation as `emu open-url` (see [buildOpenUrlCommand]), then
+  /// a best-effort settle so the caller's next screenshot shows the
+  /// destination rather than the transition. The settle is capped well below
+  /// the CLI's 10s: an app that never goes quiet (looping animation, streaming
+  /// list) would otherwise stall the button. The outer timeout matters too —
+  /// `timeout` only bounds the poll loop, and right after launch the first VM
+  /// `evaluate` alone can take 10s+. Returns the HTTP status and body.
+  Future<(int, Map<String, dynamic>)> _openDeepLink(String url) async {
     final deviceId = engine.status.deviceId;
     if (deviceId == null) {
-      return _json({'ok': false, 'error': 'no device connected'}, status: 409);
+      return (409, {'ok': false, 'error': 'no device connected'});
     }
     final cmd = buildOpenUrlCommand(platform: _platform, deviceId: deviceId, url: url);
     final seq = logStore.lastSeq;
@@ -935,17 +1021,17 @@ class EmuServer {
       // dashboard's request.
       result = await runWithTimeout(cmd.executable, cmd.arguments);
     } catch (e) {
-      return _json({'ok': false, 'url': url, 'error': '$e'}, status: 500);
+      return (500, {'ok': false, 'url': url, 'error': '$e'});
     }
     if (result.exitCode != 0) {
-      return _json({'ok': false, 'url': url, 'error': '${result.stderr}'.trim()}, status: 500);
+      return (500, {'ok': false, 'url': url, 'error': '${result.stderr}'.trim()});
     }
     final uri = engine.status.vmServiceUri;
     if (uri != null) {
       await waitForSettle(uri, timeout: const Duration(seconds: 3))
           .timeout(const Duration(seconds: 4), onTimeout: () => false);
     }
-    return _json({'ok': true, 'url': url, 'seq': seq});
+    return (200, {'ok': true, 'url': url, 'seq': seq});
   }
 
   /// Whether the app has painted yet — `running` alone doesn't mean tappable.
@@ -1133,6 +1219,18 @@ class EmuServer {
     var rel = path == '/' ? 'index.html' : path.substring(1);
     final bytes = _readWebAsset(rel);
     if (bytes == null) return Response.notFound('not found: $rel');
+    if (rel == 'index.html') {
+      return Response.ok(injectSessionToken(utf8.decode(bytes), token), headers: {
+        'Content-Type': _contentType(rel),
+        // The page carries this session's token: never from cache (a restarted
+        // server has a new one), never inside another site's frame.
+        'Cache-Control': 'no-store',
+        'Content-Security-Policy': "frame-ancestors 'none'",
+        'X-Frame-Options': 'DENY',
+        // Sub-resource URLs carry ?token=; no link out of the page may leak them.
+        'Referrer-Policy': 'no-referrer',
+      });
+    }
     return Response.ok(bytes, headers: {'Content-Type': _contentType(rel)});
   }
 
@@ -1143,6 +1241,8 @@ class EmuServer {
     _disposed = true;
     await _postHocClaim?.cancel();
     _fileWatchDebounce?.cancel();
+    _pagesChangedDebounce?.cancel();
+    _pageWatchDebounce?.cancel();
     await _fileWatch?.cancel();
     await _snapshotSub?.cancel(); // no git snapshots while shutting down
     await _setupWatch?.cancel();
@@ -1154,8 +1254,12 @@ class EmuServer {
     }
     session.clearServerInfo();
     if (_leasedDevice != null) leases.release(_leasedDevice!, pid);
-    for (final s in _sockets) {
-      await s.sink.close();
+    // Over a copy: closing a socket runs its onDone, which removes it from
+    // [_sockets] — iterating the set itself threw there, and the server never
+    // reached exit(). Bounded, so a client that never answers the close
+    // handshake can't hold the shutdown either.
+    for (final s in _sockets.toList()) {
+      await s.sink.close().timeout(const Duration(seconds: 2), onTimeout: () {});
     }
     await engine.dispose();
     await logStore.close();

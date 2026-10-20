@@ -36,6 +36,7 @@ flutter run --machine  ◄─JSON-RPC─►  engine  ──►  server (127.0.0.
 - [Core workflow: the agent debug loop](#core-workflow-the-agent-debug-loop)
 - [Command reference](#command-reference)
 - [Web dashboard](#web-dashboard)
+- [Dashboard pages](#dashboard-pages)
 - [How it works](#how-it-works)
 - [State files (.emu/)](#state-files-emu)
 - [Device ownership](#device-ownership)
@@ -723,6 +724,7 @@ to its starting state is the leak signal this is built to catch.
   focused field (unicode). Coordinate conversion is handled by the dashboard (the
   screenshot-ratio trap agents hit doesn't exist for humans). Check `auto` to
   refresh periodically. The first screenshot loads on its own once the app is running.
+  Drag the panel's left edge to widen it (kept in the browser; double-click to reset).
 - **Deep link box** — under the text box: enter a URL and press `open` (or Enter) to
   send it like `emu open-url`; the screen refreshes once the app settles. The last
   10 URLs are remembered per browser.
@@ -735,6 +737,162 @@ to its starting state is the leak signal this is built to catch.
   Generated files (`*.g.dart`, `*.freezed.dart`, vendored, lock files) are hidden by default.
 - Status bar — device, app state, **DevTools link** (a real DevTools served via
   `devtools.serve`).
+- **Pages** — tabs next to Debug for project tools declared in `emu.yaml`; see
+  [Dashboard pages](#dashboard-pages).
+- **Session token** — the server listens on `127.0.0.1` only and answers API calls
+  from this session's dashboard and CLI alone: every server start creates a token,
+  written to `.emu/server.json` (for the CLI) and into the dashboard page. A request
+  without it, from another site (`Origin`), or under another host name (DNS
+  rebinding) is refused; `GET /api/status`, the liveness ping, is the one exception —
+  without the token it answers only that the server is up, not the VM Service URI.
+  A dashboard tab left open across `emu down`/`up` reloads itself to pick up the new
+  token. To call the API yourself:
+  `curl -H "X-Emu-Token: $(jq -r .token .emu/server.json)" http://127.0.0.1:4577/api/logs`
+
+## Dashboard pages
+
+A project can add its own tools to the dashboard — a local-template switch, a
+validator, a publish step — without emu knowing what they do. Declare them as
+`pages:` in `emu.yaml`; each page gets a tab next to **Debug**. The app controls
+(Reload … Shot) and the screen panel stay in place on every page, so "flip a
+switch → reload → look at the screen" happens on one screen.
+
+```yaml
+# emu.yaml
+pages:
+  - id: templates
+    title: Templates
+    toolbar:
+      - toggle:
+          id: local
+          label: local templates
+          state: [./tool/templates, status, --json]   # prints {"on": true, "detail": "2 files"}
+          on: [./tool/templates, enable]
+          off: [./tool/templates, disable]
+          then: reload
+      - action: { id: sync, run: [./tool/templates, sync], then: reload }
+      - action: { id: validate, run: ./tool/templates validate --all }
+      - action:
+          id: publish
+          label: publish…
+          run: [./tool/templates, publish, "{{selected.name}}", --target, ../cdn-checkout]
+          confirm: true
+          timeout: 300
+    blocks:
+      - list:
+          id: items
+          run: [./tool/templates, list, --json]       # prints [{"name": …, "local": true, …}, …]
+          columns: [name, version, local:chip, changes:count]
+          rowActions:
+            - action: { id: check, run: [./tool/templates, validate, "{{row.name}}"] }
+          watch: ["templates/**"]
+      - diff:
+          id: changes
+          run: [./tool/templates, diff, "{{selected.name}}", --against, "{{seg}}"]
+          segments: [base, stage, prod]
+          watch: ["templates/**"]
+      - output: {}
+```
+
+| Key | Meaning |
+|-----|---------|
+| `toolbar` | `action` (a button) and `toggle` (a switch) |
+| `run` / `state` / `on` / `off` | A command: `[program, arg, …]` runs directly, a string runs with `sh -c`. A relative program (`./tool/x`) resolves against the project root |
+| `then` | `reload` or `restart` once the command succeeds (default `none`) |
+| `confirm` | The dashboard shows the exact command and asks first; `emu run` needs `--yes` |
+| `timeout` | Seconds before the command is killed (default 60) |
+| `blocks` | Panels in the page body, placed with `area: left \| main \| bottom` (defaults: list left, diff main, output bottom). Drag the left area's right edge or the bottom area's top edge to resize — kept per page in the browser; double-click an edge to reset |
+
+| Block | Its command prints | It shows |
+|-------|--------------------|----------|
+| `list` | a JSON array of objects | A table: `columns` as `name` or `name:text\|chip\|count` (default: every field of the first row), a filter box, and a `rowActions` button on each row. The first list on a page holds its selection: picking a row fills `{{selected.<col>}}` |
+| `diff` | a unified diff | The Changes tab view. `segments` adds a switch whose choice fills `{{seg}}` |
+| `html` | anything — JSON goes over as a value | A project HTML file (`src:`) in a sandboxed frame, for what a table or a diff can't show: a value tree, an image preview. `run:` is optional; `actions: [sync]` names the toolbar actions it may ask for |
+| `form` | — | Labeled fields (`fields: [{name, label, placeholder, default}]`) and `actions` buttons that read them as `{{input.<field>}}`. What's typed is kept per browser |
+| `output` | — | The page's last run: command, exit code, time, output |
+
+- Placeholders: `{{selected.<col>}}` — the picked row, anywhere except the list that makes
+  the selection; `{{row.<col>}}` — a row button's own row; `{{seg}}` — a diff's segment;
+  `{{input.<field>}}` — a form's field, in that form's buttons.
+  They work only in `[program, arg, …]` commands, and each value stays inside its own
+  argument: a row value with spaces, `;` or `$(…)` reaches the program as one argument and
+  is never run. A shell-string command with a placeholder is a config error, and so is one
+  in the program (the first element): a value may say what a command is given, not what runs.
+- Chip colors follow common state words (`on`/`off`, `changed`, `error` …); any other value
+  is neutral.
+- An item that reads `{{selected.*}}` is disabled until a row is picked; a `confirm: true`
+  item shows the command with the values filled in.
+- `watch: ["templates/**"]` on a list or diff fetches it again when a matching project file
+  changes — git-ignored work folders included. The picked row and segment are remembered
+  per browser.
+- Instead of `run:`, an action may have `openUrl: "myapp://item?id={{row.id}}"`: it opens the
+  link on the device the way `emu open-url` does (argv only, the device-shell quoting, then
+  waits for the app to settle) and refreshes the screen panel. A deep-link page needs no
+  script for that:
+
+  ```yaml
+  - id: links
+    title: Deep links
+    blocks:
+      - list:
+          id: routes
+          run: [./tool/routes, list, --json]
+          rowActions:
+            - action: { id: open, openUrl: "myapp://{{row.route}}" }
+      - form:
+          id: link
+          fields: [{ name: url, placeholder: "myapp://home?tab=1" }]
+          actions:
+            - action: { id: open, label: open on device, openUrl: "{{input.url}}" }
+  ```
+- An `html` block's file must be self-contained (inline CSS and JS). It runs in a sandboxed
+  frame with its own opaque origin and no network (`default-src 'none'`): it can't read the
+  dashboard, the session token or other blocks. Its data arrives by `postMessage` as
+  `{type: "emu:data", ok, data, text, error, needs, selected}` after it loads and on every
+  refresh (post `{type: "emu:ready"}` to ask again). It runs a toolbar action by posting
+  `{type: "emu:action", id}` — only ids listed in `actions:`, with the same confirmation as
+  the button. Saving the file reloads the frame.
+
+  ```html
+  <!doctype html>
+  <pre id="out"></pre>
+  <script>
+    addEventListener('message', (e) => {
+      if (e.data?.type === 'emu:data') out.textContent = JSON.stringify(e.data.data, null, 2);
+    });
+    parent.postMessage({ type: 'emu:ready' }, '*');
+  </script>
+  ```
+
+- A toggle's `state` command prints `{"on": true|false, "detail"?: "…"}` — its last line is
+  enough, so the tool may log first. `on`/`off` flip it, and the state is read again afterwards.
+- Commands run in the project root with `EMU_PROJECT`, `EMU_PORT` and, once known,
+  `EMU_DEVICE`, `EMU_PLATFORM` and `EMU_APP_ID` — as the device hooks do. Stdin is closed.
+  An item never runs twice at once.
+- The server runs only commands written in the config: a request names a page and an item,
+  never a command. `emu.yaml` is read again on every request, so edits apply without a
+  restart (open dashboards refresh when the file changes; ↻ re-reads it too).
+- A run shows up in every open dashboard, also when started from the CLI, and in the Logs
+  tab as `[ext] <page>.<item>` lines; a failed run is logged as an error with the end of
+  its output.
+- Problems in `pages:` (a missing `run`, an unknown `then`) are listed next to the page tabs
+  and by `emu pages`; only the broken item is skipped.
+
+```bash
+emu pages                          # pages, items and blocks (--json available)
+emu run templates.sync             # same as pressing the button: its output, then a result line
+emu run templates.local on         # a toggle takes on/off
+emu run templates.local            # …or nothing, to print where it stands
+emu run templates.publish --select name=home_banner --yes   # {{selected.name}}; confirm: true needs --yes
+emu run links.routes.open --row route=home        # a row button, as if pressed on that row
+emu run links.link.open --input url=myapp://home   # a form button with what's typed
+emu block templates.items          # what a list shows, as a table
+emu block templates.changes --select name=home_banner --seg prod   # a diff, as if that row were picked
+```
+
+`emu run` exits 0 when the command and its `then:` reload/restart succeeded, and with the
+command's own exit code when it failed. `emu pages` works without a session too: it then reads
+`emu.yaml` directly, so a config edit can be checked before `emu up`.
 
 ## How it works
 
@@ -754,7 +912,7 @@ Stored in the project's `.emu/` directory and auto git-ignored:
 | File | Contents |
 |------|----------|
 | `run.jsonl` | Structured logs (JSONL) |
-| `server.json` | Running server coordinates (port/pid) |
+| `server.json` | Running server coordinates (port/pid) and the session token the CLI sends |
 | `server.log` | Server startup diagnostics |
 | `shot-*.png` | Screenshots |
 | `memory.json` | Learned recomputation hints (lastScreen, etc.) |
@@ -854,11 +1012,14 @@ lib/src/
   assertions.dart      pure expect/deny log assertion logic
   probe.dart           VM Service logpoint: capture variables at a line
   project_config.dart  layered config (emu.yaml) merge
+  pages.dart           dashboard pages declared in emu.yaml (`pages:`): parsing + problems
+  pages_api.dart       runs page items (argv / sh -c, timeout, then:) and serves /api/pages
   project_memory.dart  learned recomputation hints (.emu/memory.json)
   device_manager.dart  device discovery + emulator/simulator boot
   device_lease.dart    machine-wide device ownership (~/.emu/devices)
   session.dart         project detection + .emu/ state
   server.dart          serves REST + WebSocket + the static dashboard
+  api_guard.dart       who may call the server (session token, Host/Origin checks)
   version.dart         embedded version + GitHub release check (--version/doctor/update)
   cli.dart             command parsing + server client
 web/                   dashboard (vanilla HTML/JS/CSS, no build step)

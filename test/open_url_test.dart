@@ -111,18 +111,18 @@ void main() {
 
     test('a fully percent-encoded nested url survives verbatim', () {
       const url =
-          'szsapp://web?url=https%3A%2F%2Fapp.3o3.co.kr%2Fmypage%2Fnotification';
+          'myapp://web?url=https%3A%2F%2Fexample.com%2Fmypage%2Fnotification';
       expect(androidArg(url), "'$url'");
     });
 
     test('percent-encoded inner query (%3F %3D %26) is not touched', () {
       const url =
-          'szsapp://web?url=https%3A%2F%2Fx.co%2Fp%3Fa%3D1%26b%3D2&nav_mode=push';
+          'myapp://web?url=https%3A%2F%2Fx.co%2Fp%3Fa%3D1%26b%3D2&nav_mode=push';
       expect(androidArg(url), "'$url'");
     });
 
     test('%25, +, ~ and a # fragment survive', () {
-      const url = 'szsapp://web?url=https%3A%2F%2Fx.co%2F100%2525%2Bq~r%23frag';
+      const url = 'myapp://web?url=https%3A%2F%2Fx.co%2F100%2525%2Bq~r%23frag';
       expect(androidArg(url), "'$url'");
     });
 
@@ -131,13 +131,13 @@ void main() {
       // parameter is a URI-encoding question, not a shell one: Uri.parse ends
       // the `url` value at the raw `&`, so callers still have to encode. This
       // command must not silently repair that — it passes bytes through.
-      const url = 'szsapp://web?url=https://x.co/p?a=1&b=2';
+      const url = 'myapp://web?url=https://x.co/p?a=1&b=2';
       expect(androidArg(url), "'$url'");
       expect(Uri.parse(url).queryParameters['url'], 'https://x.co/p?a=1');
     });
 
     test('ios leaves a nested encoded url unquoted', () {
-      const url = 'szsapp://web?url=https%3A%2F%2Fx.co%2Fp%3Fa%3D1%26b%3D2';
+      const url = 'myapp://web?url=https%3A%2F%2Fx.co%2Fp%3Fa%3D1%26b%3D2';
       final cmd = buildOpenUrlCommand(
         platform: 'ios',
         deviceId: null,

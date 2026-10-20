@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="emu-token" content="__EMU_SESSION_TOKEN__" />
   <title>emu — Flutter debug</title>
   <link rel="icon" type="image/png" href="favicon.png" />
   <link rel="apple-touch-icon" href="apple-touch-icon.png" />
@@ -11,6 +12,7 @@
 <body>
   <header class="topbar">
     <div class="brand"><img src="favicon.png" alt="" class="brand-icon" />emu<span class="dot" id="conn-dot" title="disconnected"></span></div>
+    <nav class="pages" id="page-tabs" hidden></nav>
     <div class="status" id="status">
       <span class="pill" id="state-pill">stopped</span>
       <span id="device-name" class="muted"></span>
@@ -25,49 +27,54 @@
     </div>
   </header>
 
-  <div class="toolbar">
-    <div class="tabs">
-      <button class="tab active" data-tab="logs">Logs</button>
-      <button class="tab" data-tab="changes" id="tab-changes" hidden>Changes<span class="badge" id="diff-badge"></span></button>
-    </div>
-    <div class="tool-group" id="log-tools">
-      <input id="search" type="text" placeholder="search logs (regex)…" autocomplete="off" />
-      <label class="chk"><input type="checkbox" id="regex" /> regex</label>
-      <div class="levels">
-        <button class="lvl active" data-level="all">all</button>
-        <button class="lvl" data-level="debug">debug</button>
-        <button class="lvl" data-level="info">info</button>
-        <button class="lvl" data-level="warn">warn</button>
-        <button class="lvl" data-level="error">error</button>
-      </div>
-      <span class="grow"></span>
-      <label class="chk"><input type="checkbox" id="autoscroll" checked /> autoscroll</label>
-      <button id="btn-clear" title="Clear log view">clear</button>
-      <button id="btn-copy" title="Copy visible logs">copy</button>
-      <span class="count" id="count">0</span>
-    </div>
-    <div class="tool-group" id="diff-tools" hidden>
-      <select id="diff-scope" title="What to compare">
-        <option value="head">uncommitted (vs HEAD)</option>
-        <option value="reload">applied by last reload</option>
-        <option value="pending">not reloaded yet</option>
-        <option value="base">since base branch</option>
-      </select>
-      <input id="diff-base" type="text" placeholder="base branch" autocomplete="off" spellcheck="false" hidden />
-      <label class="chk"><input type="checkbox" id="diff-hide-gen" checked /> hide generated</label>
-      <span class="muted" id="diff-note"></span>
-      <span class="grow"></span>
-      <button id="diff-refresh" title="Re-read the working tree">↻ refresh</button>
-    </div>
-  </div>
-
   <div class="workspace">
-    <main id="log" class="log"></main>
-    <div class="changes" id="changes" hidden>
-      <nav class="file-list" id="diff-files"></nav>
-      <section class="diff-view" id="diff-view"></section>
+    <div class="content">
+      <div class="toolbar" id="debug-toolbar">
+        <div class="tabs">
+          <button class="tab active" data-tab="logs">Logs</button>
+          <button class="tab" data-tab="changes" id="tab-changes" hidden>Changes<span class="badge" id="diff-badge"></span></button>
+        </div>
+        <div class="tool-group" id="log-tools">
+          <input id="search" type="text" placeholder="search logs (regex)…" autocomplete="off" />
+          <label class="chk"><input type="checkbox" id="regex" /> regex</label>
+          <div class="levels">
+            <button class="lvl active" data-level="all">all</button>
+            <button class="lvl" data-level="debug">debug</button>
+            <button class="lvl" data-level="info">info</button>
+            <button class="lvl" data-level="warn">warn</button>
+            <button class="lvl" data-level="error">error</button>
+          </div>
+          <span class="grow"></span>
+          <label class="chk"><input type="checkbox" id="autoscroll" checked /> autoscroll</label>
+          <button id="btn-clear" title="Clear log view">clear</button>
+          <button id="btn-copy" title="Copy visible logs">copy</button>
+          <span class="count" id="count">0</span>
+        </div>
+        <div class="tool-group" id="diff-tools" hidden>
+          <select id="diff-scope" title="What to compare">
+            <option value="head">uncommitted (vs HEAD)</option>
+            <option value="reload">applied by last reload</option>
+            <option value="pending">not reloaded yet</option>
+            <option value="base">since base branch</option>
+          </select>
+          <input id="diff-base" type="text" placeholder="base branch" autocomplete="off" spellcheck="false" hidden />
+          <label class="chk"><input type="checkbox" id="diff-hide-gen" checked /> hide generated</label>
+          <span class="muted" id="diff-note"></span>
+          <span class="grow"></span>
+          <button id="diff-refresh" title="Re-read the working tree">↻ refresh</button>
+        </div>
+      </div>
+      <div class="pagebar" id="pagebar" hidden></div>
+      <main id="log" class="log"></main>
+      <div class="changes" id="changes" hidden>
+        <nav class="file-list" id="diff-files"></nav>
+        <section class="diff-view" id="diff-view"></section>
+      </div>
+      <div class="ext-page" id="ext-page" hidden></div>
     </div>
+
     <aside class="screen" id="screen">
+      <div class="ext-resize col screen-resize" id="screen-resize" title="Drag to resize · double-click to reset"></div>
       <div class="screen-head">
         <span>screen</span>
         <label class="chk"><input type="checkbox" id="shot-auto" /> auto</label>
@@ -96,7 +103,23 @@
 
   <div class="actionbar" id="toast" hidden></div>
 
+  <div class="modal-dim" id="confirm-dim" hidden></div>
+  <div class="modal" id="confirm" role="dialog" aria-modal="true" aria-labelledby="confirm-title" hidden>
+    <div class="modal-head" id="confirm-title"></div>
+    <div class="modal-body">
+      <div class="muted">runs in the project root:</div>
+      <pre id="confirm-cmd"></pre>
+      <div class="muted" id="confirm-then"></div>
+    </div>
+    <div class="modal-foot">
+      <span class="grow"></span>
+      <button id="confirm-cancel">Cancel</button>
+      <button id="confirm-run" class="run">Run</button>
+    </div>
+  </div>
+
   <script src="vendor/lottie_light.min.js"></script>
   <script src="app.js"></script>
+  <script src="pages.js"></script>
 </body>
 </html>

@@ -33,6 +33,7 @@ flutter run --machine  ◄─JSON-RPC─►  엔진  ──►  서버 (127.0.0.
 - [핵심 워크플로: 에이전트 디버그 루프](#핵심-워크플로-에이전트-디버그-루프)
 - [명령어 레퍼런스](#명령어-레퍼런스)
 - [웹 대시보드](#웹-대시보드)
+- [대시보드 페이지](#대시보드-페이지)
 - [동작 원리](#동작-원리)
 - [상태 파일(.emu/)](#상태-파일emu)
 - [디바이스 점유](#디바이스-점유)
@@ -668,7 +669,8 @@ emu memory --diff-across "emu tap --text '상세보기' && emu tap --text '뒤�
 - **인터랙티브 스크린샷 패널** — 기기 화면을 표시하고 **클릭=탭 / 드래그=스와이프**로 직접 몬다.
   하단 입력창으로 포커스된 필드에 텍스트 입력(유니코드). 좌표 변환은 대시보드가 알아서 한다
   (에이전트가 겪는 스크린샷 배율 함정이 사람에겐 없다). `auto` 체크 시 주기적으로 새로고침.
-  앱이 running 이 되면 첫 화면은 자동으로 불러온다.
+  앱이 running 이 되면 첫 화면은 자동으로 불러온다. 패널 왼쪽 경계를 끌어 폭을 바꿀 수 있다(브라우저에
+  기억, 더블클릭하면 기본 폭).
 - **딥링크 입력** — 텍스트 입력창 아래에 URL을 넣고 `open`(또는 Enter)하면 `emu open-url` 과
   같이 기기에 보내고, 화면 전환이 끝나면 스크린샷을 새로 고친다. 최근 10개는 브라우저별로 기억.
 - **Changes 탭**(Logs 옆, git 프로젝트만) — 바뀐 파일 목록(+/− 줄 수)과 diff를 네 범위로 본다:
@@ -677,6 +679,149 @@ emu memory --diff-across "emu tap --text '상세보기' && emu tap --text '뒤�
   실제 인덱스·파일은 건드리지 않음)해 두고 프로젝트를 감시하므로, 파일을 저장하거나 reload하면 탭이 실시간으로 갱신된다.
   생성 파일(`*.g.dart`, `*.freezed.dart`, vendor, lock)은 기본으로 숨긴다.
 - 상태바 — 기기, 앱 상태, **DevTools 링크**(`devtools.serve` 로 띄운 실제 DevTools)
+- **페이지** — `emu.yaml` 에 선언한 프로젝트 도구가 Debug 옆 탭으로 붙는다.
+  [대시보드 페이지](#대시보드-페이지) 참고.
+- **세션 토큰** — 서버는 `127.0.0.1` 에서만 듣고, API는 이 세션의 대시보드와 CLI에만 응답한다.
+  서버를 시작할 때마다 토큰을 만들어 `.emu/server.json`(CLI용)과 대시보드 페이지에 넣는다. 토큰이
+  없거나, 다른 사이트(`Origin`)에서 왔거나, 다른 호스트 이름(DNS rebinding)으로 온 요청은 거부한다.
+  생존 확인용 `GET /api/status` 만 예외(토큰이 없으면 서버가 떠 있다는 것만 답하고 VM Service 주소는 주지 않는다). `emu down`/`up` 을 거치며 열려 있던 대시보드 탭은 스스로
+  새로 고쳐 새 토큰을 받는다. API를 직접 부를 때:
+  `curl -H "X-Emu-Token: $(jq -r .token .emu/server.json)" http://127.0.0.1:4577/api/logs`
+
+## 대시보드 페이지
+
+프로젝트가 자기 도구 — 로컬 템플릿 전환, 검증, 배포 — 를 대시보드에 붙일 수 있다. emu 는 그 도구가
+무엇인지 모른다. `emu.yaml` 에 `pages:` 로 적으면 페이지마다 **Debug** 옆에 탭이 생긴다. 앱 제어
+(Reload … Shot)와 기기 화면은 모든 페이지에서 같은 자리에 있어, "스위치 → reload → 화면 확인"이 한
+화면에서 끝난다.
+
+```yaml
+# emu.yaml
+pages:
+  - id: templates
+    title: Templates
+    toolbar:
+      - toggle:
+          id: local
+          label: local templates
+          state: [./tool/templates, status, --json]   # {"on": true, "detail": "2 files"} 출력
+          on: [./tool/templates, enable]
+          off: [./tool/templates, disable]
+          then: reload
+      - action: { id: sync, run: [./tool/templates, sync], then: reload }
+      - action: { id: validate, run: ./tool/templates validate --all }
+      - action:
+          id: publish
+          label: publish…
+          run: [./tool/templates, publish, "{{selected.name}}", --target, ../cdn-checkout]
+          confirm: true
+          timeout: 300
+    blocks:
+      - list:
+          id: items
+          run: [./tool/templates, list, --json]       # [{"name": …, "local": true, …}, …] 출력
+          columns: [name, version, local:chip, changes:count]
+          rowActions:
+            - action: { id: check, run: [./tool/templates, validate, "{{row.name}}"] }
+          watch: ["templates/**"]
+      - diff:
+          id: changes
+          run: [./tool/templates, diff, "{{selected.name}}", --against, "{{seg}}"]
+          segments: [base, stage, prod]
+          watch: ["templates/**"]
+      - output: {}
+```
+
+| 키 | 뜻 |
+|----|----|
+| `toolbar` | `action`(버튼)과 `toggle`(스위치) |
+| `run` / `state` / `on` / `off` | 명령. `[program, arg, …]` 은 직접 실행, 문자열은 `sh -c`. 상대 경로 프로그램(`./tool/x`)은 프로젝트 루트 기준 |
+| `then` | 명령이 성공하면 `reload` 또는 `restart`(기본 `none`) |
+| `confirm` | 대시보드가 실행할 명령을 그대로 보여 주고 묻는다. `emu run` 은 `--yes` 필요 |
+| `timeout` | 이 초가 지나면 명령을 끊는다(기본 60) |
+| `blocks` | 페이지 본문의 패널. `area: left \| main \| bottom` 으로 배치(기본: list 왼쪽, diff 가운데, output 아래). 왼쪽 영역의 오른쪽 경계, 아래 영역의 위쪽 경계를 끌어 크기 조정 — 페이지마다 브라우저에 기억, 더블클릭하면 기본 크기 |
+
+| 블록 | 명령이 출력하는 것 | 보여 주는 것 |
+|------|--------------------|--------------|
+| `list` | 객체의 JSON 배열 | 표. `columns` 는 `name` 또는 `name:text\|chip\|count`(기본: 첫 행의 모든 필드), 필터 입력, 행마다 `rowActions` 버튼. 페이지의 첫 list 가 선택을 가진다: 행을 고르면 `{{selected.<col>}}` 이 채워진다 |
+| `diff` | unified diff | Changes 탭과 같은 보기. `segments` 를 주면 고른 값이 `{{seg}}` 를 채우는 전환 버튼 |
+| `html` | 무엇이든 — JSON 은 값으로 전달 | 프로젝트 HTML 파일(`src:`)을 sandbox frame 에 띄운다. 표나 diff로 보이기 어려운 것(값 트리, 이미지 미리보기)용. `run:` 은 생략 가능, `actions: [sync]` 는 frame 이 요청할 수 있는 툴바 액션 |
+| `form` | — | 라벨 붙은 입력 칸(`fields: [{name, label, placeholder, default}]`)과 그 값을 `{{input.<field>}}` 로 읽는 `actions` 버튼. 입력한 값은 브라우저별로 기억 |
+| `output` | — | 이 페이지의 마지막 실행 — 명령, 종료 코드, 시간, 출력 |
+
+- 치환: `{{selected.<col>}}` — 고른 행, 선택을 만드는 list 를 뺀 어디서나. `{{row.<col>}}` — 행 버튼의
+  그 행. `{{seg}}` — diff 의 세그먼트. `{{input.<field>}}` — form 의 입력 칸, 그 form 의 버튼에서. `[program, arg, …]` 명령에서만 되고, 값은 자기 인자 안에만
+  들어간다: 공백·`;`·`$(…)` 가 든 행 값도 인자 하나로 프로그램에 가고 실행되지 않는다. 셸 문자열
+  명령에 치환을 쓰거나 프로그램 자리(첫 요소)에 치환을 쓰면 설정 오류다 — 값은 명령에 넘길 것만 정하고,
+  무엇을 실행할지는 정하지 못한다.
+- chip 색은 흔한 상태 단어(`on`/`off`, `changed`, `error` …)를 따르고, 그 밖의 값은 중립색이다.
+- `{{selected.*}}` 를 읽는 항목은 행을 고르기 전까지 비활성. `confirm: true` 항목은 값을 채운 명령을
+  보여 준다.
+- list·diff 의 `watch: ["templates/**"]` 에 맞는 프로젝트 파일이 바뀌면 다시 불러온다(git 이 무시하는
+  작업 폴더 포함). 고른 행과 세그먼트는 브라우저별로 기억한다.
+- 액션은 `run:` 대신 `openUrl: "myapp://item?id={{row.id}}"` 를 가질 수 있다. `emu open-url` 과 같이
+  (argv 만, 기기 셸용 인용, 앱이 가라앉을 때까지 대기) 기기에 링크를 열고 화면 패널을 새로 고친다.
+  딥링크 페이지에는 스크립트가 필요 없다:
+
+  ```yaml
+  - id: links
+    title: Deep links
+    blocks:
+      - list:
+          id: routes
+          run: [./tool/routes, list, --json]
+          rowActions:
+            - action: { id: open, openUrl: "myapp://{{row.route}}" }
+      - form:
+          id: link
+          fields: [{ name: url, placeholder: "myapp://home?tab=1" }]
+          actions:
+            - action: { id: open, label: open on device, openUrl: "{{input.url}}" }
+  ```
+- `html` 블록 파일은 그 자체로 완결돼야 한다(CSS·JS 인라인). 자기만의 opaque origin 을 가진 sandbox
+  frame 에서 네트워크 없이(`default-src 'none'`) 돌아, 대시보드·세션 토큰·다른 블록을 읽을 수 없다.
+  데이터는 로드 뒤와 새로 고칠 때마다 `postMessage` 의 `{type: "emu:data", ok, data, text, error,
+  needs, selected}` 로 온다(다시 받으려면 `{type: "emu:ready"}` 를 보낸다). 툴바 액션은
+  `{type: "emu:action", id}` 를 보내 실행한다 — `actions:` 에 적은 id만, 버튼과 같은 확인을 거쳐.
+  파일을 저장하면 frame 이 다시 뜬다.
+
+  ```html
+  <!doctype html>
+  <pre id="out"></pre>
+  <script>
+    addEventListener('message', (e) => {
+      if (e.data?.type === 'emu:data') out.textContent = JSON.stringify(e.data.data, null, 2);
+    });
+    parent.postMessage({ type: 'emu:ready' }, '*');
+  </script>
+  ```
+
+- 토글의 `state` 명령은 `{"on": true|false, "detail"?: "…"}` 을 출력한다(마지막 줄이면 되므로 앞에
+  로그를 찍어도 된다). `on`/`off` 로 바꾸고, 바꾼 뒤 상태를 다시 읽는다.
+- 명령은 프로젝트 루트에서 `EMU_PROJECT`, `EMU_PORT`, 그리고 정해지면 `EMU_DEVICE`, `EMU_PLATFORM`,
+  `EMU_APP_ID` 와 함께 실행된다(기기 hook과 같다). stdin 은 닫힌다. 같은 항목은 동시에 두 번 돌지 않는다.
+- 서버는 설정에 적힌 명령만 실행한다. 요청은 페이지와 항목 id만 보내고 명령은 보내지 않는다.
+  `emu.yaml` 은 요청마다 다시 읽으므로 고치면 재시작 없이 반영된다(파일이 바뀌면 열린 대시보드가
+  새로 고치고, ↻ 로도 다시 읽는다).
+- 실행은 열린 대시보드 모두(CLI에서 실행해도)와 Logs 탭의 `[ext] <page>.<item>` 줄에 남는다. 실패한
+  실행은 출력 끝부분과 함께 error 로 남는다.
+- `pages:` 의 문제(`run` 누락, 모르는 `then`)는 페이지 탭 옆과 `emu pages` 에 표시되고, 잘못된 항목만
+  빠진다.
+
+```bash
+emu pages                          # 페이지·항목·블록 목록(--json 가능)
+emu run templates.sync             # 버튼과 같다: 출력, 그다음 결과 한 줄
+emu run templates.local on         # 토글은 on/off
+emu run templates.local            # on/off 없이 주면 현재 상태
+emu run templates.publish --select name=home_banner --yes   # {{selected.name}}, confirm: true 는 --yes 필요
+emu run links.routes.open --row route=home        # 그 행에서 누른 것처럼 행 버튼 실행
+emu run links.link.open --input url=myapp://home   # 입력값과 함께 form 버튼 실행
+emu block templates.items          # list 가 보여 주는 것을 표로
+emu block templates.changes --select name=home_banner --seg prod   # 그 행을 고른 것처럼 diff
+```
+
+`emu run` 은 명령과 `then:` reload/restart 가 성공하면 0, 명령이 실패하면 그 명령의 종료코드로 끝난다.
+`emu pages` 는 세션 없이도 동작한다. 그때는 `emu.yaml` 을 직접 읽으므로 `emu up` 전에 설정을 확인할 수 있다.
 
 ## 동작 원리
 
@@ -695,7 +840,7 @@ emu memory --diff-across "emu tap --text '상세보기' && emu tap --text '뒤�
 | 파일 | 내용 |
 |------|------|
 | `run.jsonl` | 구조화된 로그(JSONL) |
-| `server.json` | 실행 중 서버 좌표(port/pid) |
+| `server.json` | 실행 중 서버 좌표(port/pid)와 CLI가 보내는 세션 토큰 |
 | `server.log` | 서버 기동 진단 |
 | `shot-*.png` | 스크린샷 |
 | `memory.json` | 학습된 재계산 힌트(lastScreen 등) |
@@ -782,11 +927,14 @@ lib/src/
   assertions.dart      순수 expect/deny 로그 단언 로직
   probe.dart           VM Service logpoint: 라인에서 변수 캡처
   project_config.dart  계층 설정(emu.yaml) 병합
+  pages.dart           emu.yaml `pages:` 대시보드 페이지 해석 + 문제 목록
+  pages_api.dart       페이지 항목 실행(argv / sh -c, timeout, then:) + /api/pages
   project_memory.dart  학습된 재계산 힌트(.emu/memory.json)
   device_manager.dart  기기 탐색 + 에뮬레이터/시뮬레이터 부팅
   device_lease.dart    머신 전역 디바이스 점유(~/.emu/devices)
   session.dart         프로젝트 탐지 + .emu/ 상태
   server.dart          REST + WebSocket + 정적 대시보드 서빙
+  api_guard.dart       서버를 부를 수 있는 쪽 판정(세션 토큰, Host/Origin 검사)
   version.dart         내장 버전 + GitHub 릴리스 체크(--version/doctor/update)
   cli.dart             명령 파싱 + 서버 클라이언트
 web/                   대시보드 (바닐라 HTML/JS/CSS, 빌드 스텝 없음)

@@ -206,7 +206,15 @@ class GitDiff {
     try {
       // Seeding from the real index lets `add -A` re-hash only changed files.
       final real = File(realIndex);
-      if (real.existsSync()) real.copySync(index);
+      if (real.existsSync()) {
+        // Keep the real index's mtime: git trusts a cached stat only for
+        // entries older than the index file, and re-reads "racily clean" ones
+        // (changed within the index's own timestamp). A copy stamped "now"
+        // (Linux) makes a same-size edit made just after the last index write
+        // look unchanged, so the capture would miss it.
+        real.copySync(index);
+        File(index).setLastModifiedSync(real.lastModifiedSync());
+      }
       final env = {'GIT_INDEX_FILE': index};
       // Only the project dir (`.` — git runs with `-C root`): diffs are
       // `--relative` anyway, and the seeded index keeps everything outside

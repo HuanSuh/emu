@@ -84,7 +84,7 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
      `adb shell am start`, iOS는 `xcrun simctl openurl`). `&` 등 쿼리스트링
      특수문자를 따로 이스케이프할 필요 없다. Android는 `adb shell` 이 argv 경계를
      보존하지 않고 기기 셸에 넘기므로, URL을 기기 셸용으로 인용해서 보낸다.
-     - 웹뷰 딥링크처럼 URL을 쿼리 파라미터에 싣는 경우(`szsapp://web?url=...`)
+     - 웹뷰 딥링크처럼 URL을 쿼리 파라미터에 싣는 경우(`myapp://web?url=...`)
        **그 값은 호출자가 percent-encoding 해야 한다.** emu는 문자열을 있는 그대로
        전달할 뿐이다. 인코딩하지 않으면 셸이 아니라 URI 파서 단계에서 잘린다 —
        `url=https://x.co/p?a=1&b=2` 는 앱에서 `url=https://x.co/p?a=1` 과
@@ -132,6 +132,14 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
 
 - `emu status` — 세션/기기/앱 상태 + VM Service URI.
 - `emu open` — 대시보드를 브라우저로 열기.
+- `emu pages` / `emu run <page>.<item> [on|off] [--select <col>=<value>] [--yes]` — 프로젝트가 `emu.yaml` `pages:` 에
+  선언한 도구(대시보드 페이지의 버튼·토글)를 CLI로 실행. 출력 뒤 `✓/✗` 한 줄, 종료코드로 판정(명령이
+  실패하면 그 명령의 종료코드). 토글에 on/off 를 빼면 현재 상태만 출력. `confirm: true` 항목은 `--yes` 가
+  있어야 실행된다. `emu pages` 는 세션이 없으면 `emu.yaml` 을 직접 읽으므로 설정 수정 직후 검증에 쓴다.
+- `emu run <page>.<block>.<action> [--row <col>=<value>] [--input <field>=<value>]` — list 의 행 버튼,
+  form 의 버튼을 CLI로(`{{row.*}}`·`{{input.*}}` 를 채움).
+- `emu block <page>.<block> [--select <col>=<value>] [--seg <name>]` — 페이지의 list(표)·diff 블록이
+  보여 주는 내용을 CLI로. `--select` 가 대시보드에서 행을 고른 것처럼 `{{selected.<col>}}` 을 채운다.
 - `emu settle [--timeout <s>] [--quiet <ms>]` — 애니메이션/리빌드가 멈출 때까지
   대기(`tap`/`shot`/`open-url` 은 이미 기본으로 이걸 하므로, 두 명령 사이에
   독립적으로 끼워 넣거나 기본값보다 세밀하게 조정할 때만 필요).

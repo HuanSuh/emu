@@ -38,6 +38,36 @@ const els = {
   urlOpen: document.getElementById('url-open'),
 };
 
+// ---- session token ----------------------------------------------------------
+// Every API call carries the session token the server wrote into index.html —
+// without it any web page could drive the app through 127.0.0.1. A tab left
+// open across `emu down`/`up` holds the old token: its calls get 401 and the
+// page reloads itself to pick up the new one.
+
+const TOKEN = document.querySelector('meta[name="emu-token"]')?.content || '';
+
+function api(path, opts = {}) {
+  return fetch(path, { ...opts, headers: { ...opts.headers, 'X-Emu-Token': TOKEN } }).then((r) => {
+    if (r.status === 401) sessionChanged();
+    return r;
+  });
+}
+
+// For URLs that can't carry a header (WebSocket, <img>).
+function withToken(url) {
+  return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(TOKEN)}`;
+}
+
+// At most one reload per 10s, so a token that keeps failing can't loop.
+function sessionChanged() {
+  try {
+    const last = Number(sessionStorage.getItem('emu.reloadedAt')) || 0;
+    if (Date.now() - last < 10000) { toast('session token rejected — reload the page'); return; }
+    sessionStorage.setItem('emu.reloadedAt', String(Date.now()));
+  } catch (_) { /* storage blocked: reload anyway */ }
+  location.reload();
+}
+
 const LEVEL_RANK = { debug: 0, info: 1, system: 1, warn: 2, error: 3 };
 const TAG = { error: 'E', warn: 'W', debug: 'D', system: '•', info: 'I' };
 
@@ -137,17 +167,22 @@ function setStatus(s) {
 // ---- websocket --------------------------------------------------------------
 
 function connect() {
-  const ws = new WebSocket(`ws://${location.host}/api/stream`);
+  const ws = new WebSocket(withToken(`ws://${location.host}/api/stream`));
   ws.onopen = () => els.connDot.classList.add('on');
   ws.onclose = () => {
     els.connDot.classList.remove('on');
-    setTimeout(connect, 1000); // auto-reconnect
+    // A refused upgrade (new server, new token) closes like a dropped one;
+    // the session check reloads the page in that case (see api()).
+    api('/api/session').catch(() => {}).finally(() => setTimeout(connect, 1000)); // auto-reconnect
   };
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === 'log') appendEntry(msg.entry);
     else if (msg.type === 'status') setStatus(msg.status);
     else if (msg.type === 'diff') onDiffChanged(); // files edited, or a launch/reload snapshotted the tree
+    else if (msg.type === 'ext') onPageRun(msg);   // a page item started/finished (here, another tab or the CLI)
+    else if (msg.type === 'pages') loadPages();    // emu.yaml changed
+    else if (msg.type === 'ext-watch') onPageWatch(msg); // a file a page block watches changed
   };
 }
 
@@ -156,7 +191,7 @@ function connect() {
 async function action(path, label) {
   toast(`${label}…`);
   try {
-    const r = await fetch('/api/' + path, { method: 'POST' });
+    const r = await api('/api/' + path, { method: 'POST' });
     const j = await r.json();
     toast(`${label}: ${j.message || (j.ok ? 'ok' : 'failed')}`);
   } catch (e) {
@@ -183,7 +218,7 @@ function refreshShot(retries = 0) {
     hideLoading();
     els.screenEmpty.textContent = 'screen unavailable (app not running?)';
   };
-  img.src = `/api/screenshot?inline=1&t=${Date.now()}`;
+  img.src = withToken(`/api/screenshot?inline=1&t=${Date.now()}`);
 }
 
 // Loading placeholder: the emu mark blinking (web/loading.json, a Lottie
@@ -233,13 +268,13 @@ els.shotImg.addEventListener('pointerup', (e) => {
 
 async function tapAt(x, y) {
   toast(`tap ${x},${y}`);
-  try { await fetch(`/api/tap?x=${x}&y=${y}`, { method: 'POST' }); } catch (_) {}
+  try { await api(`/api/tap?x=${x}&y=${y}`, { method: 'POST' }); } catch (_) {}
   scheduleRefresh();
 }
 async function swipeAt(x1, y1, x2, y2) {
   toast(`swipe → ${x2},${y2}`);
   try {
-    await fetch(`/api/swipe?x1=${x1}&y1=${y1}&x2=${x2}&y2=${y2}`, { method: 'POST' });
+    await api(`/api/swipe?x1=${x1}&y1=${y1}&x2=${x2}&y2=${y2}`, { method: 'POST' });
   } catch (_) {}
   scheduleRefresh();
 }
@@ -248,7 +283,7 @@ async function sendText() {
   if (!t) return;
   toast('text →');
   try {
-    const r = await fetch(`/api/text?text=${encodeURIComponent(t)}`, { method: 'POST' });
+    const r = await api(`/api/text?text=${encodeURIComponent(t)}`, { method: 'POST' });
     const j = await r.json();
     toast(j.ok ? 'text sent' : `text: ${j.error || 'failed'}`);
   } catch (e) { toast(`text failed: ${e}`); }
@@ -288,7 +323,7 @@ async function openUrl() {
   els.urlOpen.disabled = true;
   toast(`open ${url}`);
   try {
-    const r = await fetch(`/api/open-url?url=${encodeURIComponent(url)}`, { method: 'POST' });
+    const r = await api(`/api/open-url?url=${encodeURIComponent(url)}`, { method: 'POST' });
     const j = await r.json();
     if (j.ok) rememberUrl(url);
     toast(j.ok ? `opened ${url}` : `open-url: ${j.error || 'failed'}`);
@@ -371,7 +406,7 @@ async function loadDiffFiles() {
   diffEls.base.hidden = diffEls.scope.value !== 'base';
   const query = diffQuery();
   try {
-    const r = await fetch(`/api/diff/files?${query}`);
+    const r = await api(`/api/diff/files?${query}`);
     const j = await r.json();
     // The scope/base changed while this was in flight: its answer is for the
     // old selection — drop it and fetch again (finally) instead of mislabeling.
@@ -432,7 +467,7 @@ async function loadDiffPatch(file) {
   const path = file.path;
   try {
     // The listing's own trees: counts and patch agree, and no re-snapshot per click.
-    const r = await fetch(`/api/diff/file?${diffQuery({ path, ...(diffState.range || {}) })}`);
+    const r = await api(`/api/diff/file?${diffQuery({ path, ...(diffState.range || {}) })}`);
     const j = await r.json();
     if (diffState.current !== path) return; // the user moved on while this loaded
     view.innerHTML = head + (j.error ? `<div class="diff-note">${escapeHtml(j.error)}</div>` : renderPatch(j.patch || ''));
@@ -460,7 +495,9 @@ function renderPatch(patch) {
   return out.join('') || '<div class="diff-note">no textual changes</div>';
 }
 
+let debugTab = 'logs';
 function showTab(name) {
+  debugTab = name;
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.getElementById('log').hidden = name !== 'logs';
   document.getElementById('log-tools').hidden = name !== 'logs';
@@ -476,6 +513,46 @@ diffEls.base.addEventListener('keydown', (e) => { if (e.key === 'Enter') { saveD
 document.getElementById('diff-refresh').onclick = loadDiffFiles;
 loadDiffPrefs();
 loadDiffFiles(); // also decides whether the tab exists (git repo or not)
+
+// Drag [handle] (a pointer press [e]) and call [move] with each pointer
+// event, then [done] once — the panel resizers' common part.
+function dragHandle(handle, e, move, done) {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  handle.setPointerCapture(e.pointerId);
+  handle.classList.add('dragging');
+  document.body.classList.add('resizing');
+  const up = () => {
+    handle.classList.remove('dragging');
+    document.body.classList.remove('resizing');
+    handle.removeEventListener('pointermove', move);
+    handle.removeEventListener('pointerup', up);
+    handle.removeEventListener('pointercancel', up);
+    done();
+  };
+  handle.addEventListener('pointermove', move);
+  handle.addEventListener('pointerup', up);
+  handle.addEventListener('pointercancel', up);
+}
+
+// The screen panel's width, kept for every page; double-click resets it.
+const SCREEN_W_KEY = 'emu.screenWidth';
+function setScreenWidth(px) {
+  document.documentElement.style.setProperty('--screen-w', px ? `${px}px` : '');
+}
+try { setScreenWidth(Number(localStorage.getItem(SCREEN_W_KEY)) || 0); } catch (_) {}
+(() => {
+  const handle = document.getElementById('screen-resize');
+  let width = 0;
+  handle.onpointerdown = (e) => dragHandle(handle, e, (ev) => {
+    width = Math.round(Math.min(Math.max(window.innerWidth - ev.clientX, 240), window.innerWidth - 360));
+    setScreenWidth(width);
+  }, () => { try { localStorage.setItem(SCREEN_W_KEY, String(width)); } catch (_) {} });
+  handle.ondblclick = () => {
+    setScreenWidth(0);
+    try { localStorage.removeItem(SCREEN_W_KEY); } catch (_) {}
+  };
+})();
 
 let toastTimer;
 function toast(text) {
@@ -493,7 +570,7 @@ document.getElementById('btn-cold').onclick = () => action('cold', 'cold restart
 document.getElementById('btn-stop').onclick = () => action('stop', 'stop');
 document.getElementById('btn-shot').onclick = async () => {
   toast('capturing…');
-  const r = await fetch('/api/screenshot', { method: 'POST' });
+  const r = await api('/api/screenshot', { method: 'POST' });
   const j = await r.json();
   toast(j.ok ? `saved ${j.path}` : `shot failed: ${j.error}`);
 };
@@ -501,7 +578,7 @@ document.getElementById('btn-shot').onclick = async () => {
 document.getElementById('btn-clear').onclick = () => {
   state.entries = [];
   render();
-  fetch('/api/logs/clear', { method: 'POST' });
+  api('/api/logs/clear', { method: 'POST' });
 };
 document.getElementById('btn-copy').onclick = () => {
   const text = state.entries.filter(matches).map(e => e.text).join('\n');
@@ -528,6 +605,7 @@ document.querySelectorAll('.lvl').forEach(btn => {
 // Keyboard: r = reload, R = restart (when not typing in the search box).
 document.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT') return; // don't hijack typing in any field
+  if (confirmResolve) return; // the confirm dialog is up
   if (e.key === 'r') action('reload', 'hot reload');
   else if (e.key === 'R') action('restart', 'hot restart');
 });

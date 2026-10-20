@@ -6,6 +6,74 @@
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-20
+
+### Added
+- 대시보드에서 `emu.yaml` 로 정의한 페이지 탭에 `yaml` 배지 — 어디서 온 탭인지 툴팁 없이 보인다.
+- 대시보드 페이지 패널 크기 조정 — 왼쪽 영역의 오른쪽 경계, 아래 영역의 위쪽 경계를 끌어 크기를 바꾼다.
+  크기는 페이지마다 브라우저에 기억되고(본문 대비 비율이라 창 크기가 바뀌어도 유지), 경계를 더블클릭하면
+  기본 크기로 돌아간다.
+- 대시보드 screen 패널 폭 조정 — 왼쪽 경계를 끌어 넓히고(모든 페이지 공통, 브라우저에 기억), 더블클릭하면
+  기본 폭.
+- 대시보드 페이지 — `emu.yaml` 의 `pages:` 로 프로젝트 도구(로컬 템플릿 전환, 검증, 배포 등)를 대시보드
+  탭으로 붙인다. 페이지는 툴바(`action` 버튼·`toggle` 스위치)와 블록(`output`: 마지막 실행 결과)으로
+  이뤄지고, emu 는 설정에 적힌 명령만 실행한다(요청은 항목 id만 보낸다). 명령은 argv 배열(직접 실행) 또는
+  문자열(`sh -c`)이고, 프로젝트 루트에서 `EMU_PROJECT`·`EMU_PORT`·`EMU_DEVICE`·`EMU_PLATFORM`·`EMU_APP_ID`
+  와 함께 실행되며 `timeout`(기본 60초)이 지나면 끊긴다. `then: reload|restart`, `confirm: true`(명령을
+  보여 주고 묻기), 같은 항목 동시 실행 방지. 토글 상태는 `state` 명령이 출력한 `{"on": bool, "detail"?}`.
+  앱 제어와 기기 화면은 모든 페이지에 그대로 있다. 실행은 열린 대시보드 모두와 Logs 탭(`[ext]`)에 남는다.
+  `emu.yaml` 은 요청마다 다시 읽고, 파일이 바뀌면 대시보드가 새로 고친다. 서버 API `GET /api/pages`,
+  `GET /api/pages/<page>/state/<item>`, `POST /api/pages/<page>/run/<item>` (#24).
+- `emu pages`, `emu run <page>.<item> [on|off] [--yes]` — 같은 항목을 CLI로. 종료코드 0 = 명령과 `then:`
+  이 성공, 명령이 실패하면 그 명령의 종료코드. on/off 없이 토글을 주면 현재 상태를 보여 준다.
+  `emu pages` 는 세션이 없어도 `emu.yaml` 을 직접 읽어 보여 준다 (#24).
+- 대시보드 페이지 블록 `list`·`diff` — `list` 는 명령이 출력한 JSON 배열을 표로(열 형식 `text`·`chip`·
+  `count`, 필터, 행마다 `rowActions` 버튼), `diff` 는 명령이 출력한 unified diff를 Changes 탭처럼
+  보여 준다(`segments` 로 비교 기준 전환). 페이지의 첫 list 에서 고른 행이 `{{selected.<col>}}`, 행 버튼의
+  행이 `{{row.<col>}}`, 세그먼트가 `{{seg}}` 를 채운다. 치환은 argv 배열 명령에서만 되고 값은 인자 하나로만
+  들어간다(셸 문자열 명령의 치환, 프로그램 자리(첫 요소)의 치환은 설정 오류). `watch:` 글롭에 맞는 파일이 바뀌면 블록을 다시 불러온다
+  (git 이 무시하는 폴더 포함). 고른 행·세그먼트는 브라우저에 기억. 서버 API
+  `GET /api/pages/<page>/blocks/<block>`, `POST /api/pages/<page>/rows/<list>/<action>` (#24).
+- `emu block <page>.<block> [--select <col>=<value>]... [--seg <name>]` — list·diff 블록 내용을 CLI로.
+  `emu run` 도 `--select` 로 툴바 항목의 `{{selected.<col>}}` 을 채운다 (#24).
+- 대시보드 페이지 블록 `html` — 프로젝트 HTML 파일(`src:`)을 sandbox iframe(`allow-scripts` 만, opaque
+  origin)에 `srcdoc` 으로 띄우고 `default-src 'none'` CSP 를 넣어 네트워크·대시보드·세션 토큰에 닿지 못하게
+  한다. 데이터는 `run:` 출력(JSON 은 값, 아니면 텍스트)을 `postMessage`(`emu:data`)로 받고, `actions:` 에
+  적은 툴바 액션만 `emu:action` 으로 요청할 수 있다(버튼과 같은 확인). 파일이 프로젝트 밖으로 이어지는
+  링크면 거부, 파일을 저장하면 frame 을 다시 띄운다. 서버 API `GET /api/pages/<page>/frames/<block>`.
+  list 의 chip 색은 흔한 상태 단어를 따르고 그 밖의 값은 중립색 (#24).
+- 대시보드 페이지 블록 `form` — 입력 칸(`fields`)과 그 값을 `{{input.<field>}}` 로 읽는 버튼(`actions`).
+  입력값은 브라우저에 기억하고, Enter 는 첫 버튼. 액션은 `run:` 대신 `openUrl:` 로 기기에 딥링크를 열 수
+  있다 — 대시보드 딥링크 입력·`emu open-url` 과 같은 경로(argv, 기기 셸 인용, settle)를 쓰고 끝나면 화면을
+  새로 고친다. 서버 API `POST /api/pages/<page>/forms/<form>/<action>` (#24).
+- `emu run <page>.<block>.<action> [--row <col>=<value>]... [--input <field>=<value>]...` — list 행 버튼과
+  form 버튼을 CLI로. `emu pages` 에 form 칸·버튼 표시 (#24).
+
+### Changed
+- 대시보드 레이아웃: Logs 툴바와 페이지 툴바가 screen 패널 위를 가로지르지 않고 왼쪽 본문 열에만 놓인다.
+  screen 은 어느 페이지에도 속하지 않으므로 상단 바 바로 아래부터 바닥까지 이어진다.
+
+### Fixed
+- Changes 탭·`emu diff` 가 마지막 git 인덱스 갱신 직후에 한 같은 크기의 수정을 놓칠 수 있던 문제(Linux) —
+  스냅샷용 임시 인덱스를 복사할 때 수정 시각이 새로 찍혀 git 의 racy-clean 재확인이 꺼졌다. 이제 원본 시각을 유지한다.
+- 대시보드가 열린 채 `emu down` 하면 서버가 꺼지지 않던 문제 — 종료 중 대시보드 WebSocket을
+  닫다가 예외가 나 `exit` 에 이르지 못했고, 서버(포트)와 `flutter run` 이 그대로 남았다. 이제
+  소켓을 모두 닫고(응답 없는 소켓은 2초까지 기다림) 종료한다.
+- 페이지 명령이 `timeout` 에 걸리면 직접 띄운 프로세스만 끊겨, `sh -c 'a | b'` 나 빌드를 띄우는
+  스크립트의 자손 프로세스는 계속 돌던 문제 — 이제 자손까지 모두 끊는다.
+
+### Security
+- 서버 API를 이 세션의 대시보드와 CLI로 제한 — 지금까지는 API가 인증 없이
+  `Access-Control-Allow-Origin: *` 로 열려 있어, 브라우저에 열린 아무 웹 페이지나 `127.0.0.1:4577` 로
+  reload·tap·`shutdown` 등을 보내고 응답을 읽을 수 있었다. 이제 서버가 시작할 때마다 세션 토큰을 만들어
+  `.emu/server.json`(CLI)과 대시보드 페이지에 넣고, `/api/` 요청은 토큰(`X-Emu-Token` 헤더,
+  WebSocket·이미지는 `token` 쿼리)이 있어야 처리한다. 생존 확인용 `GET /api/status` 만 예외 — 토큰이 없으면 서버가 떠 있다는 것만 답하고, VM Service 주소
+  (그 인증 코드로 앱 안에서 코드를 실행할 수 있다) 등 상태 전체는 토큰이 있어야 준다. `Host` 가
+  `127.0.0.1`/`localhost` 가 아니거나(DNS rebinding) 브라우저 `Origin` 이 대시보드 자신이 아니면 거부하고,
+  CORS 헤더를 없앴다. 대시보드 페이지는 캐시하지 않고 다른 사이트의 frame 안에 뜨지 않는다. 서버가 다시
+  뜨면(새 토큰) 열려 있던 대시보드는 스스로 새로 고친다. 대시보드 페이지는 `Referrer-Policy: no-referrer`
+  로 내려가 링크를 따라가도 토큰이 담긴 주소가 새지 않는다 (#24).
+
 ## [0.11.0] - 2026-10-19
 
 ### Added
@@ -210,7 +278,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/HuanSuh/emu/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/HuanSuh/emu/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/HuanSuh/emu/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/HuanSuh/emu/compare/v0.8.0...v0.9.0
