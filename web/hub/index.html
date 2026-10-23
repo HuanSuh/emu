@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="emu-token" content="__EMU_SESSION_TOKEN__" />
+  <title>emu hub</title>
+  <link rel="icon" type="image/png" href="favicon.png" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+  <link rel="stylesheet" href="hub.css" />
+</head>
+<body>
+  <div class="hub" id="hub">
+    <div class="drawer-back" id="drawer-back"></div>
+    <!-- Outside the drawer: stays at the same spot whether it is open or not. -->
+    <button class="ghost icon" id="drawer-toggle" title="Hide the drawer (⌘\)" aria-label="Toggle drawer" aria-expanded="true">☰</button>
+    <aside class="drawer" id="drawer" aria-label="Sessions">
+      <section class="dsec" data-sec="sessions">
+        <div class="dhead"><span>Sessions</span><span class="count" id="session-count"></span></div>
+        <div class="dlist" id="session-list"></div>
+      </section>
+
+      <section class="dsec fold" data-sec="recent">
+        <button class="dhead toggle" data-fold="recent"><span>Recent projects</span><span class="chev">▸</span></button>
+        <div class="dlist" id="recent-list"></div>
+      </section>
+
+      <section class="dsec fold" data-sec="devices">
+        <button class="dhead toggle" data-fold="devices"><span>Devices</span><span class="chev">▸</span></button>
+        <div class="dlist" id="device-list"></div>
+      </section>
+
+      <div class="dfoot">
+        <button class="ghost ver" id="version" title="Version">v…</button>
+      </div>
+    </aside>
+
+    <main class="main" id="main">
+      <div class="empty" id="empty" hidden></div>
+    </main>
+  </div>
+
+  <div class="rowpop" id="rowpop" role="menu" hidden></div>
+  <div class="modal-back" id="modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="mhead"><b id="modal-title"></b><button class="ghost icon" id="modal-close" aria-label="Close">×</button></div>
+      <div class="mbody" id="modal-body"></div>
+    </div>
+  </div>
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="hub.js"></script>
+</body>
+</html>

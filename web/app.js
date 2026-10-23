@@ -569,6 +569,15 @@ function toast(text) {
 
 // ---- wiring -----------------------------------------------------------------
 
+// Inside `emu hub` (web/hub/): the hub's ☰ button floats over this page's
+// top-left corner while its drawer is closed — make room for it.
+window.addEventListener('message', (e) => {
+  if (e.source !== window.parent || window.parent === window) return;
+  if (e.data?.type !== 'emu-hub-inset') return;
+  const left = Math.max(0, Math.min(80, Number(e.data.left) || 0));
+  document.querySelector('.topbar').style.paddingLeft = left ? `${12 + left}px` : '';
+});
+
 document.getElementById('btn-reload').onclick = () => action('reload', 'hot reload');
 document.getElementById('btn-restart').onclick = () => action('restart', 'hot restart');
 document.getElementById('btn-cold').onclick = () => action('cold', 'cold restart');

@@ -9,11 +9,13 @@ import 'dart:io';
 import 'package:args/args.dart';
 import 'package:http/http.dart' as http;
 
+import 'app_install.dart';
 import 'assertions.dart';
 import 'device_lease.dart';
 import 'device_manager.dart';
 import 'device_setup.dart';
 import 'diff.dart';
+import 'hub.dart';
 import 'launch_config.dart';
 import 'memory_diff.dart';
 import 'models.dart';
@@ -22,6 +24,7 @@ import 'mock.dart';
 import 'pages.dart';
 import 'project_config.dart';
 import 'project_memory.dart';
+import 'registry.dart';
 import 'server.dart';
 import 'session.dart';
 import 'temp_device.dart';
@@ -110,6 +113,12 @@ Future<int> runCli(List<String> argv) async {
         return await _mockCmd(rest);
       case 'down':
         return await _down(rest);
+      case 'ls':
+        return await _ls(rest);
+      case 'hub':
+        return await _hubCmd(rest);
+      case 'app':
+        return await _appCmd(rest);
       case 'help':
       case '--help':
       case '-h':
@@ -292,6 +301,13 @@ Future<int> _update(List<String> args) async {
     return 1;
   }
 
+  // The macOS app, if installed, is rebuilt by the new binary when its sources changed.
+  if (appBundle().existsSync()) {
+    if (!json) print('» updating the macOS app');
+    final app = await Process.run('${repo.path}/emu', ['app', 'install', '--if-changed']);
+    if (app.exitCode != 0 && !json) print('! could not rebuild the app: ${app.stderr}${app.stdout}');
+  }
+
   if (json) {
     print(jsonEncode({'ok': true, 'updated': true, 'from': kEmuVersion, 'to': latest}));
   } else {
@@ -432,7 +448,7 @@ Future<int> _devices(List<String> args) async {
     for (final d in list) {
       final lease = held[d.id];
       print('  ${d.id}  ${d.name}  [${d.platform}${d.emulator ? ', emulator' : ''}]'
-          '${lease != null ? '  (in use: ${lease.project}, ${lease.dashboard})' : ''}');
+          '${lease != null ? '  (in use: ${projectNameOf(lease.project)} — ${lease.project}, ${lease.dashboard})' : ''}');
     }
   }
   if (avds.isNotEmpty) {
@@ -820,11 +836,23 @@ Future<int> _up(List<String> args) async {
       : res.flag('ios')
           ? 'ios'
           : pc.platform;
-  final port = res.wasParsed('port') ? res.option('port')! : '${pc.port ?? _defaultPort}';
+  // `mocks:` — parsed before the port: a session with mocks needs the mock
+  // server's ports free too.
+  final mocks = parseMocks(pc.mocks);
+  // No port asked for: the one this project last used (same dashboard origin,
+  // so the browser keeps its layout), else the first free one from 4577.
+  final port = res.wasParsed('port')
+      ? res.option('port')!
+      : pc.port != null
+          ? '${pc.port}'
+          : '${await pickSessionPort(
+              lastPort: RecentProjects().lastPort(session.projectRoot.path),
+              start: _defaultPort,
+              mockOffset: mocks.enabled && mocks.port == null ? 13 : null,
+            )}';
 
   // `mocks:` — the app's emu_hook routes these hosts to the mock server: tell
   // it where (dart-defines) and let an Android device reach it (adb reverse).
-  final mocks = parseMocks(pc.mocks);
   for (final problem in mocks.problems) {
     stderr.writeln('! emu.yaml $problem');
   }
@@ -926,6 +954,10 @@ Future<int> _up(List<String> args) async {
   }
 
   print('✓ session up — dashboard: ${info.baseUrl}');
+  final hub = await runningHub();
+  print(hub != null
+      ? '  hub: ${hub.url}/#/s/${sessionIdFor(session.projectRoot.path)}'
+      : '  (every session in one place: emu hub)');
   print('  (streaming startup; Ctrl-C to detach, the app keeps running)');
   final state = await _streamUntilReady(info, timeoutSec);
   if (state == 'failed') {
@@ -2598,16 +2630,254 @@ String _table(List<Map<String, dynamic>> rows) {
 }
 
 Future<int> _down(List<String> args) async {
-  const usage = 'usage: emu down [--kill-device] [--keep-device]\n'
-      '   Stop the session. --kill-device also powers off this session\'s device.\n'
+  const usage = 'usage: emu down [--project <path|name|id> | --all] [--kill-device] [--keep-device]\n'
+      '   Stop the session (of this project, or the one --project names; --all: every\n'
+      '   running session, see `emu ls`). --kill-device also powers off its device.\n'
       '   A --temp-device session\'s device is deleted unless --keep-device, which\n'
       '   keeps it as a regular AVD/simulator (delete it yourself when done);\n'
       '   with --kill-device too, it is kept but powered off.';
-  final bad = _checkArgs(args, usage, flags: const {'--kill-device', '--keep-device'});
+  final project = _optionValue(args, '--project');
+  final bad = _checkArgs(
+      [for (final a in args) if (a != project && !a.startsWith('--project=')) a], usage,
+      flags: const {'--kill-device', '--keep-device', '--all', '--project'});
   if (bad != null) return bad;
   final killDevice = args.contains('--kill-device');
   final keepDevice = args.contains('--keep-device');
-  final session = Session.require();
+  if (args.contains('--all') || project != null) {
+    final live = await SessionRegistry().live();
+    final List<SessionEntry> targets;
+    if (args.contains('--all')) {
+      targets = live;
+    } else {
+      final match = matchSessions(live, project!);
+      if (match.length != 1) {
+        stderr.writeln(match.isEmpty
+            ? '✗ no running session matches "$project" — see `emu ls`'
+            : '✗ "$project" matches ${match.length} sessions: '
+                '${match.map((e) => '${e.name} (${e.project})').join(', ')} — use the path or id');
+        return 1;
+      }
+      targets = match;
+    }
+    if (targets.isEmpty) {
+      print('! no running session');
+      return 0;
+    }
+    var code = 0;
+    for (final e in targets) {
+      print('${e.name}  ${e.project}');
+      final c = await _downSession(Session(Directory(e.project)), killDevice: killDevice, keepDevice: keepDevice);
+      if (c != 0) code = c;
+    }
+    return code;
+  }
+  return _downSession(Session.require(), killDevice: killDevice, keepDevice: keepDevice);
+}
+
+// --------------------------------------------------------------------------
+// hub
+// --------------------------------------------------------------------------
+Future<int> _hubCmd(List<String> args) async {
+  const usage = 'usage: emu hub [--no-open] [--stop] [--json]\n'
+      '   One page for every running session (see docs/HUB.md): starts the hub\n'
+      '   (or reuses the running one) and opens it. --stop shuts it down; sessions\n'
+      '   are not affected either way.';
+  final bad = _checkArgs(args, usage, flags: const {'--no-open', '--stop'});
+  if (bad != null) return bad;
+  final json = args.contains('--json');
+  var hub = await runningHub();
+  if (args.contains('--stop')) {
+    if (hub == null) {
+      json ? print(jsonEncode({'ok': true, 'running': false})) : print('! no hub running');
+      return 0;
+    }
+    try {
+      await http.post(Uri.parse('${hub.url}/api/shutdown'),
+          headers: {'X-Emu-Token': hub.token ?? ''}).timeout(const Duration(seconds: 3));
+    } catch (_) {}
+    json ? print(jsonEncode({'ok': true, 'stopped': hub.url})) : print('✓ hub stopped');
+    return 0;
+  }
+  final started = hub == null;
+  if (hub == null) {
+    final (exe, prefix) = _selfInvocation();
+    await Process.start(exe, [...prefix, '__hub'], mode: ProcessStartMode.detached);
+    for (var i = 0; i < 40 && hub == null; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      hub = await runningHub();
+    }
+    if (hub == null) {
+      stderr.writeln('✗ the hub did not start');
+      return 1;
+    }
+  }
+  if (json) {
+    print(jsonEncode({'ok': true, 'url': hub.url, 'started': started}));
+  } else {
+    print('${started ? '✓ hub started' : '✓ hub running'} — ${hub.url}');
+  }
+  if (!args.contains('--no-open')) await _openUrl(hub.url);
+  return 0;
+}
+
+// --------------------------------------------------------------------------
+// app (macOS)
+// --------------------------------------------------------------------------
+Future<int> _appCmd(List<String> args) async {
+  const usage = 'usage: emu app <install|uninstall|open|status> [--open] [--if-changed] [--json]\n'
+      '   The macOS app around `emu hub`: a window with the hub, a menu bar list of\n'
+      '   sessions, notifications, ⌥⌘E. Built here with swiftc into ~/Applications/emu.app.\n'
+      '   install --if-changed: only when installed and its sources changed (emu update).';
+  final sub = args.where((a) => !a.startsWith('-')).firstOrNull;
+  final bad = _checkArgs(args, usage, flags: const {'--open', '--if-changed'}, positional: 1);
+  if (bad != null) return bad;
+  final json = args.contains('--json');
+  final bundle = appBundle();
+  final installed = bundle.existsSync();
+  switch (sub) {
+    case 'install':
+      if (args.contains('--if-changed') && (!installed || installedAppRev() == appSourcesRev())) {
+        if (json) print(jsonEncode({'ok': true, 'skipped': true}));
+        return 0;
+      }
+      final error = await installApp(log: json ? null : print);
+      if (error != null) {
+        json ? print(jsonEncode({'ok': false, 'error': error})) : stderr.writeln('✗ $error');
+        return 1;
+      }
+      if (json) {
+        print(jsonEncode({'ok': true, 'path': bundle.path, 'rev': appSourcesRev()}));
+      } else {
+        print('✓ installed ${bundle.path}');
+        if (await appRunning()) print('  the app is running — quit it (⌘Q) and open it again to use the new build');
+      }
+      if (args.contains('--open')) await Process.run('open', [bundle.path]);
+      return 0;
+    case 'uninstall':
+      if (installed) {
+        await Process.run('osascript', ['-e', 'quit app "${bundle.path}"']);
+        bundle.deleteSync(recursive: true);
+      }
+      json ? print(jsonEncode({'ok': true, 'removed': installed})) : print(installed ? '✓ removed ${bundle.path}' : '! not installed');
+      return 0;
+    case 'open':
+      if (!installed) {
+        stderr.writeln('✗ not installed — run `emu app install`');
+        return 1;
+      }
+      await Process.run('open', [bundle.path]);
+      return 0;
+    case 'status':
+    case null:
+      final rev = installedAppRev();
+      final status = {
+        'installed': installed,
+        'path': bundle.path,
+        'current': installed ? rev == appSourcesRev() : null,
+        'running': installed && await appRunning(),
+      };
+      if (json) {
+        print(jsonEncode({'ok': true, ...status}));
+      } else if (!installed) {
+        print('not installed — `emu app install` builds ~/Applications/emu.app (macOS)');
+      } else {
+        print('${bundle.path}${status['running'] == true ? ' (running)' : ''}'
+            '${status['current'] == true ? '' : ' — older build, `emu app install` to update'}');
+      }
+      return 0;
+    default:
+      stderr.writeln(usage);
+      return 2;
+  }
+}
+
+/// The hidden `__hub` subcommand: run the hub until shut down.
+Future<int> runHub(List<String> args) async {
+  final hub = HubServer();
+  await hub.start();
+  final done = Completer<void>();
+  for (final sig in [ProcessSignal.sigint, ProcessSignal.sigterm]) {
+    sig.watch().listen((_) async {
+      await hub.close();
+      if (!done.isCompleted) done.complete();
+    });
+  }
+  await done.future;
+  return 0;
+}
+
+// --------------------------------------------------------------------------
+// ls
+// --------------------------------------------------------------------------
+Future<int> _ls(List<String> args) async {
+  final bad = _checkArgs(args, 'usage: emu ls [--json]\n'
+      '   Every running emu session on this machine (from ~/.emu/sessions).');
+  if (bad != null) return bad;
+  final live = await SessionRegistry().live();
+  final states = await Future.wait(live.map(_appState));
+  if (args.contains('--json')) {
+    print(jsonEncode({
+      'sessions': [
+        for (var i = 0; i < live.length; i++) {...live[i].toJson(), 'state': states[i]},
+      ],
+    }));
+    return 0;
+  }
+  if (live.isEmpty) {
+    print('no running emu session');
+    return 0;
+  }
+  final home = Platform.environment['HOME'];
+  final rows = [
+    for (var i = 0; i < live.length; i++)
+      [
+        live[i].name,
+        ':${live[i].port}',
+        live[i].deviceId == null
+            ? '—'
+            : '${live[i].deviceName ?? live[i].deviceId}${live[i].platform == null ? '' : ' (${live[i].platform})'}',
+        states[i] ?? '?',
+        _ago(live[i].startedAt),
+        home != null && live[i].project.startsWith('$home/')
+            ? '~${live[i].project.substring(home.length)}'
+            : live[i].project,
+      ],
+  ];
+  final widths = [for (var c = 0; c < 5; c++) rows.map((r) => r[c].length).reduce((a, b) => a > b ? a : b)];
+  for (final r in rows) {
+    print([for (var c = 0; c < 5; c++) r[c].padRight(widths[c]), r[5]].join('  '));
+  }
+  return 0;
+}
+
+/// The app state a session server reports (no token needed for this).
+Future<String?> _appState(SessionEntry e) async {
+  try {
+    final r = await http.get(Uri.parse('${e.dashboard}/api/status')).timeout(const Duration(seconds: 1));
+    return (jsonDecode(r.body) as Map)['state'] as String?;
+  } catch (_) {
+    return null;
+  }
+}
+
+String _ago(DateTime t) {
+  final d = DateTime.now().difference(t);
+  if (d.inDays > 0) return '${d.inDays}d';
+  if (d.inHours > 0) return '${d.inHours}h';
+  if (d.inMinutes > 0) return '${d.inMinutes}m';
+  return '${d.inSeconds}s';
+}
+
+/// `--name value` or `--name=value` in [args].
+String? _optionValue(List<String> args, String name) {
+  for (var i = 0; i < args.length; i++) {
+    if (args[i] == name && i + 1 < args.length) return args[i + 1];
+    if (args[i].startsWith('$name=')) return args[i].substring(name.length + 1);
+  }
+  return null;
+}
+
+Future<int> _downSession(Session session, {required bool killDevice, required bool keepDevice}) async {
   final info = session.readServerInfo();
   if (info == null || !await _ping(info)) {
     print('! no running session');
@@ -2911,7 +3181,8 @@ COMMANDS
                             device discovery mode
      --dds-port <n>        bind the Dart Developer Service to this port
      --no-dds              disable the Dart Developer Service
-     --port <n>            Dashboard port (default 4577)
+     --port <n>            Dashboard port (default: the port this project last
+                           used, else the first free one from 4577)
      --timeout <s>         wait for running/failed before returning (default 240)
      --open                Open the dashboard in the browser
   reload                 Hot reload (reports errors logged just after)
@@ -2992,6 +3263,14 @@ COMMANDS
   down [--kill-device] [--keep-device]
                          Stop the session (optionally power off this session's device;
                          a --temp-device session's device is deleted unless --keep-device)
+     --project <path|name|id>  stop that session instead of this project's
+     --all                 stop every running session
+  ls [--json]            List every running emu session on this machine
+  app <install|uninstall|open|status>
+                         macOS app around the hub (~/Applications/emu.app, built here)
+  hub [--no-open] [--stop]
+                         One page for every session: a drawer of sessions, the
+                         picked one's dashboard beside it (http://127.0.0.1:4576)
 
 ENV
   EMU_PROJECT   Project root override (default: auto-detect via pubspec.yaml)

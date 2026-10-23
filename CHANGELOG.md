@@ -6,6 +6,29 @@
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-23
+
+### Added
+- `emu ls [--json]` — 이 PC 에서 떠 있는 모든 emu 세션(프로젝트·포트·기기·앱 상태·가동 시간). 서버가
+  `~/.emu/sessions/<id>.json` 에 자신을 기록하고(토큰 없음) 종료 시 지운다. 죽은 서버의 기록은 다음 조회 때 정리.
+- `emu down --project <경로|이름|id>` / `--all` — 다른 프로젝트의 세션, 또는 모든 세션 종료.
+- `emu hub [--no-open] [--stop]` — 이 PC 의 모든 세션을 한 페이지에서(`http://127.0.0.1:4576`). 왼쪽 서랍에 세션
+  목록(상태·기기·가동 시간, ⋮ 메뉴: 새 창·경로 복사·Finder·reload/restart·종료), 최근 프로젝트 다시 시작, 기기
+  점유, 하단 버전·새 릴리스 안내. 본문은 고른 세션의 대시보드(최근 3개는 띄워 둔 채). 허브는 세션 서버를 바꾸지
+  않고, `emu up` 은 허브가 떠 있으면 링크만 안내한다.
+- `emu app install|uninstall|open|status` — macOS 앱(`~/Applications/emu.app`, 이 PC 에서 swiftc 로 빌드). 허브 전용 창
+  (⌥⌘E, 세션별 새 창), 메뉴바 세션 목록(수·실패 표시, 최근 프로젝트 시작, 모두 종료), 백그라운드 알림(실패·중단·
+  기동 완료, 누르면 그 세션). 앱이 띄운 허브만 종료 시 끄고 세션은 건드리지 않는다. `emu update` 가 소스가 바뀌면
+  다시 빌드.
+- 세션 허브 설계 문서 `docs/HUB.md`.
+
+### Changed
+- 세션 대시보드의 `frame-ancestors` — 떠 있는 `emu hub` 의 origin 만 허용(허브가 없으면 지금처럼 `'none'`).
+- `emu up` 의 기본 대시보드 포트 — 이 프로젝트가 지난번 쓴 포트(`~/.emu/projects.json`), 없으면 4577 부터 첫 빈
+  포트. 같은 프로젝트는 같은 주소라 브라우저에 기억한 대시보드 배치가 유지된다. `mocks:` 가 있으면 목 서버
+  포트(+13, +14)도 비어 있는 포트를 고른다(전에는 세션끼리 목 서버 포트가 겹칠 수 있었다).
+- `emu devices` 의 점유 표시에 프로젝트 이름을 같이 보인다.
+
 ## [0.13.0] - 2026-10-23
 
 ### Added
@@ -294,7 +317,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/HuanSuh/emu/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/HuanSuh/emu/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/HuanSuh/emu/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/HuanSuh/emu/compare/v0.10.0...v0.11.0

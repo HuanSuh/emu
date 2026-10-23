@@ -164,9 +164,12 @@ class DeviceLeases {
 /// Default liveness: the pid exists AND an emu server answers on the recorded
 /// port. Either alone is fooled by reuse (a recycled pid, or another emu
 /// server that later bound the same port).
-Future<bool> serverAlive(DeviceLease lease) async {
+Future<bool> serverAlive(DeviceLease lease) => serverAliveAt(lease.pid, lease.port);
+
+/// Whether emu server [pid] is alive and answering on [port].
+Future<bool> serverAliveAt(int pid, int port) async {
   try {
-    final kill = await Process.run('kill', ['-0', '${lease.pid}']);
+    final kill = await Process.run('kill', ['-0', '$pid']);
     if (kill.exitCode != 0) return false;
   } catch (_) {
     return false;
@@ -174,7 +177,7 @@ Future<bool> serverAlive(DeviceLease lease) async {
   final client = HttpClient()..connectionTimeout = const Duration(milliseconds: 800);
   try {
     final req = await client
-        .getUrl(Uri.parse('${lease.dashboard}/api/status'))
+        .getUrl(Uri.parse('http://127.0.0.1:$port/api/status'))
         .timeout(const Duration(milliseconds: 800));
     final res = await req.close().timeout(const Duration(milliseconds: 800));
     await res.drain<void>();

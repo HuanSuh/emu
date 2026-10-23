@@ -36,6 +36,7 @@ flutter run --machine  ◄─JSON-RPC─►  engine  ──►  server (127.0.0.
 - [Core workflow: the agent debug loop](#core-workflow-the-agent-debug-loop)
 - [Command reference](#command-reference)
 - [Web dashboard](#web-dashboard)
+- [Session hub](#session-hub)
 - [Dashboard pages](#dashboard-pages)
 - [API mocks](#api-mocks)
 - [How it works](#how-it-works)
@@ -169,7 +170,8 @@ What this loop gives an agent:
 | `emu configs` | List run configs from `.vscode/launch.json` (debug only) + profiles from `emu.yaml`/`emu.local.yaml` |
 | `emu config [--profile <name>]` | Show the merged `emu.yaml` config + learned memory; with `--profile`, preview that named profile's resolved config instead |
 | `emu up [opts]` | Boot device + launch app + start dashboard. Waits for `running`/`failed` + first frame |
-| `emu down [--kill-device]` | End the session. `--kill-device` also powers off **this session's** device (never one another emu session still holds). A `--temp-device` session's device is deleted unless `--keep-device` |
+| `emu down [--kill-device]` | End the session. `--kill-device` also powers off **this session's** device (never one another emu session still holds). A `--temp-device` session's device is deleted unless `--keep-device`. `--project <path\|name\|id>` ends another project's session, `--all` every session |
+| `emu ls [--json]` | Every running emu session on this machine — project, port, device, app state, uptime (from `~/.emu/sessions/`) |
 | `emu stop` | Stop only the app (server stays up) |
 | `emu attach` | Re-connect to the app still running on the device after `flutter` lost it (e.g. another session restarted the adb server → `Lost connection to device`). The server already tries this once by itself — see [`docs/ATTACH.md`](docs/ATTACH.md) |
 | `emu status` | Session/device/app status + VM Service URI |
@@ -207,7 +209,7 @@ What this loop gives an agent:
 | `--share-device` | Use the device even if another emu session holds it (inputs/screenshots of both sessions may interleave) |
 | `--temp-device` | With `--android`/`--ios`: create a throwaway AVD/simulator (`emu_tmp_<project>_<id>`) for this session and delete it on `emu down` |
 | `--boot-avd <name>` | Boot that Android AVD (or take it if already running) and claim it in one step |
-| `--port <n>` | Dashboard port (default 4577, auto-falls back if in use) |
+| `--port <n>` | Dashboard port. Default: the port this project last used, else the first free one from 4577 (with `mocks:`, the mock server's ports must be free too) |
 | `--timeout <s>` | Window to wait for `running`/`failed` (default 240). Raise it for long cold boots |
 | `--open` | Open a browser after launch |
 
@@ -750,6 +752,51 @@ to its starting state is the leak signal this is built to catch.
   token. To call the API yourself:
   `curl -H "X-Emu-Token: $(jq -r .token .emu/server.json)" http://127.0.0.1:4577/api/logs`
 
+## Session hub
+
+`emu hub` opens one page for every emu session running on this machine
+(`http://127.0.0.1:4576`, the next free port if taken):
+
+- **Drawer** (left, `☰` / `⌘\` hides it; `☰` stays put, over the dashboard's top bar, which makes room) — each session with a status dot,
+  name, port, device, state and uptime (a `mock` badge when `mocks:` is on; a
+  version badge when it was started by an older emu). The `⋮` menu: open in a
+  new window, copy the project path, show in Finder, hot reload/restart, stop
+  (`emu down`, after a confirm). **Recent projects** start one again (`emu up`
+  with its `emu.yaml` defaults). **Devices** shows who holds which device.
+  The footer shows the emu version and, when a newer release is out, what
+  changed and the `emu update` command.
+- **Main area** — the picked session's own dashboard. The last 3 picked stay
+  loaded, so switching back is instant and their log streams keep running.
+  `#/s/<id>` in the address picks a session.
+
+The hub only lists and frames sessions — each keeps its own server, and the
+CLI and agents keep talking to it directly. Closing or stopping the hub
+(`emu hub --stop`) leaves every session running. `emu up` prints the hub link
+when a hub is running; it never starts one. A session dashboard can be framed
+only by the running hub's origin (`frame-ancestors`), which cannot read the
+page — the session token stays inside it; actions on a session are made by the
+hub server with the token in that project's `.emu/server.json`, as the CLI does.
+Design: [`docs/HUB.md`](docs/HUB.md).
+
+### macOS app
+
+`emu app install` builds `~/Applications/emu.app` on this machine (`swiftc`
+from the Xcode command line tools — no download, no signing service), a thin
+window around the hub:
+
+- The hub in its own window (⌥⌘E brings it up from anywhere); "Open in a new
+  window" opens one session's dashboard by itself — handy for a second screen.
+- A menu bar item with the session count (`!` when one failed): pick a session,
+  start a recent project, stop all sessions.
+- Notifications while the app is in the background: an app that failed or
+  stopped, a session that came up. Clicking one opens that session.
+- Starts the hub if none is running; quitting stops only a hub it started —
+  never a session. Links out (DevTools) open in the default browser.
+
+`emu app status|open|uninstall`. The app keeps the `PATH` of the shell it was
+installed from (Finder gives apps a minimal one), and `emu update` rebuilds it
+when its sources changed.
+
 ## Dashboard pages
 
 A project can add its own tools to the dashboard — a local-template switch, a
@@ -1034,6 +1081,11 @@ Each server records a lease in `~/.emu/devices/<device-id>.json`
   `--ios`/`--device` when running sessions in parallel.
 - A lease whose server died (crash, `kill -9`) is reclaimed automatically.
 - `--share-device` opts out (no lease is taken). `emu devices` shows who holds what.
+- Every running server is also listed in `~/.emu/sessions/<id>.json` (project,
+  port, device — no token), so `emu ls` shows all sessions and
+  `emu down --project`/`--all` ends one from anywhere. A crashed server's entry is
+  dropped by the next reader. `~/.emu/projects.json` remembers each project's
+  last port, so its dashboard keeps the same address.
 - `--temp-device` (with `--android`/`--ios`) gives the session its own fresh
   device instead: emu creates an AVD (newest installed phone system image for
   the host ABI) or a simulator (newest iOS runtime, base iPhone model), and

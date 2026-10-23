@@ -21,6 +21,7 @@ import 'engine.dart';
 import 'error_parser.dart';
 import 'eval.dart';
 import 'frame.dart';
+import 'hub.dart' show hubFrameAncestors;
 import 'input.dart';
 import 'locate.dart';
 import 'log_store.dart';
@@ -31,9 +32,11 @@ import 'open_url.dart';
 import 'pages.dart';
 import 'pages_api.dart';
 import 'probe.dart';
+import 'registry.dart';
 import 'session.dart';
 import 'settle.dart';
 import 'temp_device.dart';
+import 'version.dart';
 import 'web_assets.g.dart';
 
 /// Options for launching the app, passed from `up`.
@@ -112,13 +115,20 @@ class LaunchOptions {
 }
 
 class EmuServer {
-  EmuServer({required this.session, DeviceLeases? leases})
-      : leases = leases ?? DeviceLeases();
+  EmuServer({required this.session, DeviceLeases? leases, SessionRegistry? registry, RecentProjects? recent})
+      : leases = leases ?? DeviceLeases(),
+        registry = registry ?? SessionRegistry(),
+        recent = recent ?? RecentProjects();
 
   final Session session;
 
   /// Machine-wide device ownership, so two sessions never drive one device.
   final DeviceLeases leases;
+
+  /// Machine-wide list of running sessions (`emu ls`, see `registry.dart`).
+  final SessionRegistry registry;
+  final RecentProjects recent;
+  SessionEntry? _entry;
 
   /// Where `--temp-device` records the devices it creates.
   final TempDevices tempDevices = TempDevices();
@@ -223,6 +233,7 @@ class EmuServer {
 
     _http = await _bind(requestedPort);
     session.writeServerInfo(port: _http!.port, pid: pid, token: token);
+    _register(opts);
     shelf_io.serveRequests(_http!, _handler());
     logStore.system('emu server listening on http://127.0.0.1:${_http!.port}');
     if (opts.mockPort != null) await _startMock(opts);
@@ -242,6 +253,39 @@ class EmuServer {
     // Resolve a device and launch.
     await _launch(opts);
   }
+
+  /// Record this server in the machine-wide registry, and again once its
+  /// device is known. Best effort: a read-only home must not stop a session.
+  void _register(LaunchOptions opts) {
+    final e = _entry = SessionEntry(
+      project: session.projectRoot.path,
+      port: port,
+      pid: pid,
+      platform: opts.platform,
+      mockPort: opts.mockPort,
+      emuVersion: kEmuVersion,
+    );
+    try {
+      registry.write(e);
+    } on FileSystemException {
+      return;
+    }
+    recent.record(e.project, port: e.port, name: e.name);
+    _registrySub = engine.statusStream.listen((s) {
+      final cur = _entry;
+      if (cur == null || _disposed || s.deviceId == null) return;
+      if (s.deviceId == cur.deviceId && s.deviceName == cur.deviceName) return;
+      final next = _entry = cur.withDevice(
+          deviceId: s.deviceId, deviceName: s.deviceName, platform: platformForDeviceId(s.deviceId!));
+      try {
+        registry.write(next);
+      } on FileSystemException {
+        // Keep the earlier entry.
+      }
+    });
+  }
+
+  StreamSubscription<AppStatus>? _registrySub;
 
   /// Reserve [deviceId] for this server. False when another live emu session
   /// holds it (then [_lastConflict] says who). With `--share-device` always
@@ -702,7 +746,7 @@ class EmuServer {
     }
 
     // Static dashboard.
-    return _static(path);
+    return await _static(path);
   }
 
   Future<Response> _api(Request req, String path) async {
@@ -1362,23 +1406,27 @@ class EmuServer {
     }
   }
 
-  Response _static(String path) {
+  Future<Response> _static(String path) async {
     var rel = path == '/' ? 'index.html' : path.substring(1);
-    final bytes = _readWebAsset(rel);
+    final bytes = readWebAsset(rel);
     if (bytes == null) return Response.notFound('not found: $rel');
+    if (rel.startsWith('hub/')) return Response.notFound('not found: $rel'); // the hub's own page
     if (rel == 'index.html') {
+      // Framed only by a running `emu hub` (its origin can't read the page —
+      // the token stays in here), else by nothing.
+      final ancestors = await hubFrameAncestors();
       return Response.ok(injectSessionToken(utf8.decode(bytes), token), headers: {
-        'Content-Type': _contentType(rel),
+        'Content-Type': contentTypeFor(rel),
         // The page carries this session's token: never from cache (a restarted
         // server has a new one), never inside another site's frame.
         'Cache-Control': 'no-store',
-        'Content-Security-Policy': "frame-ancestors 'none'",
-        'X-Frame-Options': 'DENY',
+        'Content-Security-Policy': 'frame-ancestors $ancestors',
+        if (ancestors == "'none'") 'X-Frame-Options': 'DENY',
         // Sub-resource URLs carry ?token=; no link out of the page may leak them.
         'Referrer-Policy': 'no-referrer',
       });
     }
-    return Response.ok(bytes, headers: {'Content-Type': _contentType(rel)});
+    return Response.ok(bytes, headers: {'Content-Type': contentTypeFor(rel)});
   }
 
   Response _json(Object data, {int status = 200}) =>
@@ -1401,6 +1449,9 @@ class EmuServer {
       await setup.removePorts(prepared);
     }
     session.clearServerInfo();
+    await _registrySub?.cancel();
+    final entry = _entry;
+    if (entry != null) registry.remove(entry.id, pid);
     if (_leasedDevice != null) leases.release(_leasedDevice!, pid);
     // Over a copy: closing a socket runs its onDone, which removes it from
     // [_sockets] — iterating the set itself threw there, and the server never
@@ -1417,7 +1468,7 @@ class EmuServer {
 
 /// Read a dashboard asset: dev disk first (EMU_WEB_DIR or the tool's web/),
 /// then the embedded base64 map.
-List<int>? _readWebAsset(String rel) {
+List<int>? readWebAsset(String rel) {
   final devDir = Platform.environment['EMU_WEB_DIR'];
   if (devDir != null) {
     final f = File('$devDir/$rel');
@@ -1447,7 +1498,7 @@ String? _toolWebDir() {
   return null;
 }
 
-String _contentType(String path) {
+String contentTypeFor(String path) {
   if (path.endsWith('.html')) return 'text/html; charset=utf-8';
   if (path.endsWith('.js')) return 'application/javascript; charset=utf-8';
   if (path.endsWith('.css')) return 'text/css; charset=utf-8';

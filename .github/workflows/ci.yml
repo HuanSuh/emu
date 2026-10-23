@@ -37,4 +37,16 @@ jobs:
         # If it drifts from what's committed, the binary would ship stale assets.
         run: |
           dart run tool/bundle_web.dart
-          git diff --exit-code lib/src/web_assets.g.dart
+          git diff --exit-code lib/src/web_assets.g.dart lib/src/macos_sources.g.dart
+
+  macos-app:
+    # emu.app (macos/Emu) is built on users' machines by `emu app install`;
+    # make sure it still compiles and its policy self-test passes.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and self-test
+        run: |
+          swiftc -swift-version 5 -O -target "$(uname -m)-apple-macos12" -o emu-app macos/Emu/*.swift \
+            -framework Cocoa -framework WebKit -framework Carbon -framework UserNotifications
+          ./emu-app --self-test

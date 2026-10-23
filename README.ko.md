@@ -33,6 +33,7 @@ flutter run --machine  ◄─JSON-RPC─►  엔진  ──►  서버 (127.0.0.
 - [핵심 워크플로: 에이전트 디버그 루프](#핵심-워크플로-에이전트-디버그-루프)
 - [명령어 레퍼런스](#명령어-레퍼런스)
 - [웹 대시보드](#웹-대시보드)
+- [세션 허브](#세션-허브)
 - [대시보드 페이지](#대시보드-페이지)
 - [API 목업](#api-목업)
 - [동작 원리](#동작-원리)
@@ -161,7 +162,8 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 | `emu configs` | `.vscode/launch.json` 의 실행 구성 목록 (debug만 실행 가능) + `emu.yaml`/`emu.local.yaml` 의 profile 목록 |
 | `emu config [--profile <name>]` | `emu.yaml` 계층 병합 결과 + 학습된 메모리 표시. `--profile` 주면 그 profile로 resolve된 값을 대신 미리보기 |
 | `emu up [opts]` | 기기 부팅 + 앱 실행 + 대시보드 기동. `running`/`failed` + 첫 프레임까지 대기 |
-| `emu down [--kill-device]` | 세션 종료. `--kill-device` 면 **이 세션의** 기기 전원도 끔(다른 emu 세션이 아직 점유한 기기는 끄지 않음). `--temp-device` 세션의 기기는 `--keep-device` 가 아니면 삭제 |
+| `emu down [--kill-device]` | 세션 종료. `--kill-device` 면 **이 세션의** 기기 전원도 끔(다른 emu 세션이 아직 점유한 기기는 끄지 않음). `--temp-device` 세션의 기기는 `--keep-device` 가 아니면 삭제. `--project <경로\|이름\|id>` 로 다른 프로젝트의 세션, `--all` 로 모든 세션 종료 |
+| `emu ls [--json]` | 이 PC 에서 떠 있는 모든 emu 세션 — 프로젝트·포트·기기·앱 상태·가동 시간(`~/.emu/sessions/`) |
 | `emu stop` | 앱만 정지(서버는 유지) |
 | `emu attach` | `flutter` 가 앱을 놓쳤을 때(예: 다른 세션이 adb 서버를 재시작 → `Lost connection to device`) 기기에 살아 있는 앱에 다시 연결. 서버가 한 번은 자동으로 시도한다 — [`docs/ATTACH.md`](docs/ATTACH.md) |
 | `emu status` | 세션/기기/앱 상태 + VM Service URI |
@@ -199,7 +201,7 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 | `--share-device` | 다른 emu 세션이 점유한 기기라도 사용(두 세션의 입력·스크린샷이 섞일 수 있음) |
 | `--temp-device` | `--android`/`--ios` 와 함께: 이 세션 전용 임시 AVD/시뮬레이터(`emu_tmp_<프로젝트>_<id>`)를 만들고 `emu down` 때 삭제 |
 | `--boot-avd <이름>` | 그 Android AVD를 부팅(이미 실행 중이면 그대로)하고 한 번에 점유 |
-| `--port <n>` | 대시보드 포트(기본 4577, 사용 중이면 자동 폴백) |
+| `--port <n>` | 대시보드 포트. 기본은 이 프로젝트가 지난번 쓴 포트, 없으면 4577 부터 첫 빈 포트(`mocks:` 가 있으면 목 서버 포트도 비어 있어야 함) |
 | `--timeout <s>` | `running`/`failed` 도달까지 대기하는 창(기본 240). 콜드부트가 길면 늘린다 |
 | `--open` | 기동 후 브라우저 열기 |
 
@@ -688,6 +690,39 @@ emu memory --diff-across "emu tap --text '상세보기' && emu tap --text '뒤�
   생존 확인용 `GET /api/status` 만 예외(토큰이 없으면 서버가 떠 있다는 것만 답하고 VM Service 주소는 주지 않는다). `emu down`/`up` 을 거치며 열려 있던 대시보드 탭은 스스로
   새로 고쳐 새 토큰을 받는다. API를 직접 부를 때:
   `curl -H "X-Emu-Token: $(jq -r .token .emu/server.json)" http://127.0.0.1:4577/api/logs`
+
+## 세션 허브
+
+`emu hub` 는 이 PC 에서 떠 있는 모든 emu 세션을 한 페이지에서 보여 준다(`http://127.0.0.1:4576`,
+쓰이고 있으면 다음 빈 포트).
+
+- **서랍**(왼쪽, `☰`·`⌘\` 로 숨기면 여백 없이 대시보드가 넓어지고, `☰` 버튼은 같은 자리에서 대시보드 상단바 위에 뜬다) — 세션마다 상태 점·이름·포트·기기·상태·가동 시간(`mocks:` 가 켜져 있으면
+  `mock`, 옛 emu 로 띄운 세션이면 버전 배지). `⋮` 메뉴: 새 창으로 열기·프로젝트 경로 복사·Finder 에서 보기·
+  hot reload/restart·종료(확인 후 `emu down`). **Recent projects** 에서 다시 시작(그 프로젝트 `emu.yaml`
+  기본값으로 `emu up`), **Devices** 에서 누가 어떤 기기를 잡고 있는지. 맨 아래에 emu 버전, 새 릴리스가 있으면
+  바뀐 것과 `emu update` 명령.
+- **본문** — 고른 세션의 대시보드 그대로. 최근 고른 3개는 띄워 둔 채라 다시 고르면 바로 보이고 로그 스트림도
+  끊기지 않는다. 주소의 `#/s/<id>` 로 세션을 고른다.
+
+허브는 세션을 모아 보여 줄 뿐이다 — 세션마다 서버는 그대로이고 CLI·에이전트는 계속 세션 서버를 직접 부른다.
+허브를 닫거나 끄도 (`emu hub --stop`) 세션은 그대로다. `emu up` 은 허브가 떠 있으면 링크를 보여 주고 허브를
+띄우지는 않는다. 세션 대시보드는 떠 있는 허브의 origin 에서만 프레임에 들어갈 수 있고(`frame-ancestors`), 허브는
+그 페이지를 읽을 수 없어 세션 토큰은 그 안에만 있다. 세션에 대한 동작은 허브 서버가 그 프로젝트의
+`.emu/server.json` 토큰으로 한다(CLI 와 같은 방식). 설계: [`docs/HUB.md`](docs/HUB.md).
+
+### macOS 앱
+
+`emu app install` 이 이 PC 에서 `~/Applications/emu.app` 을 빌드한다(Xcode 명령줄 도구의 `swiftc` — 다운로드·서명
+서비스 없음). 허브를 감싸는 얇은 창이다.
+
+- 허브 전용 창(어디서든 ⌥⌘E). "Open in a new window" 는 세션 대시보드 하나만 담은 창 — 다른 모니터에 띄워 둘 때.
+- 메뉴바에 세션 수(실패한 세션이 있으면 `!`): 세션 고르기, 최근 프로젝트 시작, 모든 세션 종료.
+- 앱이 뒤에 있을 때 알림: 앱 실행 실패·중단, 세션 기동 완료. 누르면 그 세션.
+- 허브가 없으면 띄우고, 종료할 때는 앱이 띄운 허브만 끈다 — 세션은 끄지 않는다. 밖으로 나가는 링크(DevTools)는
+  기본 브라우저로.
+
+`emu app status|open|uninstall`. 설치한 셸의 `PATH` 를 기억하고(Finder 로 뜬 앱의 PATH 는 최소라서),
+`emu update` 가 앱 소스가 바뀌었으면 다시 빌드한다.
 
 ## 대시보드 페이지
 

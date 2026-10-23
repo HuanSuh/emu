@@ -127,6 +127,8 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
      `--all` 로 프레임워크 클래스까지 포함.
 5. `emu down [--kill-device]` — 세션 종료. `--kill-device` 는 이 세션의 기기만 끈다
    (다른 emu 세션이 점유 중이면 끄지 않음). `--temp-device` 세션이면 기기를 삭제한다(`--keep-device` 로 남김).
+   이 PC 의 모든 세션은 `emu ls`, 다른 프로젝트 세션 종료는 `emu down --project <경로|이름>`.
+   사람이 여러 세션을 한 화면에서 보려면 `emu hub`(서랍 + 세션 대시보드) — 에이전트는 계속 CLI 를 쓴다.
 
 ## 기타 명령
 
