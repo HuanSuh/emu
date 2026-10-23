@@ -1,0 +1,12 @@
+name: emu_hook
+description: Routes an app's HTTP traffic for chosen hosts through a running emu session, for `emu mock`.
+version: 0.1.0
+publish_to: none
+repository: https://github.com/HuanSuh/emu
+
+environment:
+  sdk: ^3.0.0
+
+dev_dependencies:
+  lints: ^5.0.0
+  test: ^1.24.0

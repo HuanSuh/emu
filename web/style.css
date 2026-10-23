@@ -162,7 +162,7 @@ button:disabled { opacity: .5; cursor: default; pointer-events: none; }
 .tool-group[hidden] { display: none; }
 /* `.toolbar { display: flex }` outranks the UA's [hidden] rule (dashboard pages hide it). */
 .toolbar[hidden] { display: none; }
-#diff-scope, #diff-base {
+#diff-scope, #diff-base, #mock-active {
   background: var(--bg-alt); color: var(--fg); border: 1px solid var(--border);
   border-radius: 6px; padding: 5px 8px; font-size: 12px;
 }
@@ -341,3 +341,60 @@ table.lst { width: 100%; border-collapse: collapse; font-size: 12px; }
 .form-grid label { color: var(--muted); }
 .form-grid .field { font-family: "SF Mono", Menlo, monospace; }
 .form-actions { grid-column: 1 / -1; display: flex; gap: 6px; }
+
+/* Mocks tab (mocks.js): scenarios | rule editor over traffic. */
+.mocks {
+  flex: 1; min-width: 0; min-height: 0; display: grid;
+  grid-template-columns: 280px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 42%);
+  grid-template-areas: "list edit" "list traffic";
+}
+.mocks[hidden] { display: none; }
+.mock-list {
+  grid-area: list; overflow-y: auto; border-right: 1px solid var(--border);
+  font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; font-size: 12px;
+}
+.mock-edit { grid-area: edit; overflow: auto; min-height: 0; }
+.mock-traffic { grid-area: traffic; display: flex; flex-direction: column; min-height: 0; border-top: 1px solid var(--border); }
+.mscen { display: flex; align-items: center; gap: 6px; padding: 7px 10px 4px; color: #fff; font-weight: 600; }
+.mscen .name { flex: 1; }
+.mscen.on .name::before { content: "● "; color: var(--system); }
+.mscen .src { font-size: 10px; font-weight: 400; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+.mrule, .madd { padding: 4px 10px 4px 18px; cursor: pointer; border-left: 2px solid transparent; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mrule:hover, .madd:hover { background: var(--bg-row-alt); }
+.mrule.active { background: #1c2430; border-left-color: var(--accent); }
+.madd { color: var(--muted); }
+.mrule .m, .mhit .m, .mh-head .m { color: var(--accent); }
+.st { font-variant-numeric: tabular-nums; }
+.st.s2 { color: var(--system); }
+.st.s3 { color: var(--debug); }
+.st.s4 { color: var(--warn); }
+.st.s5 { color: var(--error); }
+.mform { align-items: start; }
+.mform label { color: var(--muted); padding-top: 5px; }
+.mform input, .mform select, .mform textarea {
+  background: var(--bg-alt); color: var(--fg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 5px 8px; font-size: 12px; font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+.mform input[type=number] { width: 110px; }
+.mform textarea { width: 100%; resize: vertical; box-sizing: border-box; }
+.mbody-note { font-size: 11px; margin-top: 3px; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.warnish { color: var(--warn); }
+#mock-new-name { background: var(--bg-alt); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; font-size: 12px; width: 150px; }
+.mtraffic { flex: 1; display: flex; min-height: 0; }
+.mhits {
+  width: 46%; overflow-y: auto; border-right: 1px solid var(--border);
+  font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; font-size: 12px;
+}
+.mhit { display: flex; gap: 8px; padding: 3px 10px; cursor: pointer; white-space: nowrap; border-left: 2px solid transparent; }
+.mhit:hover { background: var(--bg-row-alt); }
+.mhit.active { background: #1c2430; border-left-color: var(--accent); }
+.mhit .p { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.mhit .tag { font-size: 10px; color: var(--system); border: 1px solid #3fb95066; border-radius: 4px; padding: 0 4px; }
+.mhit-detail { flex: 1; overflow: auto; min-width: 0; font-size: 12px; }
+.mh-head { padding: 8px 12px; border-bottom: 1px solid var(--border); font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; word-break: break-all; }
+.mh-actions { margin-top: 6px; }
+.mh-sec { padding: 6px 12px 2px; color: var(--muted); font-size: 11px; }
+.mhit-detail pre { margin: 0; padding: 4px 12px 10px; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
+.mx { color: var(--muted); font-weight: 400; cursor: pointer; padding: 0 4px; float: right; }
+.mx:hover { color: var(--error); }

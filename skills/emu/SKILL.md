@@ -138,6 +138,13 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
   있어야 실행된다. `emu pages` 는 세션이 없으면 `emu.yaml` 을 직접 읽으므로 설정 수정 직후 검증에 쓴다.
 - `emu run <page>.<block>.<action> [--row <col>=<value>] [--input <field>=<value>]` — list 의 행 버튼,
   form 의 버튼을 CLI로(`{{row.*}}`·`{{input.*}}` 를 채움).
+- `emu mock` / `emu mock use <scenario>` / `emu mock off` / `emu mock log [-n N]` — `emu.yaml` `mocks:` 의
+  API 목업. 시나리오를 바꿔 가며 앱이 빈 목록·오류·지연 응답을 받을 때의 화면을 확인한다(재시작 불필요).
+  `mock log [--bodies]` 로 앱이 실제로 보낸 요청과 목업 여부를 본다.
+- `emu mock set <METHOD|*> <path|url> [--status N] [--body …|--body-file F] [--header "k: v"] [--delay ms] [--save <scenario>]`
+  — 요청 하나의 응답을 즉시 지정(시나리오보다 우선, 메모리에만, `unset`/`reset` 으로 제거). 케이스별 자동
+  검증: set → 앱이 다시 요청하게(새로고침 tap 또는 `emu restart`) → `emu find`/`shot` 으로 판정. 앱 쪽 설정(emu_hook 또는 base URL dart-define)은
+  README "API 목업" 참고.
 - `emu block <page>.<block> [--select <col>=<value>] [--seg <name>]` — 페이지의 list(표)·diff 블록이
   보여 주는 내용을 CLI로. `--select` 가 대시보드에서 행을 고른 것처럼 `{{selected.<col>}}` 을 채운다.
 - `emu settle [--timeout <s>] [--quiet <ms>]` — 애니메이션/리빌드가 멈출 때까지

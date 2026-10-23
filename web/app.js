@@ -183,6 +183,8 @@ function connect() {
     else if (msg.type === 'ext') onPageRun(msg);   // a page item started/finished (here, another tab or the CLI)
     else if (msg.type === 'pages') loadPages();    // emu.yaml changed
     else if (msg.type === 'ext-watch') onPageWatch(msg); // a file a page block watches changed
+    else if (msg.type === 'mock') loadMocks();       // scenario switched or saved (here, another tab or the CLI)
+    else if (msg.type === 'mock-hit') onMockHit(msg.hit); // the app made a request through emu
   };
 }
 
@@ -503,7 +505,10 @@ function showTab(name) {
   document.getElementById('log-tools').hidden = name !== 'logs';
   document.getElementById('changes').hidden = name !== 'changes';
   document.getElementById('diff-tools').hidden = name !== 'changes';
+  document.getElementById('mocks').hidden = name !== 'mocks';
+  document.getElementById('mock-tools').hidden = name !== 'mocks';
   if (name === 'changes' && diffState.stale) loadDiffFiles();
+  if (name === 'mocks') loadMocks();
 }
 
 document.querySelectorAll('.tab').forEach(t => { t.onclick = () => showTab(t.dataset.tab); });
@@ -611,7 +616,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 function escapeHtml(s) {
-  return s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 

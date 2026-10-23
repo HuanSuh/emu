@@ -6,6 +6,22 @@
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-23
+
+### Added
+- API 목업 — `emu.yaml` `mocks:` 로 앱의 API 요청에 미리 정한 응답(상태·헤더·본문·지연)을 돌려주고, 나머지는
+  실서버로 그대로 보낸다. 앱 연결은 두 방식: `packages/emu_hook`(앱에 한 줄, `EMU_MOCK` dart-define 이 있을 때만
+  켜지고 그 외 빌드에서는 빠짐 — 지정 호스트만 emu 로 평문 연결하므로 인증서 불필요) 또는 base URL dart-define
+  (`upstream` + `define`, 앱 변경 없음). `emu up` 이 목 서버·dart-define·`adb reverse` 를 준비한다.
+  `emu mock [use <scenario>|off|log]`, 서버 API `GET/POST /api/mock`, `GET /api/mock/log`,
+  `GET /api/mock/hits/<id>`, `PUT/DELETE /api/mock/scenarios/<name>`.
+- `emu mock set <METHOD|*> <path|url> [--status] [--body|--body-file] [--header] [--delay] [--save <scenario>]`,
+  `emu mock unset`, `emu mock reset` — 요청 하나의 응답을 CLI 로 즉시 지정(시나리오보다 우선, 메모리에만).
+  케이스별 자동 검증용. `emu mock log --bodies` 로 요청·응답 본문까지. 서버 API `POST/DELETE /api/mock/overrides`.
+- 대시보드 **Mocks** 탭(Debug) — 시나리오 전환, 규칙 편집(match·status·delay·headers·body, `mocks/<name>.json`
+  에 저장, emu.yaml 시나리오는 읽기 전용), 실시간 트래픽과 요청·응답 본문, 실제 응답을 규칙으로 만드는
+  "mock this response".
+
 ## [0.12.0] - 2026-10-20
 
 ### Added
@@ -278,7 +294,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/HuanSuh/emu/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/HuanSuh/emu/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/HuanSuh/emu/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/HuanSuh/emu/compare/v0.9.0...v0.10.0

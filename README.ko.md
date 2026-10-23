@@ -34,6 +34,7 @@ flutter run --machine  ◄─JSON-RPC─►  엔진  ──►  서버 (127.0.0.
 - [명령어 레퍼런스](#명령어-레퍼런스)
 - [웹 대시보드](#웹-대시보드)
 - [대시보드 페이지](#대시보드-페이지)
+- [API 목업](#api-목업)
 - [동작 원리](#동작-원리)
 - [상태 파일(.emu/)](#상태-파일emu)
 - [디바이스 점유](#디바이스-점유)
@@ -822,6 +823,98 @@ emu block templates.changes --select name=home_banner --seg prod   # 그 행을 
 
 `emu run` 은 명령과 `then:` reload/restart 가 성공하면 0, 명령이 실패하면 그 명령의 종료코드로 끝난다.
 `emu pages` 는 세션 없이도 동작한다. 그때는 `emu.yaml` 을 직접 읽으므로 `emu up` 전에 설정을 확인할 수 있다.
+
+## API 목업
+
+앱의 API 요청에 미리 정한 응답(빈 목록, 500, 느린 응답 …)을 돌려준다. 케이스마다 앱 코드를 고칠 필요가
+없다. `emu up` 이 대시보드 옆에 목 서버를 띄우고, 활성 **시나리오**의 규칙에 맞는 요청은 그 응답을,
+나머지는 실서버로 그대로 보낸다.
+
+앱이 목 서버에 닿는 방법은 둘이다.
+
+| 방식 | 앱 | emu.yaml |
+|---|---|---|
+| **hook** — base URL 하드코딩, 호스트 여러 개 | `emu_hook` 패키지 + `main()` 에 한 줄 | `hosts:` |
+| **base URL** — API 주소를 dart-define 으로 받음 | 변경 없음 | `upstream:` + `define:` |
+
+**hook** — 패키지를 추가하고 `runApp` 전에 설치한다.
+
+```yaml
+# pubspec.yaml
+dependencies:
+  emu_hook:
+    git: { url: https://github.com/HuanSuh/emu, path: packages/emu_hook }
+```
+
+```dart
+import 'package:emu_hook/emu_hook.dart';
+
+void main() {
+  if (kDebugMode && EmuHttp.enabled) EmuHttp.install(); // emu 가 mocks 로 띄운 실행에서만
+  runApp(const App());
+}
+```
+
+`EmuHttp.enabled` 는 `emu up` 이 `--dart-define=EMU_MOCK=…` 을 넘긴 경우에만 참인 컴파일 시점 상수다.
+emu 없이 `flutter run`·IDE 실행·release 빌드에는 영향이 없고, 훅 코드가 빌드에서 빠진다. `mocks.hosts` 의
+호스트는 네트워크 대신 emu 로 연결하되 요청은 그대로(같은 URL·같은 `Host`) 평문 HTTP 로 보내므로 인증서가
+필요 없다. 다른 호스트는 앱의 프록시·인증서 설정 그대로 연결한다. `dart:io` `HttpClient` 기반(`package:http`,
+Dio)은 모두 적용되고, WebView 와 플랫폼 채널 통신은 대상이 아니다.
+
+**base URL** — `emu up` 이 `define:` 이름의 dart-define 을 목 서버 주소로 넘긴다. `upstream:` 은 그 요청이
+원래 가려던 실서버.
+
+```yaml
+mocks:
+  hosts: [api.example.com]           # hook 방식
+  # upstream: https://api.example.com  # base URL 방식 …
+  # define: API_BASE_URL               # … emu 가 API_BASE_URL=http://127.0.0.1:<port> 로 넘김
+  scenarios:                         # 대시보드에서는 읽기 전용
+    empty-list:
+      - match: { method: GET, path: /v1/items* }
+        respond: { status: 200, body: { items: [] } }
+    server-error:
+      - match: { path: /v1/payments* }      # 또는 url: https://api.example.com/v1/*
+        respond: { status: 500, body: "oops", delay: 1500, headers: { x-trace: mock } }
+```
+
+- `match`: `method`(선택)와 `path` 글롭(`*` = 아무 문자열, `?` 를 넣으면 쿼리까지 비교) 또는 `url` 글롭.
+  활성 시나리오에서 처음 맞는 규칙이 응답한다.
+- `respond`: `status`(기본 200), `headers`, `body`(map·list 는 JSON, 문자열은 텍스트) 또는 `file`
+  (프로젝트 기준 경로), `delay`(ms).
+- 시나리오 파일: `mocks/<name>.json`(규칙 목록, 폴더는 `mocks.dir`). 대시보드가 이 파일을 쓰고,
+  emu.yaml 안의 시나리오는 읽기 전용으로 보인다. 응답 본문 파일은 그 폴더 최상위가 아닌 곳(예: `mocks/files/`)에
+  두거나 객체 JSON 으로 둔다.
+- 포트: `mocks.port`, 없으면 대시보드 포트 + 13(4590). http:// 원본은 다음 포트. Android 는 `emu up` 이 두
+  포트의 `adb reverse` 를 걸고, iOS 시뮬레이터는 맥의 loopback 을 그대로 쓴다.
+
+```bash
+emu mock                     # 시나리오, 활성 시나리오, 앱 연결 방식
+emu mock use empty-list      # 맞는 요청은 그 시나리오가 응답
+emu mock off                 # 모두 실서버로
+emu mock log [-n 20]         # 앱이 emu 를 거쳐 보낸 요청(목업 여부 포함)
+emu mock log --bodies        # … 요청·응답 본문까지
+```
+
+**CLI 로 케이스별 검증** — `emu mock set` 은 요청 하나의 응답을 즉시 지정한다. 파일을 쓰지 않고, 어떤
+시나리오보다 먼저(시나리오가 off 여도) 적용된다. 같은 method + path 면 덮어쓰고, `--save <scenario>` 를 주면
+시나리오 파일에도 저장해 나중에 다시 쓸 수 있다. 바뀐 응답이 화면에 보이려면 앱이 다시 요청해야 한다
+(새로고침 동작, 또는 `emu restart`).
+
+```bash
+emu mock set GET '/v1/items*' --body '{"items":[]}'
+emu tap --text 새로고침 && emu find --text '항목이 없습니다' || exit 1
+emu mock set GET '/v1/items*' --status 500 --delay 1500 --header 'x-trace: case-2'
+emu tap --text 새로고침 && emu find --text '다시 시도' || exit 1
+emu mock set POST /v1/orders --body-file cases/order_fail.json --save regression
+emu mock unset GET '/v1/items*'   # 하나 제거, `emu mock reset` 은 전부
+emu mock log --json --bodies     # 앱이 실제로 보낸 요청으로 검증
+```
+
+**대시보드 → Debug → Mocks** 에서 시나리오 목록, 규칙 편집기(match·status·delay·headers·body), 실시간
+트래픽을 본다. 요청을 고르면 요청·응답 본문이 보이고, **mock this response** 로 그 응답을 고른 시나리오
+(또는 툴바에 입력한 이름)의 규칙으로 만든 뒤 고쳐서 저장한다. 시나리오 전환은 앱의 다음 요청부터 바로
+적용된다(재시작 불필요). `hosts`·`upstream`·`define` 변경은 빌드 시점 dart-define 이라 `emu up` 을 다시 해야 한다.
 
 ## 동작 원리
 

@@ -5,6 +5,7 @@ analyzer:
     strict-casts: true
   exclude:
     - lib/src/web_assets.g.dart
+    - packages/**   # own pubspecs; CI analyzes and tests them separately
 
 linter:
   rules:

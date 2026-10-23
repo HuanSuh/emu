@@ -37,6 +37,7 @@ flutter run --machine  ◄─JSON-RPC─►  engine  ──►  server (127.0.0.
 - [Command reference](#command-reference)
 - [Web dashboard](#web-dashboard)
 - [Dashboard pages](#dashboard-pages)
+- [API mocks](#api-mocks)
 - [How it works](#how-it-works)
 - [State files (.emu/)](#state-files-emu)
 - [Device ownership](#device-ownership)
@@ -893,6 +894,105 @@ emu block templates.changes --select name=home_banner --seg prod   # a diff, as 
 `emu run` exits 0 when the command and its `then:` reload/restart succeeded, and with the
 command's own exit code when it failed. `emu pages` works without a session too: it then reads
 `emu.yaml` directly, so a config edit can be checked before `emu up`.
+
+## API mocks
+
+Answer the app's API requests with canned responses — an empty list, a 500, a slow
+endpoint — without editing the app's code for each case. `emu up` starts a mock server
+next to the dashboard; requests that match the active **scenario** get its response,
+everything else goes on to the real server untouched.
+
+The app reaches the mock server one of two ways:
+
+| Mode | The app | emu.yaml |
+|---|---|---|
+| **hook** — base URLs hard-coded, or many hosts | adds `emu_hook` and one line in `main()` | `hosts:` |
+| **base URL** — the API base URL is a dart-define | nothing | `upstream:` + `define:` |
+
+**hook** — add the package (dev builds only use it) and install it before `runApp`:
+
+```yaml
+# pubspec.yaml
+dependencies:
+  emu_hook:
+    git: { url: https://github.com/HuanSuh/emu, path: packages/emu_hook }
+```
+
+```dart
+import 'package:emu_hook/emu_hook.dart';
+
+void main() {
+  if (kDebugMode && EmuHttp.enabled) EmuHttp.install(); // only in a run emu launched with mocks
+  runApp(const App());
+}
+```
+
+`EmuHttp.enabled` is a compile-time constant that is true only when `emu up` passed
+`--dart-define=EMU_MOCK=…` — a plain `flutter run`, the IDE, and release builds are
+untouched, and the hook is compiled out of them. For the hosts in `mocks.hosts` the hook
+connects to emu instead of the network, as plain HTTP with the request otherwise unchanged
+(same URL, same `Host`), so no certificate is involved. Other hosts connect as before, with
+the app's own proxy and certificate settings. It covers everything built on `dart:io`'s
+`HttpClient` (`package:http`, Dio); WebViews and platform-channel networking are not
+covered.
+
+**base URL** — `emu up` sets the dart-define named by `define:` to the mock server's
+address; `upstream:` is where those requests were meant to go.
+
+```yaml
+mocks:
+  hosts: [api.example.com]           # hook mode
+  # upstream: https://api.example.com  # base-URL mode …
+  # define: API_BASE_URL               # … emu sets API_BASE_URL=http://127.0.0.1:<port>
+  scenarios:                         # read-only in the dashboard
+    empty-list:
+      - match: { method: GET, path: /v1/items* }
+        respond: { status: 200, body: { items: [] } }
+    server-error:
+      - match: { path: /v1/payments* }      # or url: https://api.example.com/v1/*
+        respond: { status: 500, body: "oops", delay: 1500, headers: { x-trace: mock } }
+```
+
+- `match`: `method` (optional) and a `path` glob (`*` = anything; with a `?` in it, the
+  query is matched too) or a `url` glob. The active scenario's first matching rule wins.
+- `respond`: `status` (200), `headers`, `body` (a map or list is sent as JSON, a string as
+  text) or `file` (project-relative), `delay` in ms.
+- Scenario files: `mocks/<name>.json` (a list of rules; folder set by `mocks.dir`). The
+  dashboard writes these; emu.yaml's own scenarios are shown read-only. Keep response body
+  files out of that folder's top level (e.g. `mocks/files/`), or make them objects.
+- Port: `mocks.port`, else the dashboard's port + 13 (4590); http:// origins use the next
+  one. On Android `emu up` adds the `adb reverse` for both; an iOS simulator shares the
+  Mac's loopback.
+
+```bash
+emu mock                     # scenarios, the active one, how the app is routed
+emu mock use empty-list      # matching requests get that scenario's answers
+emu mock off                 # everything to the real server
+emu mock log [-n 20]         # the requests the app made through emu, mocked or not
+emu mock log --bodies        # … with request and response bodies
+```
+
+**From the CLI, case by case** — `emu mock set` answers one request right away, before any
+scenario (and with scenarios off), without writing a file. The same method + path replaces
+the previous answer; `--save <scenario>` also writes it to a scenario file to replay later.
+The app has to request again to show a change — trigger a refresh, or `emu restart`.
+
+```bash
+emu mock set GET '/v1/items*' --body '{"items":[]}'
+emu tap --text Refresh && emu find --text 'No items' || exit 1
+emu mock set GET '/v1/items*' --status 500 --delay 1500 --header 'x-trace: case-2'
+emu tap --text Refresh && emu find --text 'Try again' || exit 1
+emu mock set POST /v1/orders --body-file cases/order_fail.json --save regression
+emu mock unset GET '/v1/items*'   # one; `emu mock reset` clears them all
+emu mock log --json --bodies     # what the app actually sent, to assert on
+```
+
+**Dashboard → Debug → Mocks** shows the scenarios, an editor for each rule (match, status,
+delay, headers, body), and the live traffic: pick a request to see its request and response
+bodies, then **mock this response** to turn it into a rule of the scenario you picked (or the
+name typed in the toolbar), edit it, and save. Switching scenarios applies to the app's next
+request — no restart. Changing `hosts`, `upstream` or `define` needs `emu up` again (they are
+build-time dart-defines).
 
 ## How it works
 

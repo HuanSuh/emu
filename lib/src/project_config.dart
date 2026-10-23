@@ -37,6 +37,7 @@ class EmuConfig {
     this.onDeviceReady = const [],
     this.onAppStarted = const [],
     this.pages,
+    this.mocks,
   });
 
   final String? deviceId;
@@ -62,6 +63,9 @@ class EmuConfig {
 
   /// Dashboard pages, raw — `parsePages` in `pages.dart` reads them.
   final Object? pages;
+
+  /// API mocks, raw — `parseMocks` in `mock.dart` reads them.
+  final Object? mocks;
 
   static const empty = EmuConfig();
 
@@ -89,6 +93,7 @@ class EmuConfig {
       onDeviceReady: stringList(m['onDeviceReady']),
       onAppStarted: stringList(m['onAppStarted']),
       pages: m['pages'],
+      mocks: m['mocks'],
     );
   }
 }

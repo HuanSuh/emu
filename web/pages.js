@@ -92,7 +92,7 @@ function showPage(id) {
   pageEls.bar.hidden = debug;
   pageEls.body.hidden = debug;
   if (debug) { showTab(debugTab); return; }
-  for (const id of ['log', 'changes']) document.getElementById(id).hidden = true;
+  for (const id of ['log', 'changes', 'mocks']) document.getElementById(id).hidden = true;
   renderPageBar(page);
   renderPageBody(page);
   refreshToggles(page);

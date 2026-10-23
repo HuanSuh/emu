@@ -33,6 +33,7 @@
         <div class="tabs">
           <button class="tab active" data-tab="logs">Logs</button>
           <button class="tab" data-tab="changes" id="tab-changes" hidden>Changes<span class="badge" id="diff-badge"></span></button>
+          <button class="tab" data-tab="mocks" id="tab-mocks" hidden>Mocks<span class="badge" id="mock-badge"></span></button>
         </div>
         <div class="tool-group" id="log-tools">
           <input id="search" type="text" placeholder="search logs (regex)…" autocomplete="off" />
@@ -63,12 +64,26 @@
           <span class="grow"></span>
           <button id="diff-refresh" title="Re-read the working tree">↻ refresh</button>
         </div>
+        <div class="tool-group" id="mock-tools" hidden>
+          <select id="mock-active" title="Which scenario answers the app's requests"></select>
+          <span class="muted" id="mock-note"></span>
+          <span class="grow"></span>
+          <input id="mock-new-name" type="text" placeholder="scenario name" autocomplete="off" spellcheck="false" />
+          <button id="mock-new" title="New scenario file (a copy, when an emu.yaml scenario is picked)">+ scenario / copy</button>
+          <button id="mock-del" title="Delete the picked rule's scenario file">delete scenario</button>
+          <button id="mock-refresh" title="Re-read emu.yaml and the scenario files">↻</button>
+        </div>
       </div>
       <div class="pagebar" id="pagebar" hidden></div>
       <main id="log" class="log"></main>
       <div class="changes" id="changes" hidden>
         <nav class="file-list" id="diff-files"></nav>
         <section class="diff-view" id="diff-view"></section>
+      </div>
+      <div class="mocks" id="mocks" hidden>
+        <nav class="mock-list" id="mock-list"></nav>
+        <section class="mock-edit" id="mock-edit"></section>
+        <section class="mock-traffic" id="mock-traffic"></section>
       </div>
       <div class="ext-page" id="ext-page" hidden></div>
     </div>
@@ -121,5 +136,6 @@
   <script src="vendor/lottie_light.min.js"></script>
   <script src="app.js"></script>
   <script src="pages.js"></script>
+  <script src="mocks.js"></script>
 </body>
 </html>

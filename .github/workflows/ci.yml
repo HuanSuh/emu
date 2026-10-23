@@ -25,6 +25,13 @@ jobs:
       - name: Run tests
         run: dart test
 
+      - name: emu_hook (app-side package)
+        working-directory: packages/emu_hook
+        run: |
+          dart pub get
+          dart analyze --fatal-infos
+          dart test
+
       - name: Verify embedded web assets are current
         # bundle_web.dart regenerates lib/src/web_assets.g.dart from web/.
         # If it drifts from what's committed, the binary would ship stale assets.

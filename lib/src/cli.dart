@@ -18,6 +18,7 @@ import 'launch_config.dart';
 import 'memory_diff.dart';
 import 'models.dart';
 import 'open_url.dart';
+import 'mock.dart';
 import 'pages.dart';
 import 'project_config.dart';
 import 'project_memory.dart';
@@ -105,6 +106,8 @@ Future<int> runCli(List<String> argv) async {
         return await _runCmd(rest);
       case 'block':
         return await _blockCmd(rest);
+      case 'mock':
+        return await _mockCmd(rest);
       case 'down':
         return await _down(rest);
       case 'help':
@@ -818,6 +821,14 @@ Future<int> _up(List<String> args) async {
           ? 'ios'
           : pc.platform;
   final port = res.wasParsed('port') ? res.option('port')! : '${pc.port ?? _defaultPort}';
+
+  // `mocks:` — the app's emu_hook routes these hosts to the mock server: tell
+  // it where (dart-defines) and let an Android device reach it (adb reverse).
+  final mocks = parseMocks(pc.mocks);
+  for (final problem in mocks.problems) {
+    stderr.writeln('! emu.yaml $problem');
+  }
+  final mockPort = mocks.enabled ? mocks.portFor(int.tryParse(port) ?? _defaultPort) : null;
   if (tempDevice) {
     if (platform == null) {
       stderr.writeln('✗ --temp-device needs --android or --ios');
@@ -835,12 +846,18 @@ Future<int> _up(List<String> args) async {
     if (device != null && !tempDevice && bootAvd == null) '--device=$device',
     if (bootAvd != null) '--boot-avd=$bootAvd',
     for (final p in reversePorts) '--reverse-port=${parsePortMapping(p)!.spec}',
+    if (mockPort != null) ...['--reverse-port=${parsePortMapping('$mockPort')!.spec}',
+        '--reverse-port=${parsePortMapping('${mockPort + 1}')!.spec}'],
     for (final p in forwardPorts) '--forward-port=${parsePortMapping(p)!.spec}',
     for (final c in pc.onDeviceReady) '--on-device-ready=$c',
     for (final c in pc.onAppStarted) '--on-app-started=$c',
     if (flavor != null) '--flavor=$flavor',
     if (target != null) '--target=$target',
     for (final d in dartDefines) '--dart-define=$d',
+    if (mockPort != null) '--mock-port=$mockPort',
+    if (mockPort != null && mocks.hook) ...['--dart-define=EMU_MOCK=127.0.0.1:$mockPort',
+        '--dart-define=EMU_MOCK_HOSTS=${mocks.hosts.join(',')}'],
+    if (mockPort != null && mocks.define != null) '--dart-define=${mocks.define}=http://127.0.0.1:$mockPort',
     for (final f in dartDefineFromFile) '--dart-define-from-file=$f',
     for (final a in res.multiOption('dart-entrypoint-args')) '--dart-entrypoint-args=$a',
     if (res.option('device-timeout') != null)
@@ -2280,6 +2297,213 @@ Future<int> _runCmd(List<String> args) async {
   return exit;
 }
 
+// --------------------------------------------------------------------------
+// mock — canned API responses (see mock.dart, packages/emu_hook)
+// --------------------------------------------------------------------------
+Future<int> _mockCmd(List<String> args) async {
+  const usage = 'usage: emu mock                       scenarios, the active one, CLI overrides\n'
+      '       emu mock use <scenario>        answer matching requests from that scenario\n'
+      '       emu mock off                   scenarios off (CLI overrides still apply)\n'
+      '       emu mock set <METHOD|*> <path|url> [--status N] [--body JSON|text | --body-file F]\n'
+      '                    [--header "k: v"]... [--delay ms] [--save <scenario>]\n'
+      '                                      answer that request now — before any scenario;\n'
+      '                                      the same method+path replaces. --save also writes it\n'
+      '                                      to a scenario file. In memory: gone with the session.\n'
+      '       emu mock unset <METHOD|*> <path|url>   remove one CLI override\n'
+      '       emu mock reset                 remove them all\n'
+      '       emu mock log [-n N] [--bodies] the last requests the app sent through emu\n'
+      '   (all take --json) Needs `mocks:` in emu.yaml; see README "API mocks".\n'
+      '   path is a glob (* = anything; with ? the query is matched too). The app must request\n'
+      '   again to see a change (refresh the screen, or `emu restart`).';
+  final parser = ArgParser()
+    ..addOption('status')
+    ..addOption('body')
+    ..addOption('body-file')
+    ..addMultiOption('header', splitCommas: false)
+    ..addOption('delay')
+    ..addOption('save')
+    ..addOption('count', abbr: 'n')
+    ..addFlag('bodies', negatable: false)
+    ..addFlag('json', negatable: false)
+    ..addFlag('help', abbr: 'h', negatable: false);
+  final (res, code) = _parseOrUsage(parser, args, usage);
+  if (res == null) return code!;
+  final json = res.flag('json');
+  final rest = res.rest;
+  final sub = rest.isEmpty ? 'status' : rest.first;
+  final n = int.tryParse(res.option('count') ?? '50');
+  final ruleOptions = ['status', 'body', 'body-file', 'delay', 'save'].any(res.wasParsed) || res.wasParsed('header');
+  final valid = switch (sub) {
+    'status' => rest.length <= 1,
+    'use' => rest.length == 2,
+    'off' || 'reset' => rest.length == 1,
+    'log' => rest.length == 1 && n != null && n > 0,
+    'set' || 'unset' => rest.length == 3,
+    _ => false,
+  } &&
+      (sub == 'set' || !ruleOptions) &&
+      (sub == 'log' || !res.wasParsed('count') && !res.flag('bodies'));
+  if (!valid) {
+    stderr.writeln(usage);
+    return 2;
+  }
+  final session = Session.require();
+  final info = session.readServerInfo();
+  if (info == null) {
+    // No session: still show what emu.yaml declares (and what's wrong with it).
+    if (sub != 'status') {
+      stderr.writeln('✗ no running session — `emu up` first');
+      return 1;
+    }
+    final config = withScenarioFiles(parseMocks(loadProjectConfig(session.projectRoot.path).mocks),
+        session.projectRoot.path);
+    if (json) {
+      print(jsonEncode({'ok': true, 'session': false, ...config.toJson()}));
+    } else {
+      _printMock(config.toJson(), active: null);
+      print('(no session — `emu up` starts the mock server)');
+    }
+    return config.problems.isEmpty ? 0 : 1;
+  }
+
+  String key(String method, String target) => '${method == '*' ? '*' : method.toUpperCase()} $target';
+  Map<String, dynamic>? r;
+  switch (sub) {
+    case 'set':
+      final rule = _mockRuleFromArgs(rest[1], rest[2], res);
+      if (rule == null) return 2;
+      r = await _postJson(info, '/api/mock/overrides', jsonEncode({'rule': rule, 'save': ?res.option('save')}));
+    case 'unset':
+      r = await _deleteJson(info, '/api/mock/overrides?${Uri(queryParameters: {'key': key(rest[1], rest[2])}).query}');
+    case 'reset':
+      r = await _deleteJson(info, '/api/mock/overrides');
+    case 'use':
+      r = await _postJson(info, '/api/mock', jsonEncode({'scenario': rest[1]}));
+    case 'off':
+      r = await _postJson(info, '/api/mock', jsonEncode({'scenario': null}));
+    case 'log':
+      r = await _getJson(info, '/api/mock/log?n=$n${res.flag('bodies') ? '&bodies=1' : ''}');
+    default:
+      r = await _getJson(info, '/api/mock');
+  }
+  if (r == null) {
+    stderr.writeln('✗ mock: no response from the server');
+    return 1;
+  }
+  if (json) {
+    print(jsonEncode(r));
+    return r['ok'] == true ? 0 : 1;
+  }
+  if (r['ok'] != true) {
+    stderr.writeln('✗ ${r['error']}');
+    return 1;
+  }
+  if (sub == 'log') {
+    final hits = (r['hits'] as List).cast<Map<String, dynamic>>();
+    if (hits.isEmpty) print('(no requests yet)');
+    String clip(Object? s) {
+      final t = '$s'.replaceAll('\n', ' ');
+      return t.length > 300 ? '${t.substring(0, 300)}…' : t;
+    }
+
+    for (final h in hits) {
+      final at = DateTime.parse(h['at'] as String).toLocal().toIso8601String().substring(11, 19);
+      print('$at  ${h['method']} ${h['url']} → ${h['error'] ?? h['status']}'
+          '${h['mocked'] != null ? '  [mock: ${h['mocked']}]' : ''}  ${h['ms']}ms');
+      if (h['requestBody'] != null) print('          > ${clip(h['requestBody'])}');
+      if (h['responseBody'] != null) print('          < ${clip(h['responseBody'])}');
+    }
+    return 0;
+  }
+  _printMock(r, active: r['active'] as String?, port: r['port'] as int?);
+  return 0;
+}
+
+/// The rule `emu mock set <method> <target> …` describes, or null (usage error said).
+Map<String, dynamic>? _mockRuleFromArgs(String method, String target, ArgResults res) {
+  Object? parsed(String text) {
+    try {
+      return jsonDecode(text);
+    } catch (_) {
+      return text; // not JSON: sent as text
+    }
+  }
+
+  if (res.wasParsed('body') && res.wasParsed('body-file')) {
+    stderr.writeln('✗ give --body or --body-file, not both');
+    return null;
+  }
+  Object? body;
+  if (res.option('body') case final b?) body = parsed(b);
+  if (res.option('body-file') case final f?) {
+    final file = File(f);
+    if (!file.existsSync()) {
+      stderr.writeln('✗ no file $f');
+      return null;
+    }
+    body = parsed(file.readAsStringSync());
+  }
+  final status = int.tryParse(res.option('status') ?? '200');
+  final delay = int.tryParse(res.option('delay') ?? '0');
+  if (status == null || delay == null) {
+    stderr.writeln('✗ --status and --delay take numbers');
+    return null;
+  }
+  final headers = <String, String>{};
+  for (final h in res.multiOption('header')) {
+    final i = h.indexOf(':');
+    if (i <= 0) {
+      stderr.writeln('✗ --header "name: value", not "$h"');
+      return null;
+    }
+    headers[h.substring(0, i).trim()] = h.substring(i + 1).trim();
+  }
+  final isUrl = target.startsWith('http://') || target.startsWith('https://');
+  return {
+    'match': {if (method != '*') 'method': method.toUpperCase(), isUrl ? 'url' : 'path': target},
+    'respond': {
+      'status': status,
+      if (headers.isNotEmpty) 'headers': headers,
+      'body': ?body,
+      if (delay > 0) 'delay': delay,
+    },
+  };
+}
+
+void _printMock(Map<String, dynamic> m, {required String? active, int? port}) {
+  final hosts = (m['hosts'] as List).join(', ');
+  print('hosts:   ${hosts.isEmpty ? '(none)' : hosts}${port != null ? '   → 127.0.0.1:$port' : ''}');
+  if (m['upstream'] != null) {
+    print('base:    ${m['define'] != null ? '${m['define']}=http://127.0.0.1:${port ?? '<port>'}' : '(no define)'}'
+        '   → ${m['upstream']}');
+  }
+  print('active:  ${active ?? 'off (real server)'}');
+  final overrides = (m['overrides'] as List? ?? const []).cast<Map<String, dynamic>>();
+  if (overrides.isNotEmpty) {
+    print('▸ CLI overrides   (emu mock set — checked first; emu mock reset clears)');
+    for (final r in overrides) {
+      final match = r['match'] as Map, respond = r['respond'] as Map;
+      print('    ${match['method'] ?? '*'} ${match['url'] ?? match['path']} → ${respond['status']}'
+          '${respond['delay'] != null ? '  +${respond['delay']}ms' : ''}');
+    }
+  }
+  final scenarios = (m['scenarios'] as Map).cast<String, dynamic>();
+  if (scenarios.isEmpty) print('(no scenarios — add mocks.scenarios to emu.yaml)');
+  final sources = (m['sources'] as Map? ?? const {}).cast<String, dynamic>();
+  for (final e in scenarios.entries) {
+    print('${e.key == active ? '▸' : ' '} ${e.key}   (${sources[e.key] ?? 'emu.yaml'})');
+    for (final r in (e.value as List).cast<Map<String, dynamic>>()) {
+      final match = r['match'] as Map, respond = r['respond'] as Map;
+      print('    ${match['method'] ?? '*'} ${match['url'] ?? match['path']} → ${respond['status']}'
+          '${respond['file'] != null ? '  ${respond['file']}' : ''}'
+          '${respond['delay'] != null ? '  +${respond['delay']}ms' : ''}');
+    }
+  }
+  for (final p in (m['problems'] as List)) {
+    stderr.writeln('! emu.yaml $p');
+  }
+}
+
 Future<int> _blockCmd(List<String> args) async {
   final parser = ArgParser()
     ..addMultiOption('select', abbr: 's', splitCommas: false, help: '<col>=<value> of the selected row (repeatable)')
@@ -2543,6 +2767,17 @@ Future<Map<String, dynamic>?> _postJson(ServerInfo info, String path, String bod
   }
 }
 
+Future<Map<String, dynamic>?> _deleteJson(ServerInfo info, String path) async {
+  try {
+    final r = await http
+        .delete(Uri.parse('${info.baseUrl}$path'), headers: info.headers)
+        .timeout(const Duration(seconds: 30));
+    return jsonDecode(r.body) as Map<String, dynamic>;
+  } catch (_) {
+    return null;
+  }
+}
+
 Future<void> _openUrl(String url) async {
   if (Platform.isMacOS) {
     await Process.run('open', [url]);
@@ -2600,7 +2835,8 @@ Future<int> runServe(List<String> args) async {
     ..addMultiOption('reverse-port', splitCommas: false)
     ..addMultiOption('forward-port', splitCommas: false)
     ..addMultiOption('on-device-ready', splitCommas: false)
-    ..addMultiOption('on-app-started', splitCommas: false);
+    ..addMultiOption('on-app-started', splitCommas: false)
+    ..addOption('mock-port');
   final res = parser.parse(args);
   final session = Session.require(start: res.option('project'));
   final server = EmuServer(session: session);
@@ -2630,6 +2866,7 @@ Future<int> runServe(List<String> args) async {
         onDeviceReady: res.multiOption('on-device-ready'),
         onAppStarted: res.multiOption('on-app-started'),
         profile: res.option('profile'),
+        mockPort: int.tryParse(res.option('mock-port') ?? ''),
       ),
     );
   } catch (e, st) {
