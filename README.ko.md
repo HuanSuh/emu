@@ -663,6 +663,36 @@ emu memory --diff-across "emu tap --text '상세보기' && emu tap --text '뒤�
 원래 상태로 돌아와야 할 왕복을 반복했는데 계속 늘어나는 클래스가 있다면 그게
 이 커맨드가 잡으려는 누수 신호다.
 
+### report — emu 에 버그·아이디어 알리기
+
+`emu report` 는 지금 있는 곳(CLI, 대시보드의 **⚑ Report** 버튼, 허브 서랍)에서 바로
+[github.com/HuanSuh/emu](https://github.com/HuanSuh/emu/issues) 에 이슈를 보낸다. 보낼 이슈 전체를 먼저 보여 주고,
+확인한 뒤에만 보낸다.
+
+```bash
+emu report bug "reload 후 화면이 그대로" -m "1. 수정 … 2. r … 3. …" --attach logs --attach errors
+# → 제목·라벨·본문을 보낼 그대로 찍고: Send this issue? [y/N]
+emu report feature "…" --body-file idea.md      # 또는 -m; --body-file - 는 stdin
+emu report question "…" --dry-run               # 보여 주기만; 초안을 남김 → emu report --send <id>
+emu report --mine                               # 내가 보낸 리포트와 상태 (open · fixing · fixed · closed)
+```
+
+- **종류** — `bug` / `feature` / `question`. 저장소에 라벨이 있고 붙일 권한이 있으면 `bug` / `enhancement` /
+  `question` 라벨을 붙인다.
+- **첨부** — 고른 것만: `--attach logs[:N]`(최근 N줄, 기본 200), `errors`(최근 예외 배너), `shot`(지금 화면),
+  파일 경로(텍스트는 본문에, 이미지는 스크린샷으로).
+- **환경 정보** — 끝에 emu 버전·설치 방식, OS, Flutter/Dart, 기기 종류(`android · emulator · Android 14 (API 34)` —
+  기기 이름·id 는 넣지 않음), 앱 상태가 붙는다.
+- **가리기** — 미리 보기 전에 전부: 홈·프로젝트 경로(`~`, `<project>`), 프로젝트·앱 이름(`<project>`, `<app-id>`),
+  토큰·키(`ghp_…`, `sk-…`, JWT, `Bearer …`, `password=…`, `?token=`), URL 자격 증명, VM Service 인증 코드, 이메일.
+- **보내기** — `gh` 가 github.com 에 로그인돼 있으면 `gh issue create`, 아니면 미리 채운 GitHub 작성 화면을
+  브라우저로 열어 거기서 제출한다.
+- **스크린샷**은 GitHub API 로 올릴 방법이 없어 본문에 넣지 않는다. 이슈가 만들어진 뒤 코멘트에 붙여 넣는다:
+  CLI(macOS)는 이미지를 클립보드에 넣고 이슈를 열어 주고, 대시보드에는 **Copy image** 버튼이 있다.
+- 같은 리포트를 10분 안에 다시 보내면 새로 만들지 않고 앞서 만든 이슈를 알려 준다.
+- `--json` 은 묻지 않는다: `--dry-run` 으로 미리 보고 `--yes` / `--send <id>` 로 보낸다.
+- Claude Code 에서는 `emu:report` 스킬이 대화로 이 과정을 진행한다.
+
 ## 웹 대시보드
 
 `emu up` 이 `http://127.0.0.1:4577` 에 대시보드를 띄운다:
@@ -673,7 +703,8 @@ emu memory --diff-across "emu tap --text '상세보기' && emu tap --text '뒤�
   하단 입력창으로 포커스된 필드에 텍스트 입력(유니코드). 좌표 변환은 대시보드가 알아서 한다
   (에이전트가 겪는 스크린샷 배율 함정이 사람에겐 없다). `auto` 체크 시 주기적으로 새로고침.
   앱이 running 이 되면 첫 화면은 자동으로 불러온다. 패널 왼쪽 경계를 끌어 폭을 바꿀 수 있다(브라우저에
-  기억, 더블클릭하면 기본 폭).
+  기억, 더블클릭하면 기본 폭). 기기를 보지 않는 작업에서는 패널 머리의 ›(또는 `s` 키)로 오른쪽 끝의 좁은 띠로 접는다:
+  페이지가 그 폭을 쓰고, 띠를 눌러(또는 `s`) 펼 때까지 스크린샷을 받지 않는다(auto 도 멈춤). 접힘 상태는 브라우저에 기억.
 - **딥링크 입력** — 텍스트 입력창 아래에 URL을 넣고 `open`(또는 Enter)하면 `emu open-url` 과
   같이 기기에 보내고, 화면 전환이 끝나면 스크린샷을 새로 고친다. 최근 10개는 브라우저별로 기억.
 - **Changes 탭**(Logs 옆, git 프로젝트만) — 바뀐 파일 목록(+/− 줄 수)과 diff를 네 범위로 본다:
@@ -773,28 +804,118 @@ pages:
 | `toolbar` | `action`(버튼)과 `toggle`(스위치) |
 | `run` / `state` / `on` / `off` | 명령. `[program, arg, …]` 은 직접 실행, 문자열은 `sh -c`. 상대 경로 프로그램(`./tool/x`)은 프로젝트 루트 기준 |
 | `then` | 명령이 성공하면 `reload` 또는 `restart`(기본 `none`) |
-| `confirm` | 대시보드가 실행할 명령을 그대로 보여 주고 묻는다. `emu run` 은 `--yes` 필요 |
+| `confirm` | 먼저 묻는다: `true`, 문자열, 또는 맵(아래). 확인 창은 실행할 명령을 늘 그대로 보여 준다. `emu run` 은 터미널에서 y/N 을 묻고, `--yes` 면 건너뛴다 |
 | `timeout` | 이 초가 지나면 명령을 끊는다(기본 60) |
-| `blocks` | 페이지 본문의 패널. `area: left \| main \| bottom` 으로 배치(기본: list 왼쪽, diff 가운데, output 아래). 왼쪽 영역의 오른쪽 경계, 아래 영역의 위쪽 경계를 끌어 크기 조정 — 페이지마다 브라우저에 기억, 더블클릭하면 기본 크기 |
+| `auto` | 툴바 액션: 프로젝트 파일이 바뀌면 스스로도 실행 — `{watch: ["tpl/**"], debounce: 400, on: false}`(아래) |
+| `blocks` | 페이지 본문의 패널. `area: left \| main \| bottom` 으로 배치(기본: list 왼쪽, diff 가운데, output 아래). 왼쪽 영역의 오른쪽 경계, 아래 영역의 위쪽 경계를 끌어 크기 조정 — 페이지마다 브라우저에 기억, 더블클릭하면 기본 크기. 영역 첫 블록 머리의 꺾쇠로 그 영역을 블록 제목이 적힌 띠로 접으면(left 는 세로, main·bottom 은 가로) 나머지가 자리를 나누고, 띠를 누르면 그 자리에서 펼쳐진다. 접힌 영역의 블록은 펼 때 불러온다 — 선택·체크를 가진 list 는 그대로 불러온다 |
 
 | 블록 | 명령이 출력하는 것 | 보여 주는 것 |
 |------|--------------------|--------------|
-| `list` | 객체의 JSON 배열 | 표. `columns` 는 `name` 또는 `name:text\|chip\|count`(기본: 첫 행의 모든 필드), 필터 입력, 행마다 `rowActions` 버튼. 페이지의 첫 list 가 선택을 가진다: 행을 고르면 `{{selected.<col>}}` 이 채워진다 |
-| `diff` | unified diff | Changes 탭과 같은 보기. `segments` 를 주면 고른 값이 `{{seg}}` 를 채우는 전환 버튼 |
-| `html` | 무엇이든 — JSON 은 값으로 전달 | 프로젝트 HTML 파일(`src:`)을 sandbox frame 에 띄운다. 표나 diff로 보이기 어려운 것(값 트리, 이미지 미리보기)용. `run:` 은 생략 가능, `actions: [sync]` 는 frame 이 요청할 수 있는 툴바 액션 |
-| `form` | — | 라벨 붙은 입력 칸(`fields: [{name, label, placeholder, default}]`)과 그 값을 `{{input.<field>}}` 로 읽는 `actions` 버튼. 입력한 값은 브라우저별로 기억 |
-| `output` | — | 이 페이지의 마지막 실행 — 명령, 종료 코드, 시간, 출력 |
+| `list` | 객체의 JSON 배열 | 표. `columns` 는 `name` 또는 `name:text\|chip\|count`(기본: 첫 행의 모든 필드), 필터 입력, 행마다 `rowActions` 버튼. 페이지의 첫 list 가 선택을 가진다: 행을 고르면 `{{selected.<col>}}` 이 채워진다. 긴 text 값은 칸 너비 — 기본 32em, `name:text:40em`(`em`·`ch`·`px`) — 에서 `…` 로 줄이고 마우스를 올리면 전체를 보인다. `:start` 는 앞을 줄인다(경로용, `path:text:start` → `…/4.49.1/home.json`). 행 버튼 열은 표가 가로로 넘쳐도 오른쪽에 붙어 있다. 칸 머리를 누르면 그 칸으로 정렬(오름차순 → 내림차순 → 명령이 낸 순서, 숫자는 숫자로, `1.2.10` 같은 버전은 `1.2.9` 뒤로)하고, `sort: minVer:desc` 로 처음 순서를 정한다. 선택을 만드는 list 에서는 ↑·↓ 로 위아래 행을 고르고(따라오는 블록은 키를 멈춘 뒤 한 번만 불러온다), `/` 로 필터에 간다(↓ 나 Enter 로 돌아옴) |
+| `diff` | unified diff — 아니면 줄 번호 붙은 텍스트로 | Changes 탭과 같은 보기. `segments` 를 주면 고른 값이 `{{seg}}` 를 채우는 전환 버튼. `{values: [prod, stage, dev], optional: true, hide: "{{selected.env}}"}` 로 주면 처음엔 아무것도 고르지 않고 고른 버튼을 다시 누르면 꺼지며(`{{seg}}` 는 빈 값 — diff 대신 파일 자체를 보일 때), 고른 행의 `env` 와 같은 세그먼트는 보이지 않는다 |
+| `html` | 무엇이든 — JSON 은 값으로 전달 | 프로젝트 HTML 파일(`src:`)을 sandbox frame 에 띄운다. 표나 diff로 보이기 어려운 것(값 트리, 이미지 미리보기)용. `run:` 은 생략 가능, `actions:` 는 frame 이 실행할 수 있는 툴바 액션(`- sync`)과 이 블록만의 액션(`- action: {…}`), `inputs:` 는 frame 이 넘길 수 있는 `{{input.*}}` 이름 |
+| `form` | — | 라벨 붙은 입력 칸(`fields: [{name, label, placeholder, default}]`)과 그 값을 `{{input.<field>}}` 로 읽는 `actions` 버튼. 입력한 값은 브라우저별로 기억. `note:` 는 제목 아래 설명 한 줄 |
+| `panel` | — | 입력 칸 없는 form: 제목, 선택 `note:`, `actions` 버튼 줄 — 버튼을 툴바 대신 영역 안에 묶는다. 그 버튼에서 `{{input.*}}` 는 설정 오류(`fields` 를 빼거나 `[]` 로 둔 `form` 도 같다) |
+| `output` | — | 이 페이지의 실행 — 도는 중이면 출력이 오는 대로 쌓이고, 끝나면 명령·종료 코드·시간·출력. 주소(`https://…`)는 새 탭으로 여는 링크(Logs 탭도). 머리 메뉴로 최근 10개 실행을 다시 본다(이 탭에만 둔다) |
 
 - 치환: `{{selected.<col>}}` — 고른 행, 선택을 만드는 list 를 뺀 어디서나. `{{row.<col>}}` — 행 버튼의
-  그 행. `{{seg}}` — diff 의 세그먼트. `{{input.<field>}}` — form 의 입력 칸, 그 form 의 버튼에서. `[program, arg, …]` 명령에서만 되고, 값은 자기 인자 안에만
+  그 행. `{{seg}}` — diff 의 세그먼트. `{{input.<field>}}` — form 의 입력 칸(그 form 의 버튼에서), 또는 html 블록이 자기 액션에 넘기는 값(`inputs:` 에 적은 이름만). `[program, arg, …]` 명령에서만 되고, 값은 자기 인자 안에만
   들어간다: 공백·`;`·`$(…)` 가 든 행 값도 인자 하나로 프로그램에 가고 실행되지 않는다. 셸 문자열
   명령에 치환을 쓰거나 프로그램 자리(첫 요소)에 치환을 쓰면 설정 오류다 — 값은 명령에 넘길 것만 정하고,
   무엇을 실행할지는 정하지 못한다.
 - chip 색은 흔한 상태 단어(`on`/`off`, `changed`, `error` …)를 따르고, 그 밖의 값은 중립색이다.
 - `{{selected.*}}` 를 읽는 항목은 행을 고르기 전까지 비활성. `confirm: true` 항목은 값을 채운 명령을
   보여 준다.
+- `confirm:` 으로 이 액션이 무엇을 하는지 말하고, 실행 전에 무엇이 바뀌는지 미리 보여 줄 수 있다:
+
+  ```yaml
+  - action:
+      id: stage
+      label: stage 배포
+      run: [./tool/deploy, --env, stage, "{{selected.name}}"]
+      confirm:
+        title: 배포 저장소 stage 브랜치에 push 할까요?
+        message: "{{selected.name}} 을 배포 저장소의 stage 브랜치에 바로 push 합니다."
+        danger: true            # Run 버튼을 빨간색으로, 포커스는 Cancel — Enter 만으로는 실행 안 됨
+        button: push            # Run 버튼 글자
+        preview: [./tool/deploy, --env, stage, --dry-run, "{{selected.name}}"]
+  ```
+
+  | 키 | 뜻 | 기본 |
+  |----|----|------|
+  | (문자열) | `confirm: "…"` 는 `message` 만 준 것 | — |
+  | `title` | 확인 창 제목 | `Run “<label>”?` |
+  | `message` | 제목 아래 설명 | 없음 |
+  | `danger` | 되돌리기 어려운 작업: Run 버튼이 빨간색, 포커스는 Cancel | `false` |
+  | `button` | Run 버튼 글자 | `Run` |
+  | `preview` | 확인 창을 열기 전에 돌리는 명령. stdout 을 확인 창에 보여 준다 | 없음 |
+  | `allowOnPreviewError` | preview 가 실패해도 Run 을 허용 | `false` |
+
+  `title`·`message` 에는 명령과 같은 자리표시자를 쓸 수 있고, HTML 이 아닌 텍스트로만 들어간다. 실행할
+  명령은 설명 아래 접힌 채로 늘 확인 창에 있다 — 확인 창에 보이는 것이 실제로 실행되는 것이다. preview
+  출력이 unified diff 면 diff 블록처럼, 객체의 JSON 배열이면 표로, 아니면 텍스트로 보인다. preview 가
+  실패하면(0 이 아닌 종료, 시간 초과) 그 출력을 보여 주고 Run 을 막는다. 모르는 키나 잘못된 타입은 설정
+  문제로 `emu pages` 에 나온다.
+- **체크한 행.** list 에 `check: true` 를 주면 체크박스 열·전체 선택·개수가 생긴다. 고른 행(`selected`)은
+  지금처럼 다른 블록이 따라가는 한 행이고, 체크한 행은 여러 행에 한 번에 하는 일에 쓴다:
+
+  ```yaml
+  - list:
+      id: templates
+      run: [./tool/tpl.sh, list, --json]
+      key: name
+      check: true
+      rowActions:
+        - action: { id: push, run: [./tool/tpl.sh, push, "{{row.name}}"], bulk: true }
+  - form:
+      id: deploy
+      fields: [{ name: env, default: stage }]
+      actions:
+        - action:
+            id: stage
+            run: [./tool/tpl.sh, deploy, --env, "{{input.env}}", "{{checked.name...}}"]
+            needs: checked        # 하나도 체크하지 않으면 비활성
+            confirm: true
+  ```
+
+  `{{checked.<col>...}}` 은 인자 하나 전체여야 하고, 체크한 행 수만큼 인자로 펼친다(`deploy a b c`,
+  0개면 인자 없음) — 값을 쪼개거나 실행하지 않는 건 그대로다. `{{checked.<col>}}` 은 쉼표로 이은 인자
+  하나(`--names a,b,c`), `{{checked.count}}` 는 개수. 버튼(툴바·행·form action)에서만 쓰고, 뒤의 둘은
+  그 버튼 `confirm:` 의 title·message 에도 쓸 수 있다(`템플릿 {{checked.count}}개를 배포할까요?`). 페이지에
+  `check:` list 가 둘 이상이면 `{{templates.checked.name...}}`, `needs: templates.checked` 처럼 list 를
+  밝힌다. 체크 상태는 브라우저별로 기억하고, 목록을 새로 받았을 때 없어진 key 는 버린다. 도구가 상태를
+  가질 때(CLI·다른 탭과 공유)는 `check: {column: upload, toggle: [./tool/tpl.sh, pick, --toggle, "{{row.name}}"]}`:
+  행의 `upload` 값이 true/yes/on/1/checked 면 체크된 것이고, 누르면 그 행으로 `toggle` 을 돌린 뒤 목록을
+  다시 받는다. `bulk: true` 인 행 버튼은 목록 머리에도 생겨 체크한 행마다 차례로 한 번씩 돌리고, 하나
+  실패하면 멈춘다(`confirm: true` 면 한 번만 묻는다).
+- **폴더 보기.** list 에 `tree: path`(또는 `tree: [env, path]`)를 주면 폴더로 그린다. 그 열 값들을 차례로 이어
+  `/` 로 나눈 것이 행의 경로다 — `prod / tpl / home / 4.48.0 / home_banner.txt`. 마지막 조각이 행 이름, 그 앞은
+  폴더이고, 폴더는 아래 행 수를 보이며 누르면 접고 편다. 행은 칸·행 버튼·선택·체크가 평평한 표와 같고, 폴더
+  체크박스는 그 아래 행을 한 번에 체크한다. 고른 행이 든 폴더를 접으면 폴더에 표시가 남는다. 처음에는 모두
+  접힘 — `tree: {columns: [env, path], open: 1}` 은 첫 단계를 펼친다 — 이고, 펼친 폴더는 브라우저별로 기억한다.
+  필터는 경로에도 맞추고, 맞는 행과 그 위 폴더를 펼쳐 보인다. 트리 머리는 폴더·행을 이름으로, 다른 칸 머리는
+  폴더 안의 행을 그 칸으로 정렬한다. `columns:` 를 주지 않으면 경로 열은 칸으로 다시 보이지 않는다.
+  `emu block` 은 평평한 표로, 경로 열을 앞에 둔다.
+- **저장하면 실행.** 액션에 `auto:` 를 주면 감시하는 프로젝트 파일이 바뀔 때도 실행된다 — 템플릿을 저장하면
+  누르지 않아도 sync 와 reload 까지 된다:
+
+  ```yaml
+  - action:
+      id: sync
+      run: [./tool/tpl.sh, sync]
+      then: reload
+      auto:
+        watch: ["tpl/**/*.txt"]   # 프로젝트 기준 glob
+        debounce: 400             # 변경이 멈추고 기다리는 ms: 연달아 저장하면 한 번
+  ```
+
+  버튼 옆 ⚡ 로 켜고 끈다(`on: true` 면 켜진 채 시작). 스위치는 서버가 프로젝트별로 기억하고(`.emu/pages_auto.json`)
+  감시도 서버가 하므로 대시보드를 닫아도 동작한다. 실행 중에 바뀐 파일이 있으면 끝난 뒤 한 번 더 돌고, 그 한 번 더
+  도는 동안의 변경은 세지 않는다 — 감시하는 파일을 스스로 쓰는 도구도 두 번 돌고 멈춘다. 실행은 누른 것과 같이 output
+  블록과 Logs 탭에 남고(`[ext] … (auto: tpl/a.txt changed)`), 실패하면 토스트도 뜬다. `auto:` 는 채울 값도 확인도
+  없는 툴바 액션만 받는다: 자리표시자·`confirm`·`needs`·`openUrl` 은 설정 오류. `emu pages` 가 스위치 상태를 보여 준다.
 - list·diff 의 `watch: ["templates/**"]` 에 맞는 프로젝트 파일이 바뀌면 다시 불러온다(git 이 무시하는
-  작업 폴더 포함). 고른 행과 세그먼트는 브라우저별로 기억한다.
+  작업 폴더 포함). 고른 행, 세그먼트, 칸 머리로 바꾼 정렬은 브라우저별로 기억한다.
 - 액션은 `run:` 대신 `openUrl: "myapp://item?id={{row.id}}"` 를 가질 수 있다. `emu open-url` 과 같이
   (argv 만, 기기 셸용 인용, 앱이 가라앉을 때까지 대기) 기기에 링크를 열고 화면 패널을 새로 고친다.
   딥링크 페이지에는 스크립트가 필요 없다:
@@ -814,23 +935,87 @@ pages:
           actions:
             - action: { id: open, label: open on device, openUrl: "{{input.url}}" }
   ```
+- 늘 보이는 툴바에 두기 싫은 버튼(배포 등)은 `panel` 에 묶고 `note:` 로 무엇을 하는지 적는다.
+  `emu run <page>.<panel>.<action>` 으로 실행한다:
+
+  ```yaml
+      - panel:
+          id: deploy
+          title: 배포
+          area: left
+          note: stage·dev 는 원격 브랜치에 바로 push 합니다.
+          actions:
+            - action: { id: stage, label: stage 배포, run: [./tool/deploy, stage], confirm: true }
+            - action: { id: dev, label: dev 배포, run: [./tool/deploy, dev], confirm: true }
+  ```
 - `html` 블록 파일은 그 자체로 완결돼야 한다(CSS·JS 인라인). 자기만의 opaque origin 을 가진 sandbox
   frame 에서 네트워크 없이(`default-src 'none'`) 돌아, 대시보드·세션 토큰·다른 블록을 읽을 수 없다.
-  데이터는 로드 뒤와 새로 고칠 때마다 `postMessage` 의 `{type: "emu:data", ok, data, text, error,
-  needs, selected}` 로 온다(다시 받으려면 `{type: "emu:ready"}` 를 보낸다). 툴바 액션은
-  `{type: "emu:action", id}` 를 보내 실행한다 — `actions:` 에 적은 id만, 버튼과 같은 확인을 거쳐.
-  파일을 저장하면 frame 이 다시 뜬다.
+  대시보드가 파일 앞에 작은 도우미 `window.emu` 를 넣어 주므로, 커스텀 화면은 `postMessage` 를 직접
+  다루지 않고 대시보드와 주고받는다. 파일을 저장하면 frame 이 다시 뜬다.
 
-  ```html
-  <!doctype html>
-  <pre id="out"></pre>
-  <script>
-    addEventListener('message', (e) => {
-      if (e.data?.type === 'emu:data') out.textContent = JSON.stringify(e.data.data, null, 2);
-    });
-    parent.postMessage({ type: 'emu:ready' }, '*');
-  </script>
+  | 함수 | 하는 일 | 돌려주는 값 |
+  |------|---------|-------------|
+  | `emu.onData(fn)` | 블록 `run:` 의 출력으로 `fn({ok, data, text, error, needs, selected})` — 이미 왔으면 바로, 그리고 새로 고칠 때마다 | 구독 해제 함수 |
+  | `emu.run(id, {input, confirm})` | 블록 `actions:` 에 있는 id 를 실행 — 블록 자신의 액션, 또는 거기 적은 툴바 액션. `confirm: {title, message, detail, danger}`(또는 제목 문자열)는 이 실행에 대한 화면의 설명 — 창 하나로 묻는다(아래) | `{ok, exitCode, error, output, data}` — stdout 이 JSON 이면 `data`. 실행되지 않았으면 `cancelled`·`busy`·`needs` |
+  | `emu.confirm({title, message, detail, danger, button})` | 예/아니오를 묻는다 | `true` / `false` |
+  | `emu.prompt({title, message, fields: [{name, label, default}]})` | 글자를 입력받는다 | `{name: value, …}` 또는 `null` |
+  | `emu.choose({title, message, options: [{value, label}], multiple})` | 하나(`multiple` 이면 여러 개)를 고르게 한다 — 항목은 값만 줘도 된다 | 고른 값(`multiple` 이면 배열) 또는 `null` |
+  | `emu.select(key)` | 페이지 선택 list 에서 그 key 의 행을 클릭한 것처럼 고른다 — `{{selected.*}}` 를 읽는 블록이 따라온다 | `{ok}`, 그런 행이 없으면 `{ok: false, error}` |
+  | `emu.refresh(blockId)` | 블록 데이터를 다시 받는다(`onData` 로 온다). id 를 주면 같은 페이지의 다른 블록 | `{ok}`, 또는 `{ok: false, error}`(없는 블록, 이미 받는 중) |
+  | `emu.toast(text, level)` | 블록 제목을 앞에 붙인 토스트 | — |
+
+  ```yaml
+  - html:
+      id: view
+      title: Deploy
+      src: tool/emu/deploy.html
+      run: [./tool/tpl.sh, list]          # → emu.onData
+      inputs: [env, message]              # emu.run 이 {{input.*}} 로 넘길 수 있는 이름
+      actions:
+        - sync                            # frame 이 실행할 수 있는 툴바 액션
+        - action:                         # 이 블록만의 액션(툴바에 안 보임)
+            id: plan
+            run: [./tool/tpl.sh, plan, "{{input.env}}"]
+        - action:
+            id: deploy
+            run: [./tool/tpl.sh, deploy, "{{input.env}}", "{{input.message}}"]
+            confirm: { title: "{{input.env}} 에 push", danger: true, button: push }
   ```
+
+  ```js
+  emu.onData(({ data }) => render(data));
+  const env = await emu.choose({ title: '배포할 곳', options: ['stage', 'prod'] });
+  if (!env) return;
+  const plan = await emu.run('plan', { input: { env } });
+  if (!plan.ok) return emu.toast(`미리보기 실패: ${plan.error}`, 'error');
+  // 창 하나: 이 설명 다음에 emu.yaml 의 confirm: 과 실제 명령.
+  await emu.run('deploy', {
+    input: { env, message: '배포 화면에서' },
+    confirm: { title: `템플릿 ${plan.data.length}개를 push 할까요?`, detail: plan.data.map(t => t.path).join('\n') },
+  });
+  ```
+
+  전체 예제는 [`docs/examples/html-block`](docs/examples/html-block). 커스텀 화면이 넘지 못하는 선:
+  - 확인·입력 창은 대시보드가 frame **바깥에** 그리고, 머리에 출처를 붙인다
+    (`"Deploy" (emu.yaml · tool/emu/deploy.html) asks:`). 창의 글자는 HTML 로 해석하지 않고 텍스트로만
+    보인다. 한 번에 한 창 — 창이 열려 있을 때 온 요청은 `busy`(`false`/`null`)로 답한다. 지금 보이는
+    페이지의 frame 만 답을 받는다.
+  - `emu.confirm` 은 화면 자신의 질문일 뿐, `confirm:` 을 대신하지 않는다. 그런 액션은 frame 이
+    실행해도 대시보드 자체 확인 창(실제 명령 줄 포함)을 거친다 — frame 은 `confirmed` 를 보낼 수 없다.
+    다만 두 번 묻지는 않는다:
+    - `emu.run(id, {confirm})` 은 화면의 설명을 그 창 위쪽(출처 줄 아래)에, emu.yaml 의 `confirm:` 문구·
+      preview·명령을 아래쪽에 보여 준다 — 창 하나, Run 한 번. `confirm:` 이 없는 액션이면 화면의 설명만
+      먼저 묻고 실행한다.
+    - `emu.confirm` 직후(1초 안) 같은 화면이 `confirm:` 액션을 실행하면, OK 를 누른 창이 닫히지 않고 그
+      자리에서 실행할 명령으로 이어진다 — 창 하나, 명령에 대해 Run 을 한 번 더 누른다. 그 사이 다른 요청이
+      오거나 늦게 실행하면 따로 창을 띄워 묻는다(안전한 쪽).
+  - 창을 짧은 시간에 연달아 취소하면 **Block requests from this view** 를 제안하고, 막으면 대시보드를 다시
+    불러오기 전까지 그 화면의 `confirm`/`prompt`/`choose` 는 바로 아니오로 답한다.
+  - `emu.select` 는 페이지 list 에 있는 행만 고르고, `emu.refresh` 는 그 화면이 있는 페이지의 블록만, 받는
+    중이거나 1초 안에 다시 부르면 받지 않는다.
+  - `input` 은 `inputs:` 에 적은 이름만 받고(나머지는 버림), 다른 치환처럼 값은 인자 하나 안에만 들어간다.
+  - 도우미 없이도 지금처럼 된다: 데이터는 `{type: "emu:data", …}` 로 오고, `{type: "emu:ready"}` 로 다시
+    받으며, `{type: "emu:action", id}` 는 답 없이 액션을 실행한다.
 
 - 토글의 `state` 명령은 `{"on": true|false, "detail"?: "…"}` 을 출력한다(마지막 줄이면 되므로 앞에
   로그를 찍어도 된다). `on`/`off` 로 바꾸고, 바꾼 뒤 상태를 다시 읽는다.
@@ -849,9 +1034,12 @@ emu pages                          # 페이지·항목·블록 목록(--json 가
 emu run templates.sync             # 버튼과 같다: 출력, 그다음 결과 한 줄
 emu run templates.local on         # 토글은 on/off
 emu run templates.local            # on/off 없이 주면 현재 상태
-emu run templates.publish --select name=home_banner --yes   # {{selected.name}}, confirm: true 는 --yes 필요
+emu run templates.publish --select name=home_banner         # confirm: 확인 창 내용·preview 를 찍고 y/N (--yes 면 건너뜀)
 emu run links.routes.open --row route=home        # 그 행에서 누른 것처럼 행 버튼 실행
 emu run links.link.open --input url=myapp://home   # 입력값과 함께 form 버튼 실행
+emu run deploy.view.plan --input env=stage         # html 블록 자신의 액션, inputs: 의 값과 함께
+emu run tpl.deploy.stage --checked home,card --yes  # {{checked.*}}: check: true list 의 행을 key 로
+emu run tpl.picks.check --row name=home            # check.toggle 은 행 버튼 "check" 로 실행
 emu block templates.items          # list 가 보여 주는 것을 표로
 emu block templates.changes --select name=home_banner --seg prod   # 그 행을 고른 것처럼 diff
 ```
@@ -972,6 +1160,7 @@ emu mock log --json --bodies     # 앱이 실제로 보낸 요청으로 검증
 | `server.log` | 서버 기동 진단 |
 | `shot-*.png` | 스크린샷 |
 | `memory.json` | 학습된 재계산 힌트(lastScreen 등) |
+| `pages_auto.json` | 대시보드 페이지 `auto:` 스위치(켜고 끈 것) |
 
 ## 디바이스 점유
 

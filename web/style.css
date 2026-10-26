@@ -97,7 +97,21 @@ button:disabled { opacity: .5; cursor: default; pointer-events: none; }
   width: var(--screen-w, 340px); flex: 0 0 auto; display: flex; flex-direction: column;
   background: var(--bg-alt); border-left: 1px solid var(--border); position: relative;
 }
+.screen[hidden] { display: none; }
 .screen > .ext-resize.screen-resize { left: -3px; right: auto; }
+#screen-fold { padding: 3px 8px; }
+/* What a folded panel leaves in its place — the screen panel, a page area: a
+   chevron and its titles; a click unfolds it. Upright on the sides. */
+.fold-bar {
+  display: flex; align-items: center; gap: 8px; border: none; border-radius: 0; padding: 7px 12px;
+  background: var(--bg-alt); color: var(--muted); font-size: 11px; letter-spacing: .3px; cursor: pointer; white-space: nowrap;
+}
+.fold-bar:hover { color: var(--fg); background: #1c2128; }
+.fold-bar[hidden] { display: none; }
+.fold-bar .fold-icon { font-size: 14px; line-height: 1; color: var(--accent); }
+.screen-fold-bar, .ext-area.upright > .fold-bar { flex-direction: column; padding: 10px 0; width: 30px; overflow: hidden; }
+.screen-fold-bar .fold-titles, .ext-area.upright > .fold-bar .fold-titles { writing-mode: vertical-rl; }
+.screen-fold-bar { flex: 0 0 auto; border-left: 1px solid var(--border); }
 .screen-head {
   display: flex; align-items: center; gap: 8px; padding: 8px 10px;
   border-bottom: 1px solid var(--border); color: var(--muted); font-size: 12px;
@@ -240,6 +254,9 @@ button.busy { opacity: .6; cursor: progress; }
 .ext-state { font-weight: 700; font-size: 11px; color: var(--muted); }
 .ext-toggle.on .ext-state { color: var(--system); }
 .ext-detail { color: var(--muted); font-size: 11px; }
+/* ⚡ beside an `auto:` action: lit while it runs on file changes. */
+.ext-auto { padding: 4px 6px; margin-left: -5px; font-size: 11px; filter: grayscale(1); opacity: .55; }
+.ext-auto.on { filter: none; opacity: 1; border-color: #9e6a0099; background: #9e6a001f; }
 
 .ext-page {
   flex: 1; min-width: 0; min-height: 0; display: grid;
@@ -250,6 +267,35 @@ button.busy { opacity: .6; cursor: progress; }
 .ext-page[hidden] { display: none; }
 .ext-page.no-left { grid-template-columns: minmax(0, 1fr); grid-template-areas: "main" "bottom"; }
 .ext-page.no-main { grid-template-rows: 0 minmax(0, 1fr); }
+.ext-page.no-bottom { grid-template-rows: minmax(0, 1fr) 0; }
+/* Only the left area has blocks: it takes the whole page. */
+.ext-page.no-main.no-bottom { grid-template-columns: minmax(0, 1fr); grid-template-areas: "left" "left"; }
+.ext-page.no-main.no-bottom .ext-area.left { border-right: none; }
+.ext-page.no-main.no-bottom .ext-resize.col, .ext-page.no-main .ext-resize.row { display: none; }
+/* An area's fold chevron, over the right end of its first block head. */
+.area-fold {
+  position: absolute; top: 5px; right: 6px; z-index: 7; padding: 1px 7px; font-size: 13px; line-height: 18px;
+  background: var(--bg-alt); color: var(--muted); border-color: transparent;
+}
+.area-fold:hover { color: var(--fg); border-color: var(--border); }
+.area-fold[hidden] { display: none; }
+.ext-area > .area-fold:not([hidden]) ~ section.ext-block:first-of-type > .blk-head { padding-right: 38px; }
+/* A folded area shows only its strip; the left one upright, main and bottom as a bar. */
+.area-fold-bar { display: none; }
+.ext-area.folded > :not(.area-fold-bar) { display: none; }
+.ext-area.folded > .area-fold-bar { display: flex; flex: 1; }
+.ext-page.fold-left { grid-template-columns: 30px minmax(0, 1fr); }
+.ext-page.fold-main { grid-template-rows: auto minmax(0, 1fr); }
+.ext-page.fold-main .ext-area.main { border-bottom: 1px solid var(--border); }
+.ext-page.fold-main .ext-area.bottom { max-height: none; }
+.ext-page.fold-main .ext-resize.row { display: none; }
+.ext-page.fold-bottom { grid-template-rows: minmax(0, 1fr) auto; }
+/* Main and bottom both folded: the right column becomes the strip. */
+.ext-page.fold-right { grid-template-columns: minmax(0, 1fr) 30px; }
+.ext-page.fold-right:not(.no-main):not(.no-bottom) { grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
+.ext-page.fold-right .ext-area.main, .ext-page.fold-right .ext-area.bottom { border-left: 1px solid var(--border); max-height: none; }
+.ext-page.fold-right .ext-area.left { border-right: none; }
+.ext-page.fold-right .ext-resize.col { display: none; }
 .ext-area { min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative; }
 .ext-area.left { grid-area: left; border-right: 1px solid var(--border); }
 .ext-area.main { grid-area: main; }
@@ -277,6 +323,14 @@ body.resizing iframe { pointer-events: none; }
   font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55;
 }
 .ext-empty { padding: 24px; color: var(--muted); font-size: 12px; text-align: center; }
+.ext-out[hidden] { display: none; }
+.out-hist {
+  background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 2px 6px; font-size: 11px; max-width: 240px; flex: 0 1 auto;
+}
+.out-hist[hidden] { display: none; }
+/* Addresses in a run's output and in the logs open in a new tab. */
+.ext-out a, .row .txt a { color: #79b8ff; text-decoration: underline; text-underline-offset: 2px; }
 .ok-mark { color: var(--system); }
 .fail-mark { color: var(--error); }
 
@@ -295,7 +349,41 @@ body.resizing iframe { pointer-events: none; }
   font-family: "SF Mono", Menlo, monospace; font-size: 12px; color: #e6edf3; white-space: pre-wrap; word-break: break-all;
 }
 .modal-foot { padding: 12px 18px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
-.modal .run { background: #8b2c28; border-color: var(--error); color: #fff; }
+.modal .run { background: #1f4f8f; border-color: var(--accent); color: #fff; }
+.modal.danger .run { background: #8b2c28; border-color: var(--error); }
+.modal.wide { width: min(880px, calc(100vw - 32px)); }
+.modal.danger .modal-head { color: #ffa198; }
+.confirm-msg { white-space: pre-wrap; margin-bottom: 10px; }
+.confirm-msg[hidden], .confirm-preview[hidden] { display: none; }
+#confirm-cmd-box summary { cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#confirm-cmd-box[open] summary code { display: none; }
+#confirm-cmd-box summary code { font-family: "SF Mono", Menlo, monospace; font-size: 12px; color: #e6edf3; }
+.confirm-preview { margin-bottom: 10px; }
+.confirm-preview .pv-head { display: flex; gap: 8px; align-items: baseline; }
+.confirm-preview .pv-head .cmd { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "SF Mono", Menlo, monospace; font-size: 11px; color: var(--muted); }
+.confirm-preview .pv-body {
+  margin: 6px 0 0; max-height: 46vh; overflow: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+}
+.confirm-preview pre.pv-body { margin-top: 6px; }
+.confirm-preview.failed .pv-body { border-color: #f8514966; }
+/* Who asks, when a custom view (html block) does — so it can't pass for emu itself. */
+.modal-from {
+  padding: 8px 18px; border-bottom: 1px solid var(--border); background: #9e6a001f; color: #e3b341;
+  font-size: 11.5px; border-radius: 10px 10px 0 0; word-break: break-word;
+}
+.confirm-msg { word-break: break-word; }
+.modal-body pre.modal-detail { max-height: 40vh; overflow: auto; word-break: break-word; margin-bottom: 10px; }
+.modal-fields { padding: 0 0 10px; }
+.modal-detail[hidden], .modal-fields[hidden], .modal-from[hidden], #confirm-command[hidden] { display: none; }
+/* emu.choose: a radio or checkbox per option. */
+.modal-choices { display: flex; flex-direction: column; gap: 2px; max-height: 40vh; overflow: auto; margin-bottom: 10px; }
+.modal-choices label { display: flex; gap: 8px; align-items: baseline; padding: 3px 6px; border-radius: 5px; cursor: pointer; word-break: break-word; }
+.modal-choices label:hover { background: var(--bg); }
+/* A view's run: emu.yaml's words for it, under the view's. */
+.confirm-action { border-top: 1px solid var(--border); padding-top: 10px; margin-bottom: 10px; }
+.confirm-action-title { font-weight: 700; }
+.modal.danger .confirm-action-title { color: #ffa198; }
+.modal-choices[hidden], .confirm-action[hidden], #confirm-wait[hidden] { display: none; }
 
 /* Page blocks: list (table of a command's JSON rows) and diff (its patch). */
 .ext-block.loading > :not(.blk-head) { opacity: .55; }
@@ -308,15 +396,41 @@ body.resizing iframe { pointer-events: none; }
 .blk-scroll { flex: 1; overflow: auto; min-height: 0; }
 table.lst { width: 100%; border-collapse: collapse; font-size: 12px; }
 .lst th {
-  position: sticky; top: 0; background: var(--bg); text-align: left; color: var(--muted); font-weight: 500;
+  position: sticky; top: 0; z-index: 2; background: var(--bg); text-align: left; color: var(--muted); font-weight: 500;
   padding: 6px 10px; border-bottom: 1px solid var(--border); font-size: 11px; white-space: nowrap;
 }
 .lst td { padding: 7px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* A long text value is cut at its column's width (`name:text:40em`); hovering shows it whole. */
+.lst .cell { display: block; max-width: 32em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* `:start` cuts the front instead: rtl moves the ellipsis to the left, the inner span keeps the text ltr. */
+.lst .cell.clip-start { direction: rtl; text-align: left; }
+.lst .cell.clip-start > span { direction: ltr; unicode-bidi: embed; }
+.lst th.sortable { cursor: pointer; user-select: none; }
+.lst th.sortable:hover, .lst th.sorted { color: var(--fg); }
+.lst .sort-mark { margin-left: 4px; font-size: 9px; color: var(--accent); }
+/* Below the sticky head when ↑/↓ scrolls a row into view. */
+.lst tbody tr { scroll-margin-top: 30px; }
+.blk-scroll:focus { outline: none; }
+.blk-scroll:focus .lst tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+/* tree: folders with a caret and their row count, rows indented below them. */
+.lst tr.tree-dir td { cursor: pointer; }
+.lst tr.tree-dir:hover td { background: var(--bg-row-alt); }
+.lst .tree-caret { display: inline-block; width: 14px; color: var(--muted); font-size: 10px; }
+.lst .tree-count { margin-left: 7px; color: var(--muted); font-size: 11px; }
+.lst tr.tree-dir.has-sel td.tree-name { box-shadow: inset 2px 0 0 var(--accent); }
 .lst tr.pick { cursor: pointer; }
 .lst tr.pick:hover td { background: var(--bg-row-alt); }
 .lst tr.sel td { background: #1c2430; }
 .lst tr.sel td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
-.lst .row-actions { text-align: right; }
+.lst .lst-check { width: 1%; padding-right: 0; }
+.lst .lst-check input { margin: 0; vertical-align: middle; cursor: pointer; }
+.blk-head .checks { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
+.blk-head .checks + .count { margin-left: 0; }
+.blk-head .checks button { padding: 2px 8px; font-size: 11px; }
+/* Row buttons stay in view when a wide table scrolls sideways. */
+.lst .row-actions { text-align: right; position: sticky; right: 0; background: var(--bg); box-shadow: inset 1px 0 0 var(--border); }
+.lst td.row-actions { z-index: 1; }
+.lst th.row-actions { z-index: 3; }
 .lst .row-actions button { padding: 2px 8px; font-size: 11px; }
 .lst .row-actions button + button { margin-left: 4px; }
 .chip { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; }
@@ -326,7 +440,9 @@ table.lst { width: 100%; border-collapse: collapse; font-size: 12px; }
 .chip.bad { background: #f8514926; color: var(--error); }
 .chip.plain { background: #2f81f71f; color: #a5c8ff; }
 .count-hot { color: #e3b341; font-weight: 600; }
+.seg-pick { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; flex: 0 0 auto; }
+.seg[hidden] { display: none; }
 .seg button { border: none; border-radius: 0; padding: 2px 9px; font-size: 11px; background: none; color: var(--muted); }
 .seg button + button { border-left: 1px solid var(--border); }
 .seg button.on { background: var(--accent); color: #fff; }
@@ -340,7 +456,8 @@ table.lst { width: 100%; border-collapse: collapse; font-size: 12px; }
 .form-grid { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 10px; align-items: center; padding: 12px; font-size: 12px; }
 .form-grid label { color: var(--muted); }
 .form-grid .field { font-family: "SF Mono", Menlo, monospace; }
-.form-actions { grid-column: 1 / -1; display: flex; gap: 6px; }
+.form-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
+.form-note { padding: 10px 12px 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
 
 /* Mocks tab (mocks.js): scenarios | rule editor over traffic. */
 .mocks {

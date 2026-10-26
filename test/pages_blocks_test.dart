@@ -22,6 +22,13 @@ pages:
           rowActions:
             - action: { id: check, run: [./tool/t.sh, args, check, "{{row.name}}"] }
             - action: { id: go, openUrl: "myapp://item?name={{row.name}}" }
+            - action:
+                id: drop
+                run: [./tool/t.sh, args, drop, "{{row.name}}"]
+                confirm:
+                  title: "drop {{row.name}}?"
+                  message: "<b>{{row.name}}</b> (local: {{row.local}}) goes"
+                  preview: [./tool/t.sh, diff, "{{row.name}}", base]
           watch: [templates/**]
       - form:
           id: link
@@ -31,6 +38,11 @@ pages:
           actions:
             - action: { id: open, openUrl: "{{input.url}}", confirm: true }
             - action: { id: echo, run: [./tool/t.sh, args, "{{input.url}}", "{{input.note}}"] }
+      - panel:
+          id: deploy
+          note: pushes to the remote branch
+          actions:
+            - action: { id: stage, run: [./tool/t.sh, args, stage, "{{selected.name}}"], confirm: true }
       - diff:
           id: changes
           run: [./tool/t.sh, diff, "{{selected.name}}", "{{seg}}"]
@@ -53,6 +65,24 @@ pages:
       - html:
           id: escape
           src: tool/link.html
+      - html:
+          id: view
+          src: tool/tree.html
+          inputs: [env, note]
+          actions:
+            - publish
+            - action: { id: plan, run: [./tool/t.sh, plan, "{{input.env}}"] }
+            - action: { id: echo, run: [./tool/t.sh, args, "{{input.env}}", "{{input.note}}"] }
+            - action: { id: push, run: [./tool/t.sh, args, push, "{{input.env}}"], confirm: true }
+      - list:
+          id: files
+          run: [./tool/t.sh, list]
+          key: name
+          tree: [local, name]
+      - diff:
+          id: content
+          run: [./tool/t.sh, diff, "{{selected.name}}", "{{seg}}"]
+          segments: { values: [base, prod], optional: true, hide: "{{selected.env}}" }
 ''';
 
 const _script = r'''#!/bin/sh
@@ -61,6 +91,7 @@ case "$1" in
   diff) printf -- '--- a/%s\n+++ b/%s\n@@ -1 +1 @@\n-old %s\n+new %s\n' "$2" "$2" "$3" "$3" ;;
   args) shift; for a in "$@"; do echo "[$a]"; done ;;
   notjson) echo "rows: 2" ;;
+  plan) echo "[{\"path\": \"home.json\", \"env\": \"$2\"}]" ;;
   value) echo "{\"key\": \"$2\", \"value\": {\"title\": \"Hello\", \"items\": [1, 2]}}" ;;
 esac
 ''';
@@ -116,6 +147,13 @@ void main() {
     ]);
   });
 
+  test('a tree list says which columns make the folders, for emu block', () async {
+    final (_, j) = await call('GET', '/api/pages/tpl/blocks/files');
+    expect(j['ok'], isTrue);
+    expect(j['tree'], ['local', 'name']);
+    expect((await call('GET', '/api/pages/tpl/blocks/items')).$2.containsKey('tree'), isFalse);
+  });
+
   test('a list that prints something else says so', () async {
     final (_, j) = await call('GET', '/api/pages/tpl/blocks/broken');
     expect(j['ok'], isFalse);
@@ -140,6 +178,26 @@ void main() {
     (_, j) = await call('GET', '/api/pages/tpl/blocks/changes?selected.name=card&seg=staging');
     expect(j['ok'], isFalse);
     expect(j['error'], contains('base, prod'));
+  });
+
+  test('optional segments: none unless one is asked for, and an empty one means none', () async {
+    var (_, j) = await call('GET', '/api/pages/tpl/blocks/content?selected.name=card');
+    expect(j['ok'], isTrue);
+    expect(j['seg'], '');
+    expect(j['command'], "./tool/t.sh diff card ''");
+
+    (_, j) = await call('GET', '/api/pages/tpl/blocks/content?selected.name=card&seg=prod');
+    expect(j['patch'], contains('+new prod'));
+
+    (_, j) = await call('GET', '/api/pages/tpl/blocks/content?selected.name=card&seg=');
+    expect(j['seg'], '');
+
+    (_, j) = await call('GET', '/api/pages/tpl/blocks/changes?selected.name=card&seg=');
+    expect(j['ok'], isFalse); // a segment must be picked there
+    expect(j['error'], 'seg must be one of base, prod (got "")');
+
+    (_, j) = await call('GET', '/api/pages/tpl/blocks/content?selected.name=card&seg=dev');
+    expect(j['error'], 'seg must be one of base, prod, or empty for none (got "dev")');
   });
 
   test('a row button gets its row, as one argument however it is spelled', () async {
@@ -170,6 +228,22 @@ void main() {
       'confirmed': true,
     });
     expect(j['output'], '[publish]\n[home banner]\n');
+  });
+
+  test("a row button's confirm fills its words and preview from the row, as text", () async {
+    var (code, j) = await call('POST', '/api/pages/tpl/rows/items/drop', {'row': {'name': 'card'}});
+    expect(code, 400); // the message reads a column the command doesn't
+    expect(j['needs'], 'row');
+
+    (code, j) = await call('POST', '/api/pages/tpl/rows/items/drop', {
+      'row': {'name': 'card', 'local': false},
+    });
+    expect(code, 428);
+    expect(j['command'], './tool/t.sh args drop card');
+    expect(j['confirm']['title'], 'drop card?');
+    expect(j['confirm']['message'], '<b>card</b> (local: false) goes'); // the dashboard sets it as text
+    expect(j['preview']['command'], './tool/t.sh diff card base');
+    expect(j['preview']['patch'], contains('+new base'));
   });
 
   test('unknown blocks and row actions say what exists', () async {
@@ -226,6 +300,20 @@ void main() {
     expect(j['output'], '[myapp://x?a=1&b=2]\n[two words; \$(id)]\n');
   });
 
+  test('a panel (a form with no fields) runs its buttons like a form, under forms/', () async {
+    var (code, j) = await call('GET', '/api/pages');
+    final deploy = ((j['pages'] as List).first['blocks'] as List).firstWhere((b) => b['id'] == 'deploy');
+    expect(deploy, allOf(containsPair('kind', 'form'), containsPair('note', 'pushes to the remote branch')));
+    expect(deploy['fields'], isEmpty);
+
+    (code, j) = await call('POST', '/api/pages/tpl/forms/deploy/stage', {'selected': {'name': 'card'}});
+    expect(code, 428); // confirm: true
+    (code, j) = await call('POST', '/api/pages/tpl/forms/deploy/stage', {'selected': {'name': 'card'}, 'confirmed': true});
+    expect(code, 200);
+    expect(j['item'], 'deploy.stage');
+    expect(j['output'], '[stage]\n[card]\n');
+  });
+
   test('openUrl opens the filled-in link on the device and reports it like a run', () async {
     var (code, j) = await call('POST', '/api/pages/tpl/forms/link/open', {'input': {'url': 'myapp://home?tab=2'}});
     expect(code, 428); // confirm: true — the dialog shows exactly this
@@ -263,6 +351,57 @@ void main() {
 
     (code, _) = await call('POST', '/api/pages/tpl/forms/items/check', {});
     expect(code, 404); // a list's row action isn't a form action
+  });
+
+  test("an html block's own action takes its inputs, each value one argument", () async {
+    var (code, j) = await call('POST', '/api/pages/tpl/frames/view/echo', {
+      'input': {'env': 'stage', 'note': r'two words; $(id)', 'extra': 'dropped'},
+    });
+    expect(code, 200);
+    expect(j['item'], 'view.echo');
+    expect(j['output'], '[stage]\n[two words; \$(id)]\n');
+    expect(j.containsKey('data'), isFalse); // stdout isn't JSON
+
+    // Only names in inputs: go along — the rest never reach a placeholder.
+    (code, j) = await call('POST', '/api/pages/tpl/frames/view/echo', {
+      'input': {'env': 'stage'},
+    });
+    expect(code, 400);
+    expect(j['needs'], 'input');
+  });
+
+  test("an html block action's JSON stdout comes back as data", () async {
+    final (code, j) = await call('POST', '/api/pages/tpl/frames/view/plan', {'input': {'env': 'prod'}});
+    expect(code, 200);
+    expect(j['ok'], isTrue);
+    expect(j['data'], [
+      {'path': 'home.json', 'env': 'prod'},
+    ]);
+  });
+
+  test('an html block action marked confirm: true still needs the confirmation', () async {
+    var (code, j) = await call('POST', '/api/pages/tpl/frames/view/push', {'input': {'env': 'prod'}});
+    expect(code, 428);
+    expect(j['needsConfirm'], isTrue);
+    expect(j['command'], './tool/t.sh args push prod');
+
+    (code, j) = await call('POST', '/api/pages/tpl/frames/view/push', {'input': {'env': 'prod'}, 'confirmed': true});
+    expect(code, 200);
+    expect(j['output'], '[push]\n[prod]\n');
+  });
+
+  test("frames/<block>/<action> runs only an html block's own actions", () async {
+    var (code, j) = await call('POST', '/api/pages/tpl/frames/view/nope', {});
+    expect(code, 404);
+    expect(j['error'], contains('no html block action "view.nope"'));
+    (code, _) = await call('POST', '/api/pages/tpl/frames/view/publish', {}); // a toolbar id: run/publish
+    expect(code, 404);
+    (code, _) = await call('POST', '/api/pages/tpl/frames/items/check', {}); // a list's row action
+    expect(code, 404);
+    (code, _) = await call('GET', '/api/pages/tpl/frames/view/echo');
+    expect(code, 405);
+    (code, j) = await call('GET', '/api/pages/tpl/frames/view'); // the file, as before
+    expect(j['html'], '<!doctype html><p>tree</p>');
   });
 
   test('watching maps changed paths to the blocks to fetch again', () {

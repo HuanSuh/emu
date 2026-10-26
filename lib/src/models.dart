@@ -181,6 +181,7 @@ class DeviceInfo {
     required this.platform,
     required this.emulator,
     this.targetPlatform,
+    this.sdk,
   });
 
   final String id;
@@ -191,12 +192,16 @@ class DeviceInfo {
   final bool emulator;
   final String? targetPlatform;
 
+  /// What `flutter devices` reports as the OS, e.g. `Android 14 (API 34)`.
+  final String? sdk;
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,
         'platform': platform,
         'emulator': emulator,
         'targetPlatform': targetPlatform,
+        'sdk': sdk,
       };
 
   factory DeviceInfo.fromJson(Map<String, dynamic> json) {
@@ -207,6 +212,7 @@ class DeviceInfo {
       platform: (json['platform'] as String?) ?? _platformFromTarget(target),
       emulator: (json['emulator'] as bool?) ?? false,
       targetPlatform: target,
+      sdk: json['sdk'] as String?,
     );
   }
 }

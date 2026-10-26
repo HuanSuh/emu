@@ -25,6 +25,7 @@ import 'pages.dart';
 import 'project_config.dart';
 import 'project_memory.dart';
 import 'registry.dart';
+import 'report.dart';
 import 'server.dart';
 import 'session.dart';
 import 'temp_device.dart';
@@ -119,6 +120,8 @@ Future<int> runCli(List<String> argv) async {
         return await _hubCmd(rest);
       case 'app':
         return await _appCmd(rest);
+      case 'report':
+        return await _reportCmd(rest);
       case 'help':
       case '--help':
       case '-h':
@@ -2166,20 +2169,56 @@ Future<int> _pagesCmd(List<String> args) async {
     print('${page['id']}  ${page['title']}');
     for (final i in (page['toolbar'] as List).cast<Map<String, dynamic>>()) {
       final what = i['kind'] == 'toggle' ? 'on: ${i['on']} · off: ${i['off']}' : '${i['command']}';
-      final notes = [if (i['then'] != 'none') 'then ${i['then']}', if (i['confirm'] == true) 'asks first'];
+      final auto = i['auto'] as Map?;
+      // The switch as the session has it; without one, where it starts.
+      final autoOn = (data['auto'] as Map?)?['${page['id']}.${i['id']}'] ?? auto?['on'];
+      final notes = [
+        if (i['then'] != 'none') 'then ${i['then']}',
+        if (i['confirm'] == true) 'asks first',
+        if (i['needsChecked'] != null) 'needs a checked row in ${i['needsChecked']}',
+        if (auto != null) 'runs on change of ${(auto['watch'] as List).join(', ')}: ${autoOn == true ? 'on' : 'off'}',
+      ];
       print('  ${col(i['kind'], 7)}${col(i['id'], 16)}$what${notes.isEmpty ? '' : '   (${notes.join(', ')})'}');
     }
     for (final b in (page['blocks'] as List).cast<Map<String, dynamic>>()) {
-      final segs = (b['segments'] as List?)?.isNotEmpty == true ? '   (vs ${(b['segments'] as List).join('|')})' : '';
-      print('  ${col('block', 7)}${col(b['id'], 16)}${col('${b['kind']} (${b['area']})', 16)}${b['command'] ?? ''}$segs'.trimRight());
+      final segList = b['segments'] as List? ?? const [];
+      final segs = segList.isEmpty
+          ? ''
+          : '   (vs ${segList.join('|')}${b['segmentsOptional'] == true ? ' or none' : ''}'
+              '${b['segmentsHide'] != null ? ', hides ${b['segmentsHide']}' : ''})';
+      // A form with no fields is a button panel.
+      final kind = b['kind'] == 'form' && (b['fields'] as List).isEmpty ? 'panel' : b['kind'];
+      final check = b['check'] as Map?;
+      final checks = check == null
+          ? ''
+          : check['toggle'] == null
+              ? '   (check)'
+              : '   (check: ${check['column']} · toggle: ${check['toggle']})';
+      print('  ${col('block', 7)}${col(b['id'], 16)}${col('$kind (${b['area']})', 16)}${b['command'] ?? ''}$segs$checks'
+          .trimRight());
       for (final a in (b['rowActions'] as List? ?? const []).cast<Map<String, dynamic>>()) {
-        print('  ${col('  row', 7)}${col('${b['id']}.${a['id']}', 16)}${a['command']}');
+        print('  ${col('  row', 7)}${col('${b['id']}.${a['id']}', 16)}${a['command']}'
+            '${a['bulk'] == true ? '   (bulk: also on the checked rows)' : ''}');
+      }
+      if (b['kind'] == 'html') {
+        final inputs = (b['inputs'] as List? ?? const []);
+        if (inputs.isNotEmpty) print('  ${col('  input', 7)}${inputs.join(', ')}');
+        for (final a in (b['blockActions'] as List? ?? const []).cast<Map<String, dynamic>>()) {
+          print('  ${col('  html', 7)}${col('${b['id']}.${a['id']}', 16)}${a['command']}'
+              '${a['confirm'] == true ? '   (asks first)' : ''}');
+        }
       }
       if (b['kind'] == 'form') {
-        print('  ${col('  field', 7)}${[for (final f in (b['fields'] as List).cast<Map<String, dynamic>>()) f['name']].join(', ')}');
+        if (b['note'] != null) print('  ${col('  note', 7)}${b['note']}');
+        final fields = [for (final f in (b['fields'] as List).cast<Map<String, dynamic>>()) f['name']];
+        if (fields.isNotEmpty) print('  ${col('  field', 7)}${fields.join(', ')}');
         for (final a in (b['actions'] as List).cast<Map<String, dynamic>>()) {
+          final notes = [
+            if (a['confirm'] == true) 'asks first',
+            if (a['needsChecked'] != null) 'needs a checked row in ${a['needsChecked']}',
+          ];
           print('  ${col('  form', 7)}${col('${b['id']}.${a['id']}', 16)}${a['command']}'
-              '${a['confirm'] == true ? '   (asks first)' : ''}');
+              '${notes.isEmpty ? '' : '   (${notes.join(', ')})'}');
         }
       }
     }
@@ -2194,20 +2233,28 @@ Future<int> _runCmd(List<String> args) async {
   final parser = ArgParser()
     ..addMultiOption('select', abbr: 's', splitCommas: false, help: '<col>=<value> of the selected row (repeatable)')
     ..addMultiOption('row', abbr: 'r', splitCommas: false, help: "<col>=<value> of a row button's row (repeatable)")
-    ..addMultiOption('input', abbr: 'i', splitCommas: false, help: "<field>=<value> for a form's button (repeatable)")
-    ..addFlag('yes', abbr: 'y', negatable: false, help: 'run an action marked confirm: true')
+    ..addMultiOption('input', abbr: 'i', splitCommas: false,
+        help: "<field>=<value> for a form's button or an html block's action (repeatable)")
+    ..addMultiOption('checked', abbr: 'c', splitCommas: false, help: '[<list>=]<key>,<key>… of the checked rows (repeatable)')
+    ..addFlag('yes', abbr: 'y', negatable: false, help: 'run an action marked confirm: without asking')
     ..addFlag('json', negatable: false)
     ..addFlag('help', abbr: 'h', negatable: false);
-  const usage = 'usage: emu run <page>.<item> [on|off] [-s, --select <col>=<value>]... [-y, --yes] [--json]\n'
+  const usage = 'usage: emu run <page>.<item> [on|off] [-s, --select <col>=<value>]... [-c, --checked [<list>=]<key>,…]...\n'
+      '                                [-y, --yes] [--json]\n'
       '       emu run <page>.<block>.<action> [-r, --row <col>=<value>]... [-i, --input <field>=<value>]...\n'
-      '                                      [-s, --select <col>=<value>]... [-y, --yes] [--json]\n'
+      '                                      [-s, --select <col>=<value>]... [-c, --checked [<list>=]<key>,…]...\n'
+      '                                      [-y, --yes] [--json]\n'
       '   Run a toolbar item of a dashboard page (emu.yaml `pages:`), a list\'s row\n'
-      '   button or a form\'s button, the same as pressing it in the dashboard. A\n'
-      '   toggle takes on or off; an action marked confirm: true runs only with\n'
-      '   --yes. --select fills {{selected.<col>}}, --row {{row.<col>}}, --input\n'
-      '   {{input.<field>}}. A toggle without on|off prints its state. Exit 0 =\n'
-      '   the command and its then: reload/restart succeeded; a failed command\n'
-      '   exits with its own code. `emu pages` lists the items.';
+      '   button, a form\'s button or an html block\'s own action, the same as\n'
+      '   pressing it in the dashboard. A toggle takes on or off. An action marked\n'
+      '   confirm: shows its dialog (title, message, preview, command) and asks y/N\n'
+      '   on a terminal; --yes skips that. --select fills {{selected.<col>}}, --row\n'
+      '   {{row.<col>}}, --input {{input.<field>}} (for an html block, only names\n'
+      '   in its inputs:), --checked the rows of a check: list by their key\n'
+      '   ({{checked.<col>...}}, {{checked.count}}; <list>= when the page has\n'
+      '   several). A toggle without on|off prints its state. Exit 0 = the command\n'
+      '   and its then: reload/restart succeeded; a failed command exits with its\n'
+      '   own code. `emu pages` lists the items.';
   final (res, code) = _parseOrUsage(parser, args, usage);
   if (res == null) return code!;
   final rest = res.rest;
@@ -2232,6 +2279,32 @@ Future<int> _runCmd(List<String> args) async {
   }
   final info = _requireServer();
   final page = Uri.encodeComponent(target[0]);
+  // --checked keys, by list: the page's one check: true list, or <list>=. The
+  // lists whose tool keeps the checks (check.column) say so themselves.
+  Object? checked;
+  if (res.multiOption('checked') case final given when given.isNotEmpty) {
+    final pages = await _getJson(info, '/api/pages');
+    final lists = {
+      for (final p in (pages?['pages'] as List? ?? const []).cast<Map<String, dynamic>>())
+        if (p['id'] == target[0])
+          for (final b in (p['blocks'] as List).cast<Map<String, dynamic>>())
+            if (b['check'] case final Map c when c['column'] == null) '${b['id']}',
+    };
+    final byList = <String, List<String>>{};
+    for (final c in given) {
+      final eq = c.indexOf('=');
+      final named = eq > 0 && lists.contains(c.substring(0, eq));
+      final list = named ? c.substring(0, eq) : lists.length == 1 ? lists.single : '';
+      byList.putIfAbsent(list, () => []).addAll((named ? c.substring(eq + 1) : c).split(',').where((k) => k.isNotEmpty));
+    }
+    if (byList.containsKey('')) {
+      stderr.writeln(lists.isEmpty
+          ? '✗ no list on page ${target[0]} has check: true'
+          : '✗ page ${target[0]} has several check: true lists — say which: --checked <list>=<key>,…  (${lists.join(', ')})');
+      return 2;
+    }
+    checked = byList;
+  }
   if (target.length == 2 && onOff == null) {
     // A toggle with no on/off: say where it stands instead of refusing.
     final pages = await _getJson(info, '/api/pages');
@@ -2258,33 +2331,60 @@ Future<int> _runCmd(List<String> args) async {
   if (target.length == 2) {
     path = '/api/pages/$page/run/${Uri.encodeComponent(target[1])}';
   } else {
-    // A row button or a form button: which, the page's config says.
+    // A row button, a form button or an html block's action: which, the page's config says.
     final pages = await _getJson(info, '/api/pages');
     final blocks = [
       for (final p in (pages?['pages'] as List? ?? const []).cast<Map<String, dynamic>>())
         if (p['id'] == target[0]) ...(p['blocks'] as List).cast<Map<String, dynamic>>(),
     ];
     final kind = blocks.where((b) => b['id'] == target[1]).firstOrNull?['kind'];
-    if (kind != 'list' && kind != 'form') {
-      stderr.writeln('✗ no list or form "${target[1]}" on page ${target[0]}');
+    if (kind != 'list' && kind != 'form' && kind != 'html') {
+      stderr.writeln('✗ no list, form, panel or html block "${target[1]}" on page ${target[0]}');
       return 1;
     }
-    path = '/api/pages/$page/${kind == 'list' ? 'rows' : 'forms'}/'
+    path = '/api/pages/$page/${switch (kind) { 'list' => 'rows', 'form' => 'forms', _ => 'frames' }}/'
         '${Uri.encodeComponent(target[1])}/${Uri.encodeComponent(target[2])}';
   }
-  final r = await _postJson(
-    info,
-    path,
-    jsonEncode({
-      'confirmed': res.flag('yes'),
-      if (onOff != null) 'on': onOff == 'on',
-      if (selected.isNotEmpty) 'selected': selected,
-      if (row.isNotEmpty) 'row': row,
-      if (input.isNotEmpty) 'input': input,
-    }),
-    // The server bounds the command (its timeout:); this only must outlast it.
-    timeout: const Duration(hours: 1),
-  );
+  Future<Map<String, dynamic>?> post({required bool confirmed}) => _postJson(
+        info,
+        path,
+        jsonEncode({
+          'confirmed': confirmed,
+          if (onOff != null) 'on': onOff == 'on',
+          if (selected.isNotEmpty) 'selected': selected,
+          if (row.isNotEmpty) 'row': row,
+          if (input.isNotEmpty) 'input': input,
+          'checked': ?checked,
+        }),
+        // The server bounds the command (its timeout:); this only must outlast it.
+        timeout: const Duration(hours: 1),
+      );
+  var r = await post(confirmed: res.flag('yes'));
+  if (r != null && r['needsConfirm'] == true && !res.flag('json')) {
+    // The dashboard's dialog, in the terminal: title, message, preview, command.
+    _printConfirm(r);
+    final preview = r['preview'] as Map?;
+    if (preview?['blocks'] == true) {
+      stderr.writeln('✗ ${rest.first}: the preview failed — not running it');
+      return 1;
+    }
+    // Ask only with someone at both ends; stdin at EOF (/dev/null, which
+    // Dart also calls a terminal) reads as no answer.
+    String? answer;
+    if (stdin.hasTerminal && stdioType(stderr) == StdioType.terminal) {
+      stderr.write('${(r['confirm'] as Map?)?['button'] ?? 'Run'}? [y/N] ');
+      answer = stdin.readLineSync();
+    }
+    if (answer == null) {
+      stderr.writeln('✗ ${rest.first} asks for confirmation first — pass --yes to run it');
+      return 1;
+    }
+    if (!const {'y', 'yes'}.contains(answer.trim().toLowerCase())) {
+      stderr.writeln('cancelled');
+      return 1;
+    }
+    r = await post(confirmed: true);
+  }
   if (r == null) {
     stderr.writeln('✗ run: no response from the server');
     return 1;
@@ -2298,16 +2398,13 @@ Future<int> _runCmd(List<String> args) async {
     print(jsonEncode(r));
     return exit;
   }
-  if (r['needsConfirm'] == true) {
-    stderr.writeln('✗ ${rest.first} asks for confirmation first — it runs:\n  ${r['command']}\n  pass --yes to run it');
-    return 1;
-  }
   if (r['exitCode'] == null) {
     // Unknown page/item, already running, bad on/off, a value missing.
     final hint = switch (r['needs']) {
       'selected' => ' (--select <col>=<value>)',
       'row' => ' (--row <col>=<value>)',
       'input' => ' (--input <field>=<value>)',
+      'checked' => ' (--checked <key>,…)',
       _ => '',
     };
     stderr.writeln('✗ ${r['error']}$hint');
@@ -2327,6 +2424,40 @@ Future<int> _runCmd(List<String> args) async {
     stderr.writeln(line);
   }
   return exit;
+}
+
+/// A 428 from `emu run` as the dashboard's confirm dialog, on stderr.
+void _printConfirm(Map<String, dynamic> r) {
+  final confirm = r['confirm'] as Map? ?? const {};
+  stderr.writeln('${confirm['danger'] == true ? '⚠ ' : ''}${confirm['title'] ?? 'Run it?'}');
+  if (confirm['message'] != null) stderr.writeln('  ${'${confirm['message']}'.replaceAll('\n', '\n  ')}');
+  final preview = r['preview'] as Map?;
+  if (preview != null) {
+    stderr.writeln('');
+    if (preview['ok'] != true) {
+      stderr.writeln('preview failed (${preview['error']}): \$ ${preview['command']}');
+    } else {
+      stderr.writeln('preview: \$ ${preview['command']}');
+    }
+    final rows = (preview['rows'] as List?)?.cast<Map>();
+    if (rows != null) {
+      final cols = [for (final k in rows.first.keys) '$k'];
+      String cell(Object? v) => v == null ? '' : v is String ? v : jsonEncode(v);
+      final widths = [for (final c in cols) rows.fold(c.length, (w, row) => cell(row[c]).length > w ? cell(row[c]).length : w)];
+      String line(List<String> cells) => [for (final (i, c) in cells.indexed) c.padRight(widths[i])].join('  ').trimRight();
+      stderr.writeln('  ${line(cols)}');
+      for (final row in rows) {
+        stderr.writeln('  ${line([for (final c in cols) cell(row[c])])}');
+      }
+      if (preview['truncated'] != null) stderr.writeln('  (first ${rows.length} of ${preview['truncated']} rows)');
+    } else {
+      final text = '${preview['patch'] ?? preview['text'] ?? ''}'.trimRight();
+      if (text.isNotEmpty) stderr.writeln(text);
+    }
+  }
+  stderr.writeln('');
+  stderr.writeln('runs in the project root:');
+  stderr.writeln('  \$ ${r['command']}');
 }
 
 // --------------------------------------------------------------------------
@@ -2546,7 +2677,8 @@ Future<int> _blockCmd(List<String> args) async {
       '   What a list, diff or html block of a dashboard page shows: the rows its\n'
       '   command prints as a table, its diff, or an html block\'s data. --select\n'
       '   fills {{selected.<col>}} the way picking a row in the dashboard does;\n'
-      '   --seg picks a diff\'s segment.';
+      '   --seg picks a diff\'s segment (left out: the first, or none when the\n'
+      '   segments are optional).';
   final (res, code) = _parseOrUsage(parser, args, usage);
   if (res == null) return code!;
   final target = res.rest.length == 1 ? res.rest.first : '';
@@ -2604,14 +2736,15 @@ Future<int> _blockCmd(List<String> args) async {
     print('(no rows)');
     return 0;
   }
-  print(_table(rows));
+  // A tree list (`tree:`) shows its path columns first.
+  print(_table(rows, first: [for (final c in r['tree'] as List? ?? const []) '$c']));
   if (r['truncated'] != null) print('(first ${rows.length} of ${r['truncated']} rows)');
   return 0;
 }
 
-/// [rows] as aligned columns (every key, in first-seen order).
-String _table(List<Map<String, dynamic>> rows) {
-  final cols = <String>{for (final r in rows) ...r.keys}.toList();
+/// [rows] as aligned columns (every key, in first-seen order — [first] before the rest).
+String _table(List<Map<String, dynamic>> rows, {List<String> first = const []}) {
+  final cols = <String>{...first.where((c) => rows.any((r) => r.containsKey(c))), for (final r in rows) ...r.keys}.toList();
   String cell(Object? v) {
     final s = v == null ? '' : v is String ? v : v is num || v is bool ? '$v' : jsonEncode(v);
     final line = s.replaceAll('\n', ' ');
@@ -2964,6 +3097,264 @@ Future<void> _killOwnDevice(String? deviceId) async {
 }
 
 // --------------------------------------------------------------------------
+// report — a bug/feature/question about emu, as a GitHub issue (report.dart)
+// --------------------------------------------------------------------------
+const _reportUsage = 'usage: emu report <bug|feature|question> "<title>" [-m <text> | --body-file <path|->]\n'
+    '                  [--attach logs[:N]|errors|shot|<file>]... [-y, --yes] [--dry-run] [--json]\n'
+    '       emu report --send <id> [--json]     send a --dry-run draft exactly as shown\n'
+    '       emu report --mine [--json]          the issues you sent with emu report\n'
+    '   Files an issue on github.com/$reportRepo — with `gh issue create` when gh is signed in,\n'
+    '   otherwise by opening a prefilled form in the browser. Shows the whole issue first and\n'
+    '   sends only after y (--yes skips). Paths, project/app names and tokens are masked;\n'
+    '   nothing is attached unless you --attach it. Screenshots are pasted in after.';
+
+Future<int> _reportCmd(List<String> args) async {
+  if (args.contains('--help') || args.contains('-h')) {
+    print(_reportUsage);
+    return 0;
+  }
+  final parser = ArgParser()
+    ..addOption('message', abbr: 'm')
+    ..addOption('body-file')
+    ..addOption('title')
+    ..addMultiOption('attach', splitCommas: false)
+    ..addFlag('yes', abbr: 'y', negatable: false)
+    ..addFlag('dry-run', negatable: false)
+    ..addOption('send')
+    ..addFlag('mine', negatable: false)
+    ..addFlag('json', negatable: false);
+  final ArgResults res;
+  try {
+    res = parser.parse(args);
+  } on FormatException catch (e) {
+    stderr.writeln('✗ ${e.message}');
+    stderr.writeln(_reportUsage);
+    return 2;
+  }
+  final json = res.flag('json');
+  int fail(String msg, [int code = 1]) {
+    json ? print(jsonEncode({'ok': false, 'error': msg})) : stderr.writeln('✗ $msg');
+    return code;
+  }
+
+  final reporter = GitHubReporter();
+  if (res.flag('mine')) return _reportMine(reporter, json: json);
+
+  final BuiltReport built;
+  final drafts = ReportDrafts();
+  final sendId = res.option('send');
+  if (sendId != null) {
+    final draft = drafts.load(sendId);
+    if (draft == null) return fail('no draft $sendId — it was sent already, or is over a day old (run the --dry-run again)');
+    built = draft;
+  } else {
+    final interactive = !json && stdin.hasTerminal;
+    var kindArg = res.rest.isNotEmpty ? res.rest[0] : null;
+    var title = res.option('title') ?? (res.rest.length > 1 ? res.rest.sublist(1).join(' ') : null);
+    if (kindArg == null && interactive) {
+      stdout.write('kind [bug/feature/question]: ');
+      kindArg = stdin.readLineSync()?.trim();
+    }
+    final kind = ReportKind.parse(kindArg);
+    if (kind == null) return fail('the first argument is the kind: bug, feature or question\n$_reportUsage', 2);
+    if ((title == null || title.trim().isEmpty) && interactive) {
+      stdout.write('title: ');
+      title = stdin.readLineSync()?.trim();
+    }
+    if (title == null || title.trim().isEmpty) return fail('a title is required\n$_reportUsage', 2);
+    var body = res.option('message') ?? '';
+    final bodyFile = res.option('body-file');
+    if (bodyFile == '-') {
+      body = await stdin.transform(utf8.decoder).join();
+    } else if (bodyFile != null) {
+      if (!File(bodyFile).existsSync()) return fail('no such file: $bodyFile', 2);
+      body = File(bodyFile).readAsStringSync();
+    } else if (res.option('message') == null && interactive) {
+      print('describe it (what you did, what happened, what you expected) — end with an empty line:');
+      final lines = <String>[];
+      while (true) {
+        final line = stdin.readLineSync();
+        if (line == null || line.isEmpty) break;
+        lines.add(line);
+      }
+      body = lines.join('\n');
+    }
+
+    final session = Session.find();
+    final info = session?.readServerInfo();
+    final live = info != null && await _ping(info);
+    final attachments = <ReportAttachment>[];
+    List<LogEntry>? entries;
+    List<LogEntry> logEntries() => entries ??= [
+          if (session != null && session.logFile.existsSync())
+            for (final line in session.logFile.readAsLinesSync())
+              if (line.trim().isNotEmpty) ?_tryLogEntry(line),
+        ];
+    for (final a in res.multiOption('attach')) {
+      final m = RegExp(r'^logs(?::(\d+))?$').firstMatch(a);
+      if (m != null) {
+        if (session == null) return fail('--attach logs: not in a Flutter project');
+        attachments.add(logsAttachment(logEntries(), (int.tryParse(m.group(1) ?? '') ?? 200).clamp(1, 2000)));
+      } else if (a == 'errors') {
+        if (session == null) return fail('--attach errors: not in a Flutter project');
+        attachments.add(errorsAttachment(logEntries()) ?? ReportAttachment.text('errors', '(no exceptions in the log)'));
+      } else if (a == 'shot') {
+        if (!live) return fail('--attach shot needs a running session (`emu up`)');
+        final ts = DateTime.now().toIso8601String().replaceAll(RegExp(r'[:.]'), '-');
+        final r = await _post(info, '/api/screenshot?path=${Uri.encodeQueryComponent('.emu/report-shot-$ts.png')}');
+        if (r?['ok'] != true) return fail('--attach shot: ${r?['error'] ?? 'no response from the server'}');
+        attachments.add(ReportAttachment.image('screenshot', '${r!['path']}'));
+      } else if (File(a).existsSync()) {
+        if (RegExp(r'\.(png|jpe?g|gif)$', caseSensitive: false).hasMatch(a)) {
+          attachments.add(ReportAttachment.image(a.split('/').last, File(a).absolute.path));
+        } else {
+          final f = File(a);
+          if (f.lengthSync() > 512 * 1024) return fail('--attach $a: over 512KB — attach part of it');
+          try {
+            attachments.add(ReportAttachment.text(a.split('/').last, f.readAsStringSync()));
+          } on FileSystemException {
+            return fail('--attach $a: not a text file');
+          }
+        }
+      } else {
+        return fail('--attach $a: use logs[:N], errors, shot or a file path', 2);
+      }
+    }
+
+    String? device, appState;
+    if (live) {
+      // The server's view (it asks `flutter devices` once per device, which takes a few seconds).
+      try {
+        final r = await http
+            .get(Uri.parse('${info.baseUrl}/api/report/session'), headers: info.headers)
+            .timeout(const Duration(seconds: 30));
+        final j = jsonDecode(r.body) as Map<String, dynamic>;
+        device = j['device'] as String?;
+        appState = j['appState'] as String?;
+      } catch (_) {}
+    }
+    final root = session?.projectRoot.path;
+    final scrub = Scrubber.forProject(root, appIds: [
+      if (root != null)
+        for (final platform in ['android', 'ios']) ?builtAppId(root, platform),
+    ]);
+    try {
+      built = buildReport(
+        ReportDraft(kind: kind, title: title, body: body, attachments: attachments),
+        await collectEnvironment(device: device, appState: appState, from: 'cli'),
+        scrub,
+      );
+    } on FormatException catch (e) {
+      return fail(e.message, 2);
+    }
+  }
+
+  final gh = await reporter.ghReady();
+  final labeled = gh && (await reporter.repoLabels()).contains(built.kind.label);
+  if (res.flag('dry-run')) {
+    final id = drafts.save(built);
+    if (json) {
+      print(jsonEncode({'ok': true, 'draft': id, 'via': gh ? 'gh' : 'browser', 'labeled': labeled, ...built.toJson()}));
+    } else {
+      _printReport(built, gh: gh, labeled: labeled);
+      print('draft $id — send exactly this with: emu report --send $id');
+    }
+    return 0;
+  }
+  // `--send <id>` is itself the answer: that draft was shown by --dry-run.
+  if (!res.flag('yes') && sendId == null) {
+    if (json || !stdin.hasTerminal) return fail('add --yes to send without asking (or --dry-run to only preview)', 2);
+    _printReport(built, gh: gh, labeled: labeled);
+    stdout.write(gh ? 'Send this issue? [y/N] ' : 'Open it in the browser to submit? [y/N] ');
+    final answer = stdin.readLineSync()?.trim().toLowerCase();
+    if (answer != 'y' && answer != 'yes') {
+      print('cancelled — nothing was sent');
+      return 0;
+    }
+  }
+
+  final result = await reporter.send(built, useGh: gh);
+  if (!result.ok) return fail(result.error!);
+  if (sendId != null) drafts.remove(sendId);
+  var copiedBody = false;
+  if (result.via == 'browser' && reporter.newIssueUrl(built).trimmed) copiedBody = await copyTextToClipboard(built.body);
+  var copiedImage = false;
+  if (built.images.isNotEmpty && result.via == 'gh') copiedImage = await copyImageToClipboard(built.images.first);
+  if (json) {
+    print(jsonEncode({...result.toJson(), 'images': built.images, if (copiedImage) 'imageCopied': true}));
+  } else if (result.via == 'browser') {
+    print('» opening the prefilled issue form — submit it there (gh is not signed in to github.com)');
+    if (copiedBody) print('  the attachments did not fit in a link: the full body is on the clipboard — paste it over');
+  } else {
+    print(result.duplicate
+        ? '! already sent a moment ago — #${result.number} ${result.url}'
+        : '✓ sent — #${result.number} ${result.url}${result.labeled ? '  [${built.kind.label}]' : ''}');
+  }
+  if (built.images.isNotEmpty && !json) {
+    print(copiedImage
+        ? '  the screenshot is on the clipboard — paste it (⌘V) into a comment on the issue'
+        : '  add the screenshot by dragging it into a comment on the issue:');
+    for (final i in built.images.skip(copiedImage ? 1 : 0)) {
+      print('    $i');
+    }
+  }
+  final open = result.via == 'browser' || built.images.isNotEmpty;
+  if (open && result.url != null && !json) await _openUrl(result.url!);
+  return 0;
+}
+
+LogEntry? _tryLogEntry(String line) {
+  try {
+    return LogEntry.fromJson(jsonDecode(line) as Map<String, dynamic>);
+  } catch (_) {
+    return null;
+  }
+}
+
+void _printReport(BuiltReport r, {required bool gh, required bool labeled}) {
+  final rule = '─' * 60;
+  print('to:     github.com/$reportRepo  (${gh ? 'gh issue create' : 'browser — gh is not signed in to github.com'})');
+  print('title:  ${r.title}');
+  print('label:  ${labeled ? r.kind.label : '(none${gh ? ' — the repo has no "${r.kind.label}" label' : ''})'}');
+  print(rule);
+  print(r.body.trimRight());
+  print(rule);
+  for (final i in r.images) {
+    print('+ screenshot, pasted in after: $i');
+  }
+  for (final n in r.notes) {
+    print('! $n');
+  }
+}
+
+Future<int> _reportMine(GitHubReporter reporter, {required bool json}) async {
+  final issues = await reporter.ghReady() ? await reporter.mine() : null;
+  if (issues == null) {
+    if (json) {
+      print(jsonEncode({'ok': true, 'via': 'browser', 'url': myIssuesUrl}));
+    } else {
+      print('gh is not signed in to github.com — your issues: $myIssuesUrl');
+      await _openUrl(myIssuesUrl);
+    }
+    return 0;
+  }
+  if (json) {
+    print(jsonEncode({'ok': true, 'via': 'gh', 'issues': issues}));
+    return 0;
+  }
+  if (issues.isEmpty) print('(no issues sent with emu report yet)');
+  for (final i in issues) {
+    final prs = (i['prs'] as List).map((p) => '#${(p as Map)['number']}').join(', ');
+    final comments = i['comments'] as int;
+    print('#${i['number']}  [${i['status']}]  ${i['title']}'
+        '${comments > 0 ? '  ($comments comment${comments == 1 ? '' : 's'})' : ''}'
+        '${prs.isEmpty ? '' : '  PR $prs'}');
+    print('      ${i['url']}');
+  }
+  return 0;
+}
+
+// --------------------------------------------------------------------------
 // helpers
 // --------------------------------------------------------------------------
 ServerInfo _requireServer() {
@@ -3242,12 +3633,13 @@ COMMANDS
      --quiet <ms>          quiet window with no scheduled frames (default 150)
   open                   Open the dashboard in the browser
   pages                  List the dashboard pages declared in emu.yaml (`pages:`)
-  run <page>.<item> [on|off] [-s, --select <col>=<value>]... [-y, --yes]
+  run <page>.<item> [on|off] [-s, --select <col>=<value>]... [-c, --checked <key>,…] [-y, --yes]
   run <page>.<block>.<action> [-r, --row <col>=<value>]... [-i, --input <field>=<value>]...
-                         Run a page's toolbar item, row button or form button, as
-                         the dashboard does. A toggle takes on/off; confirm: true
-                         actions need --yes; --select/--row/--input fill
-                         {{selected.<col>}}/{{row.<col>}}/{{input.<field>}}
+                         Run a page's toolbar item, row button, form button or
+                         html block action, as the dashboard does. A toggle takes
+                         on/off; confirm: actions ask y/N (or --yes);
+                         --select/--row/--input/--checked fill
+                         {{selected.<col>}}/{{row.<col>}}/{{input.<field>}}/{{checked.*}}
   block <page>.<block> [-s, --select <col>=<value>]... [--seg <name>]
                          What a page's list (rows) or diff block shows; --select
                          fills {{selected.<col>}} like picking a row
@@ -3271,6 +3663,13 @@ COMMANDS
   hub [--no-open] [--stop]
                          One page for every session: a drawer of sessions, the
                          picked one's dashboard beside it (http://127.0.0.1:4576)
+  report <bug|feature|question> "<title>" [-m <text>] [--attach logs[:N]|errors|shot|<file>]...
+                         Report a bug/idea/question about emu as a GitHub issue:
+                         shows the whole issue (paths, names, tokens masked) and
+                         sends after y (gh, else a prefilled browser form)
+     -y, --yes             send without asking
+     --dry-run             only show it (and keep it as a draft: --send <id>)
+     --mine                the issues you sent with emu report, and their status
 
 ENV
   EMU_PROJECT   Project root override (default: auto-detect via pubspec.yaml)

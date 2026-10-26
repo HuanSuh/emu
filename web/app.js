@@ -100,6 +100,25 @@ function highlight(text) {
   return escapeHtml(text).replace(re, '<mark>$1</mark>');
 }
 
+// http(s) addresses in [text] as links that open in a new tab; the rest goes
+// through [fmt] (escaping, the search highlight). Punctuation that ends a
+// sentence, and a ) with no ( in the address, stay out of the link.
+const URL_RE = /https?:\/\/[^\s<>"'`]+/g;
+function linkify(text, fmt = escapeHtml) {
+  let out = '', at = 0;
+  for (const m of text.matchAll(URL_RE)) {
+    let url = m[0];
+    while (/[.,;:!?'")\]}]$/.test(url)) {
+      const opens = url.split('(').length, closes = url.split(')').length;
+      if (url.endsWith(')') && opens >= closes) break;
+      url = url.slice(0, -1);
+    }
+    out += fmt(text.slice(at, m.index)) + `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${fmt(url)}</a>`;
+    at = m.index + url.length;
+  }
+  return out + fmt(text.slice(at));
+}
+
 function rowHtml(e) {
   const ts = new Date(e.ts);
   const hh = String(ts.getHours()).padStart(2, '0');
@@ -107,7 +126,7 @@ function rowHtml(e) {
   const ss = String(ts.getSeconds()).padStart(2, '0');
   return `<div class="row ${e.level}"><span class="ts">${hh}:${mm}:${ss}</span>`
        + `<span class="tag">${TAG[e.level] || 'I'}</span>`
-       + `<span class="txt">${highlight(e.text)}</span></div>`;
+       + `<span class="txt">${linkify(e.text, highlight)}</span></div>`;
 }
 
 function render() {
@@ -183,6 +202,7 @@ function connect() {
     else if (msg.type === 'ext') onPageRun(msg);   // a page item started/finished (here, another tab or the CLI)
     else if (msg.type === 'pages') loadPages();    // emu.yaml changed
     else if (msg.type === 'ext-watch') onPageWatch(msg); // a file a page block watches changed
+    else if (msg.type === 'ext-auto') onPageAuto(msg);   // an `auto:` action switched on or off
     else if (msg.type === 'mock') loadMocks();       // scenario switched or saved (here, another tab or the CLI)
     else if (msg.type === 'mock-hit') onMockHit(msg.hit); // the app made a request through emu
   };
@@ -207,6 +227,7 @@ async function action(path, label) {
 // [retries]: for the automatic first load — the capture can fail right as the
 // app reaches `running`, and nothing else would ask again until ↻.
 function refreshShot(retries = 0) {
+  if (!screenOpen()) { shotPending = true; return; } // fetched when the panel unfolds
   const img = els.shotImg;
   // Only the first frame gets the loader; later refreshes keep the old frame up.
   if (img.hidden) showLoading('loading screen…');
@@ -335,10 +356,33 @@ async function openUrl() {
 }
 
 let autoTimer = null;
-els.shotAuto.addEventListener('change', () => {
+function syncAutoRefresh() {
   clearInterval(autoTimer);
-  if (els.shotAuto.checked) { refreshShot(); autoTimer = setInterval(refreshShot, 1500); }
-});
+  autoTimer = null;
+  if (els.shotAuto.checked && screenOpen()) { refreshShot(); autoTimer = setInterval(refreshShot, 1500); }
+}
+els.shotAuto.addEventListener('change', syncAutoRefresh);
+
+// The screen panel folds for work that doesn't look at the device (› or s)
+// into a strip on the right edge, leaving its width to the page; the strip
+// (or s) unfolds it. While folded no screenshot is fetched — auto refresh
+// pauses — and it unfolds with a fresh one. Kept per browser.
+const SCREEN_FOLDED_KEY = 'emu.screenFolded';
+let shotPending = false; // a refresh came while the panel was folded
+function screenOpen() { return !document.getElementById('screen').hidden; }
+function setScreenOpen(open) {
+  document.getElementById('screen').hidden = !open;
+  document.getElementById('screen-unfold').hidden = open;
+  try {
+    if (open) localStorage.removeItem(SCREEN_FOLDED_KEY);
+    else localStorage.setItem(SCREEN_FOLDED_KEY, '1');
+  } catch (_) {}
+  syncAutoRefresh();
+  if (open && shotPending) { shotPending = false; refreshShot(); }
+}
+document.getElementById('screen-fold').onclick = () => setScreenOpen(false);
+document.getElementById('screen-unfold').onclick = () => setScreenOpen(true);
+try { if (localStorage.getItem(SCREEN_FOLDED_KEY)) setScreenOpen(false); } catch (_) {}
 document.getElementById('shot-refresh').onclick = () => refreshShot();
 document.getElementById('text-send').onclick = sendText;
 els.textInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendText(); });
@@ -616,12 +660,14 @@ document.querySelectorAll('.lvl').forEach(btn => {
   });
 });
 
-// Keyboard: r = reload, R = restart (when not typing in the search box).
+// Keyboard: r = reload, R = restart, s = fold or unfold the screen panel (when not typing in a field).
 document.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'INPUT') return; // don't hijack typing in any field
-  if (confirmResolve) return; // the confirm dialog is up
+  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return; // don't hijack typing in any field
+  if (e.metaKey || e.ctrlKey || e.altKey) return; // a browser shortcut (⌘R reloads the page, not the app)
+  if (dialogOpen()) return; // a dialog is up (pages.js)
   if (e.key === 'r') action('reload', 'hot reload');
   else if (e.key === 'R') action('restart', 'hot restart');
+  else if (e.key === 's') setScreenOpen(!screenOpen());
 });
 
 function escapeHtml(s) {

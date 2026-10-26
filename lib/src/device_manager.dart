@@ -27,6 +27,7 @@ List<DeviceInfo> parseFlutterDevices(String jsonText) {
       platform: _platform(m['platformType'] as String?, target),
       emulator: (m['emulator'] as bool?) ?? false,
       targetPlatform: target,
+      sdk: m['sdk'] as String?,
     );
   }).toList();
 }

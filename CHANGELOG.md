@@ -6,6 +6,75 @@
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-26
+
+### Added
+- 대시보드 페이지 블록 `panel` — 입력 칸 없는 form(버튼 패널). 툴바에 두기 싫은 버튼(배포 등)을 영역 안에 묶는다.
+  `form` 도 `fields` 를 빼거나 `[]` 로 둘 수 있고, 그때 버튼의 `{{input.*}}` 는 설정 오류. form·panel 의 `note:` 는
+  제목 아래 설명 한 줄. `emu pages` 는 입력 칸 없는 form 을 `panel` 로, note 를 함께 보여 준다 (#48).
+- 대시보드 pages 의 `confirm:` 이 문자열·맵을 받는다(#46) — `title`·`message`(자리표시자, 텍스트로만)·`danger`
+  (Run 강조, 포커스는 Cancel)·`button`·`preview`(확인 창 전에 돌리는 명령: diff·표·텍스트로 보이고, 실패하면
+  Run 을 막음, `allowOnPreviewError` 로 해제). 실행할 명령은 늘 접힌 채 보인다. 서버 428 응답에 `confirm`·
+  `preview` 가 붙고, `emu run` 은 터미널에서 같은 내용을 찍고 y/N 을 묻는다(`--yes` 는 그대로 건너뜀).
+- 커스텀 화면(`html` 블록)용 대시보드 인터페이스 1단계 (#49). 대시보드가 frame 에 `window.emu` 도우미를 넣는다:
+  `emu.onData`·`emu.run(id, {input})`(결과 `{ok, exitCode, error, output, data}` 를 돌려받음)·`emu.confirm`·
+  `emu.prompt`·`emu.toast`. 확인·입력 창은 대시보드가 frame 바깥에 출처(블록 제목·`src`)와 함께 텍스트로만
+  그리고, 한 번에 한 창·보이는 페이지의 frame 만 받으며, 연달아 취소하면 「이 화면의 요청 막기」를 제안한다.
+  `confirm: true` 액션은 frame 이 실행해도 대시보드 자체 확인 창을 거친다. 기존 `emu:ready`·`emu:action` 은 그대로.
+- `html` 블록 설정의 `inputs: [...]` 와 블록 자신의 액션(`actions:` 의 `- action: {…}`; 문자열은 지금처럼 툴바 id).
+  `POST /api/pages/<page>/frames/<block>/<action>`, `emu run <page>.<block>.<action> --input k=v`. input 은
+  `inputs:` 에 적은 이름만 받는다. 실행 응답에 stdout 이 JSON 이면 `data` 를 더한다. 예제 `docs/examples/html-block`.
+- 커스텀 화면 인터페이스 2단계 (#49). `emu.choose({title, options, multiple})` — 대시보드가 그리는 선택 창(confirm·
+  prompt 와 같은 규칙: 출처, 텍스트로만, 한 번에 한 창, 연속 취소 시 막기), 값 또는 `null`. `emu.select(key)` —
+  페이지 선택 행을 바꿈(없는 행이면 `{ok: false}`). `emu.refresh(blockId?)` — 자기 블록이나 같은 페이지 블록의
+  데이터를 다시 받음(받는 중·1초 안이면 거절).
+- 확인 창 합치기 (#49). `emu.run(id, {input, confirm: {title, message, detail}})` 이면 화면의 설명과 `confirm:` 의
+  문구·preview·실제 명령을 창 하나에 보여 주고 Run 한 번으로 실행. `emu.confirm` 직후(1초 안) 같은 화면이
+  `confirm:` 액션을 실행하면 OK 를 누른 창이 그 자리에서 명령 확인으로 이어진다. 합칠 수 없으면 두 번 묻는다.
+  frame 이 `confirmed` 를 보내는 길은 여전히 없다. 예제에 선택 list·Roll back·reload 를 더했다.
+- 대시보드 페이지 list 의 여러 행 체크(#47) — `check: true` 로 체크박스 열·전체 선택·개수. 버튼 명령에서
+  `{{checked.<col>...}}`(체크한 행마다 인자 하나), `{{checked.<col>}}`(쉼표로 이은 인자 하나),
+  `{{checked.count}}`, list 가 여럿이면 `{{<list>.checked.…}}`. `confirm:` 의 title·message·preview 에도
+  쓸 수 있다(텍스트에서는 펼치지 않음). `needs: checked` 는 0개일 때 버튼 비활성.
+  `check: {column, toggle}` 로 도구가 체크 상태를 가질 수 있고, `rowActions[].bulk: true` 는 체크한 행마다
+  차례로 돌리는 버튼을 목록 머리에 둔다. `emu run … --checked a,b,c`.
+- `emu report <bug|feature|question> "<제목>"` — emu 에 대한 버그·기능 요청·질문을 GitHub 이슈로(#50). 보낼 이슈 전체(제목·
+  라벨·본문·환경 정보)를 보여 주고 y 로 확인한 뒤에만 보낸다(`--yes`, `--dry-run` → `--send <id>`). 첨부는
+  `--attach logs[:N]|errors|shot|<파일>` 로 고른 것만. 경로·프로젝트/앱 이름·토큰은 미리 보기 전에 가린다. `gh` 가
+  로그인돼 있으면 `gh issue create`, 아니면 미리 채운 GitHub 작성 화면. 스크린샷은 이슈를 만든 뒤 코멘트에
+  붙여 넣게(클립보드 복사). `emu report --mine` — 내가 보낸 리포트와 상태.
+- 대시보드 **⚑ Report** 버튼·허브 서랍의 Report — 같은 기능의 모달(미리 본 그대로만 보냄, `My reports` 탭).
+  `/api/report/*`.
+- `emu:report` 스킬 — Claude Code 에서 대화로 리포트.
+- 대시보드 페이지 list 의 긴 칸 말줄임과 행 버튼 열 고정(#59). text 칸은 너비(기본 32em, `name:text:40em`)를 넘으면
+  `…` 로 줄이고 마우스를 올리면 전체를 보인다. `:start` 는 앞을 줄여 경로의 끝이 보이게 한다(`path:text:start`).
+  행 버튼 열은 표가 가로로 넘쳐도 오른쪽에 붙어 있다.
+- 대시보드 페이지 list 의 정렬과 키보드 이동(#62). 칸 머리를 누르면 오름차순 → 내림차순 → 명령이 낸 순서(숫자는
+  숫자로, `1.2.10` 같은 버전은 자연 정렬). `sort: <col>[:asc|desc]` 로 처음 순서를 정하고, 누른 정렬은 브라우저별로
+  기억한다. 선택을 만드는 list 에서 ↑·↓ 로 행을 고르면 따라오는 블록은 키를 멈춘 뒤 한 번만 불러오고, `/` 는 필터로 간다.
+- 대시보드 페이지 list 의 트리 보기(#56). `tree: path` / `tree: [env, path]` / `tree: {columns, open}` — 열 값들을
+  `/` 로 나눈 경로의 마지막 조각을 행, 앞을 폴더로 그린다. 폴더는 행 수를 보이고 누르면 접고 펴며(처음엔 `open`
+  단계까지 펼침, 누른 상태는 브라우저별로 기억), 체크박스로 아래 행을 한 번에 체크한다. 필터 중에는 맞는 행과 그 위
+  폴더를 펼친다. 트리 머리는 이름 정렬. `emu block` 은 경로 열을 앞에 둔 평평한 표.
+- 대시보드 페이지 diff 블록의 세그먼트 맵(#58): `segments: {values, optional, hide}`. `optional: true` 면 처음엔 아무것도
+  고르지 않고 고른 버튼을 다시 누르면 꺼진다(`{{seg}}` 빈 값, `emu block` 에서 `--seg` 를 빼면 같다). `hide:
+  "{{selected.env}}"` 는 고른 행 값과 같은 세그먼트를 숨긴다. 출력에 hunk 가 없으면 「no differences」 대신 줄 번호
+  붙은 텍스트로 보인다. 목록 형식 `segments: [a, b]` 는 그대로.
+- 대시보드 패널 접기(#57). 기기 화면 패널은 머리의 ›(또는 `s` 키)로 오른쪽 끝의 좁은 띠로 접고, 띠를 눌러 편다 —
+  접힌 동안 스크린샷을 받지 않고(auto 도 멈춤) 펼 때 새로 받는다. 페이지 영역(left·main·bottom)은 첫 블록 머리의
+  꺾쇠로 블록 제목이 적힌 띠로 접고(left 는 세로, main·bottom 은 가로, 둘 다 접으면 오른쪽 열이 세로 띠), 띠를 누르면
+  그 자리에서 펼친다. 접힌 영역의 블록은 펼 때 불러오고(선택·체크를 가진 list 는 그대로), 상태는 브라우저에 기억한다.
+  마지막 남은 영역은 접을 수 없다.
+- 대시보드 페이지 output 블록(#61): 실행 중 출력이 실시간으로 쌓인다 — 서버가 stdout·stderr 를 100ms 단위로 묶어
+  `{type: 'ext', event: 'output', page, item, chunk}` 로 보내고, 끝나면 지금처럼 전체 결과로 바꾼다. output 과 Logs 의
+  `http(s)://` 주소는 새 탭 링크. output 머리 메뉴로 최근 10개 실행(이 탭에만)을 다시 보고, 새 실행이 시작되면 그
+  실행으로 돌아온다.
+- 대시보드 페이지 툴바 액션의 `auto: {watch, debounce, on}`(#60) — 감시하는 프로젝트 파일이 바뀌면 debounce 뒤 서버가
+  액션을 실행한다(`then:` 포함, 대시보드를 닫아도). 버튼 옆 ⚡ 로 켜고 끄며 스위치는 `.emu/pages_auto.json` 에 프로젝트별로
+  기억(`POST /api/pages/<page>/auto/<item>`, `ext-auto` 알림). 실행 중 바뀐 파일은 끝난 뒤 한 번만 더 돌리고 그 한 번 더의
+  변경은 세지 않는다(파일 수정 시각으로 판단) — 감시하는 파일을 쓰는 도구도 반복하지 않는다. 자리표시자·`confirm`·
+  `needs`·`openUrl` 액션과 툴바 밖 액션에 주면 설정 오류. 실패하면 토스트, Logs 에 `(auto: … changed)`.
+
 ## [0.14.0] - 2026-10-23
 
 ### Added
@@ -317,7 +386,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/HuanSuh/emu/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/HuanSuh/emu/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/HuanSuh/emu/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/HuanSuh/emu/compare/v0.11.0...v0.12.0

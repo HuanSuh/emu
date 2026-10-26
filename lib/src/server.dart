@@ -33,6 +33,8 @@ import 'pages.dart';
 import 'pages_api.dart';
 import 'probe.dart';
 import 'registry.dart';
+import 'report.dart';
+import 'report_api.dart';
 import 'session.dart';
 import 'settle.dart';
 import 'temp_device.dart';
@@ -188,6 +190,39 @@ class EmuServer {
   /// Dashboard pages from `emu.yaml` (`pages.dart`) and the runs of their items.
   late final PagesApi pages;
 
+  /// `emu report` from the dashboard (`report_api.dart`).
+  late final ReportApi report = ReportApi(ReportSources(
+    from: 'dashboard',
+    scrubber: () => Scrubber.forProject(session.projectRoot.path, appIds: [
+      for (final platform in ['android', 'ios']) ?builtAppId(session.projectRoot.path, platform),
+    ]),
+    logs: () => logStore.query(limit: 1 << 20),
+    screenshot: () async {
+      final ts = DateTime.now().toIso8601String().replaceAll(RegExp(r'[:.]'), '-');
+      final out = '${session.stateDir.path}/report-shot-$ts.png';
+      await devices.screenshot(out, platform: _platform, udid: engine.status.deviceId);
+      return out;
+    },
+    session: _reportSession,
+  ));
+  ({String id, DeviceInfo? info})? _reportDevice;
+
+  /// The device's kind for a report's tail (`flutter devices` once per device).
+  Future<({String? device, String? appState})> _reportSession() async {
+    final id = engine.status.deviceId;
+    if (id != null && _reportDevice?.id != id) {
+      DeviceInfo? info;
+      try {
+        info = (await devices.listDevices()).where((d) => d.id == id).firstOrNull;
+      } catch (_) {}
+      _reportDevice = (id: id, info: info);
+    }
+    return (
+      device: id == null ? null : describeDevice(_reportDevice?.info, fallbackPlatform: platformForDeviceId(id)),
+      appState: engine.status.state.name,
+    );
+  }
+
   /// `emu mock`, when emu.yaml has `mocks:` (see `mock.dart`).
   MockServer? mock;
   Timer? _pagesChangedDebounce;
@@ -225,6 +260,7 @@ class EmuServer {
       openUrl: (url) async => (await _openDeepLink(url)).$2,
       broadcast: _broadcast,
       log: (text, level) => logStore.add(text, level: level, source: 'ext'),
+      autoStateFile: File('${session.stateDir.path}/pages_auto.json'),
     );
     for (final problem in pages.load().problems) {
       logStore.add('emu.yaml pages: $problem', level: LogLevel.warn, source: 'system');
@@ -869,6 +905,7 @@ class EmuServer {
       default:
         if (path == '/api/mock' || path.startsWith('/api/mock/')) return _mockApi(req, path);
         if (path == '/api/pages' || path.startsWith('/api/pages/')) return pages.handle(req, path);
+        if (path == '/api/report' || path.startsWith('/api/report/')) return report.handle(req, path);
         return _json({'error': 'not found'}, status: 404);
     }
   }
@@ -1110,22 +1147,24 @@ class EmuServer {
     }
   }
 
-  /// A page block may watch any project path — `build/` or a git-ignored work
-  /// folder included — but not emu's or git's own churn. Checked in batches:
-  /// a save or a formatter run is a burst of events.
+  /// A page block or an `auto:` action may watch any project path — `build/`
+  /// or a git-ignored work folder included — but not emu's or git's own
+  /// churn. Checked in batches: a save or a formatter run is a burst of events.
   void _queuePageWatch(String rel) {
     if (rel.isEmpty || rel.split(RegExp(r'[/\\]')).any(const {'.git', '.dart_tool', '.emu'}.contains)) return;
     _pageWatchPaths.add(rel.replaceAll(r'\', '/'));
     _pageWatchDebounce?.cancel();
     _pageWatchDebounce = Timer(const Duration(milliseconds: 300), () {
-      final hits = pages.watching(_pageWatchPaths);
+      final paths = _pageWatchPaths.toList();
       _pageWatchPaths.clear();
+      final hits = pages.watching(paths);
       if (hits.isNotEmpty) {
         _broadcast({
           'type': 'ext-watch',
           'blocks': {for (final e in hits.entries) e.key: e.value.toList()},
         });
       }
+      pages.filesChanged(paths);
     });
   }
 
@@ -1438,6 +1477,7 @@ class EmuServer {
     _fileWatchDebounce?.cancel();
     _pagesChangedDebounce?.cancel();
     _pageWatchDebounce?.cancel();
+    pages.dispose();
     await _fileWatch?.cancel();
     await _snapshotSub?.cancel(); // no git snapshots while shutting down
     await _setupWatch?.cancel();

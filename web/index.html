@@ -8,6 +8,7 @@
   <link rel="icon" type="image/png" href="favicon.png" />
   <link rel="apple-touch-icon" href="apple-touch-icon.png" />
   <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="report.css" />
 </head>
 <body>
   <header class="topbar">
@@ -24,6 +25,7 @@
       <button id="btn-cold" title="Cold restart">❄ Cold</button>
       <button id="btn-stop" class="danger" title="Stop the app">■ Stop</button>
       <button id="btn-shot" title="Screenshot">▣ Shot</button>
+      <button id="btn-report" data-emu-report title="Report a bug or idea about emu (GitHub issue)">⚑ Report</button>
     </div>
   </header>
 
@@ -94,6 +96,7 @@
         <span>screen</span>
         <label class="chk"><input type="checkbox" id="shot-auto" /> auto</label>
         <button id="shot-refresh" title="Refresh screenshot">↻</button>
+        <button id="screen-fold" title="Fold the screen panel (s)">›</button>
       </div>
       <div class="screen-view" id="screen-view">
         <img id="shot-img" alt="device screen" hidden />
@@ -114,19 +117,37 @@
         <button id="url-open" title="Open deep link on the device (emu open-url)">open</button>
       </div>
     </aside>
+    <button class="fold-bar screen-fold-bar" id="screen-unfold" title="Unfold the screen panel (s)" hidden><span class="fold-icon">‹</span><span class="fold-titles">screen</span></button>
   </div>
 
   <div class="actionbar" id="toast" hidden></div>
 
   <div class="modal-dim" id="confirm-dim" hidden></div>
   <div class="modal" id="confirm" role="dialog" aria-modal="true" aria-labelledby="confirm-title" hidden>
+    <div class="modal-from" id="confirm-from" hidden></div>
     <div class="modal-head" id="confirm-title"></div>
     <div class="modal-body">
-      <div class="muted">runs in the project root:</div>
-      <pre id="confirm-cmd"></pre>
-      <div class="muted" id="confirm-then"></div>
+      <div class="confirm-msg" id="confirm-msg" hidden></div>
+      <pre class="modal-detail" id="confirm-detail" hidden></pre>
+      <div class="form-grid modal-fields" id="confirm-fields" hidden></div>
+      <div class="modal-choices" id="confirm-choices" hidden></div>
+      <div class="confirm-action" id="confirm-action" hidden>
+        <div class="muted">and runs — in emu.yaml:</div>
+        <div class="confirm-action-title" id="confirm-action-title"></div>
+        <div class="confirm-msg" id="confirm-action-msg" hidden></div>
+      </div>
+      <div class="confirm-preview" id="confirm-preview" hidden></div>
+      <div id="confirm-command" hidden>
+        <details id="confirm-cmd-box">
+          <summary class="muted">runs in the project root: <code id="confirm-cmd-line"></code></summary>
+          <pre id="confirm-cmd"></pre>
+        </details>
+        <div class="muted" id="confirm-then"></div>
+      </div>
     </div>
     <div class="modal-foot">
+      <button id="confirm-block" hidden title="Answer this view's confirm, prompt and choose requests with no until the dashboard reloads">Block requests from this view</button>
+      <span class="muted" id="confirm-wait" hidden>OK — a moment, in case the view runs a command next…</span>
       <span class="grow"></span>
       <button id="confirm-cancel">Cancel</button>
       <button id="confirm-run" class="run">Run</button>
@@ -137,5 +158,6 @@
   <script src="app.js"></script>
   <script src="pages.js"></script>
   <script src="mocks.js"></script>
+  <script src="report.js"></script>
 </body>
 </html>

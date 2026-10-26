@@ -136,10 +136,17 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
 - `emu open` — 대시보드를 브라우저로 열기.
 - `emu pages` / `emu run <page>.<item> [on|off] [--select <col>=<value>] [--yes]` — 프로젝트가 `emu.yaml` `pages:` 에
   선언한 도구(대시보드 페이지의 버튼·토글)를 CLI로 실행. 출력 뒤 `✓/✗` 한 줄, 종료코드로 판정(명령이
-  실패하면 그 명령의 종료코드). 토글에 on/off 를 빼면 현재 상태만 출력. `confirm: true` 항목은 `--yes` 가
-  있어야 실행된다. `emu pages` 는 세션이 없으면 `emu.yaml` 을 직접 읽으므로 설정 수정 직후 검증에 쓴다.
+  실패하면 그 명령의 종료코드). 토글에 on/off 를 빼면 현재 상태만 출력. `confirm:` 항목은 확인 창 내용
+  (제목·설명·preview·명령)을 찍고 터미널이면 y/N 을 묻는다 — 에이전트처럼 터미널이 아니면 `--yes` 가 있어야
+  실행된다(`--yes` 없이 `--json` 이면 preview 결과만 받아 볼 수 있다). `emu pages` 는 세션이 없으면 `emu.yaml` 을 직접 읽으므로 설정 수정 직후 검증에 쓴다.
+  `auto:` 가 켜진 액션은 감시 파일이 바뀌면 서버가 스스로 실행한다(`emu pages` 에 `runs on change of …: on`) —
+  그 파일을 고친 뒤 같은 액션을 또 `emu run` 할 필요가 없다.
 - `emu run <page>.<block>.<action> [--row <col>=<value>] [--input <field>=<value>]` — list 의 행 버튼,
-  form 의 버튼을 CLI로(`{{row.*}}`·`{{input.*}}` 를 채움).
+  form·panel(입력 칸 없는 form) 의 버튼, html 블록 자신의 액션을 CLI로(`{{row.*}}`·`{{input.*}}` 를 채움).
+  html 블록(커스텀 화면) 파일은 `window.emu` 로 대시보드와 주고받는다: `onData`·`run(id, {input, confirm})`·
+  `confirm`·`prompt`·`choose`·`select(key)`·`refresh(blockId?)`·`toast` — 표와 규칙은 README 의 html 블록 절. `--checked <key>,…` 는 `check: true` list 의
+  체크한 행(`{{checked.<col>...}}`·`{{checked.count}}`, list 가 여럿이면 `--checked <list>=<key>,…`).
+  `check.toggle` 이 있는 list 는 `emu run <page>.<list>.check --row <col>=<value>` 로 체크를 바꾼다.
 - `emu mock` / `emu mock use <scenario>` / `emu mock off` / `emu mock log [-n N]` — `emu.yaml` `mocks:` 의
   API 목업. 시나리오를 바꿔 가며 앱이 빈 목록·오류·지연 응답을 받을 때의 화면을 확인한다(재시작 불필요).
   `mock log [--bodies]` 로 앱이 실제로 보낸 요청과 목업 여부를 본다.
@@ -149,6 +156,7 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
   README "API 목업" 참고.
 - `emu block <page>.<block> [--select <col>=<value>] [--seg <name>]` — 페이지의 list(표)·diff 블록이
   보여 주는 내용을 CLI로. `--select` 가 대시보드에서 행을 고른 것처럼 `{{selected.<col>}}` 을 채운다.
+  `--seg` 를 빼면 첫 세그먼트, `optional` 세그먼트면 비교 없음(빈 `{{seg}}`).
 - `emu settle [--timeout <s>] [--quiet <ms>]` — 애니메이션/리빌드가 멈출 때까지
   대기(`tap`/`shot`/`open-url` 은 이미 기본으로 이걸 하므로, 두 명령 사이에
   독립적으로 끼워 넣거나 기본값보다 세밀하게 조정할 때만 필요).
@@ -159,6 +167,8 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
 - `emu config [--profile <name>]` — `emu.yaml` 계층 병합 결과 + 학습된 메모리(`--profile`
   주면 그 profile로 미리보기).
 - `emu doctor` — 의존성 점검(flutter/adb/emulator/xcrun) + 업데이트 여부.
+- `emu report …` — emu 자체의 버그·불편·기능 요청을 GitHub 이슈로. 사용자가 원할 때만, `emu:report` 스킬의
+  절차(미리 보기 → 확인 → 전송)를 따른다. 앱의 버그는 여기로 보내지 않는다.
 - `emu --version`/`-v`, `emu update [-y]`, `emu uninstall [-y]` — 버전 확인,
   최신 릴리스로 업데이트, PATH 심링크 제거.
 

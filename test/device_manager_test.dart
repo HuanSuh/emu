@@ -6,7 +6,7 @@ void main() {
     const json = '''
     [
       {"name":"sdk gphone64 arm64","id":"emulator-5554","emulator":true,
-       "platformType":"android","targetPlatform":"android-arm64"},
+       "platformType":"android","targetPlatform":"android-arm64","sdk":"Android 14 (API 34)"},
       {"name":"iPhone 15","id":"ABC-123","emulator":true,
        "platformType":"ios","targetPlatform":"ios"}
     ]''';
@@ -15,6 +15,8 @@ void main() {
     expect(devices[0].id, 'emulator-5554');
     expect(devices[0].platform, 'android');
     expect(devices[0].emulator, isTrue);
+    expect(devices[0].sdk, 'Android 14 (API 34)');
+    expect(devices[1].sdk, isNull);
     expect(devices[1].name, 'iPhone 15');
     expect(devices[1].platform, 'ios');
   });

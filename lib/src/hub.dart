@@ -26,6 +26,8 @@ import 'api_guard.dart';
 import 'device_lease.dart';
 import 'device_manager.dart';
 import 'registry.dart';
+import 'report.dart';
+import 'report_api.dart';
 import 'server.dart' show readWebAsset, contentTypeFor;
 import 'session.dart';
 import 'version.dart';
@@ -277,6 +279,9 @@ class HubServer {
     return _static(path);
   }
 
+  /// `emu report` from the hub: no session, so the environment tail only.
+  final _report = ReportApi(ReportSources(from: 'hub', scrubber: () => Scrubber.forProject(null)));
+
   Future<Response> _api(Request req, String path) async {
     final get = req.method == 'GET' || req.method == 'HEAD';
     if (path == '/api/status' && get) {
@@ -300,6 +305,7 @@ class HubServer {
     final m = RegExp(r'^/api/sessions/([0-9a-f]{12})/(reload|restart|down|reveal)$').firstMatch(path);
     if (m != null && req.method == 'POST') return _sessionAction(m.group(1)!, m.group(2)!);
     if (path == '/api/projects/start' && req.method == 'POST') return _startProject(req);
+    if (path == '/api/report' || path.startsWith('/api/report/')) return _report.handle(req, path);
     return _json({'ok': false, 'error': 'not found: ${req.method} $path'}, status: 404);
   }
 
@@ -408,6 +414,8 @@ class HubServer {
       '/hub.css': 'hub/hub.css',
       '/favicon.png': 'favicon.png',
       '/apple-touch-icon.png': 'apple-touch-icon.png',
+      '/report.js': 'report.js',
+      '/report.css': 'report.css',
     };
     final rel = files[path];
     final bytes = rel == null ? null : readWebAsset(rel);

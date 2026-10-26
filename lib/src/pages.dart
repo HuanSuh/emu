@@ -8,8 +8,9 @@
 /// Commands come only from the config. A request names an item by id and
 /// never carries a command, so the dashboard can run exactly what the project
 /// declared — the same trust as the `onDeviceReady`/`onAppStarted` hooks. The
-/// values a request does carry (the selected row, a segment) fill
-/// placeholders such as `{{selected.name}}`, each inside its own argument.
+/// values a request does carry (the selected row, a segment, the checked
+/// rows) fill placeholders such as `{{selected.name}}`, each inside its own
+/// argument — or, for `{{checked.name...}}`, as arguments of their own.
 ///
 /// Parsing is pure and collects every problem instead of failing: one typo
 /// hides one item, not the whole page.
@@ -23,8 +24,12 @@ bool isPageId(String s) => _id.hasMatch(s);
 /// The built-in page the dashboard always shows first.
 const debugPageId = 'debug';
 
-/// `{{selected.<column>}}`, `{{row.<column>}}`, `{{seg}}`, `{{input.<field>}}`.
-final _placeholder = RegExp(r'\{\{\s*([A-Za-z]+)(?:\.([A-Za-z0-9_-]+))?\s*\}\}');
+/// `{{selected.<column>}}`, `{{row.<column>}}`, `{{seg}}`, `{{input.<field>}}`,
+/// `{{checked.<column>}}`, `{{checked.<column>...}}`, `{{checked.count}}` —
+/// the checked ones also as `{{<list>.checked.…}}`. Groups: list, kind,
+/// column, `...`.
+final _placeholder = RegExp(
+    r'\{\{\s*(?:([A-Za-z0-9][A-Za-z0-9_-]*)\.(?=checked\.))?([A-Za-z]+)(?:\.([A-Za-z0-9_-]+))?(\.\.\.)?\s*\}\}');
 final _braces = RegExp(r'\{\{.*?\}\}');
 
 /// A command from the config: an argv list, started directly, or a string,
@@ -45,35 +50,69 @@ class PageCommand {
   /// What runs, for people (confirm dialog, `emu pages`): argv shell-quoted.
   String get display => argv?.map(shellQuote).join(' ') ?? shell!;
 
-  /// The placeholders used, as `selected.name`, `row.id`, `seg`, `input.url`.
+  /// The placeholders used, as `selected.name`, `row.id`, `seg`, `input.url`,
+  /// `checked.name...`, `templates.checked.count`.
   Set<String> get placeholders => {
         for (final arg in argv ?? const <String>[])
           for (final m in _placeholder.allMatches(arg)) _key(m),
       };
 
+  /// The lists whose checked rows this command reads; an unqualified
+  /// `{{checked.*}}` is [checkList]'s (the page's one list with `check:`).
+  Set<String> checkedLists(String? checkList) => {for (final arg in argv ?? const <String>[]) ..._checkedIn(arg, checkList)};
+
+  static Set<String> _checkedIn(String text, String? checkList) => {
+        for (final m in _placeholder.allMatches(text))
+          if (m.group(2) == 'checked') ?(m.group(1) ?? checkList),
+      };
+
   /// This command with every placeholder filled from [vars] (keys as in
-  /// [placeholders]). A value replaces its placeholder inside that one
-  /// argument — spaces or `;` in it are never split or run. Throws
-  /// [MissingValue] for the first placeholder [vars] has no value for.
-  PageCommand fill(Map<String, String> vars) {
+  /// [placeholders]) and [checked] (list id → its checked rows; an
+  /// unqualified `{{checked.*}}` reads [checkList]'s). A value replaces its
+  /// placeholder inside that one argument — spaces or `;` in it are never
+  /// split or run; `{{checked.<col>...}}` becomes one argument per checked
+  /// row, and none for no rows. Throws [MissingValue] for the first
+  /// placeholder there is no value for.
+  PageCommand fill(Map<String, String> vars,
+      {Map<String, List<Map<String, String>>> checked = const {}, String? checkList}) {
     final a = argv;
     if (a == null) return this;
     return PageCommand.argv([
       for (final arg in a)
-        arg.replaceAllMapped(_placeholder, (m) => vars[_key(m)] ?? (throw MissingValue(_key(m)))),
+        if (_placeholder.matchAsPrefix(arg) case final m? when m.group(4) != null && m.end == arg.length)
+          for (final row in _rows(m, checked, checkList)) _column(row, m)
+        else
+          _fillText(arg, vars, checked, checkList),
     ]);
   }
 
-  static String _key(Match m) => m.group(2) == null ? m.group(1)! : '${m.group(1)}.${m.group(2)}';
+  static List<Map<String, String>> _rows(Match m, Map<String, List<Map<String, String>>> checked, String? checkList) =>
+      checked[m.group(1) ?? checkList] ?? const [];
+
+  static String _column(Map<String, String> row, Match m) => row[m.group(3)] ?? (throw MissingValue(_key(m)));
+
+  /// [text] with each placeholder replaced by its one value; a checked
+  /// column is the checked rows' values joined with commas.
+  static String _fillText(
+          String text, Map<String, String> vars, Map<String, List<Map<String, String>>> checked, String? checkList) =>
+      text.replaceAllMapped(_placeholder, (m) {
+        if (m.group(2) != 'checked') return vars[_key(m)] ?? (throw MissingValue(_key(m)));
+        final r = _rows(m, checked, checkList);
+        return m.group(3) == 'count' ? '${r.length}' : [for (final row in r) _column(row, m)].join(',');
+      });
+
+  static String _key(Match m) => [m.group(1), m.group(2), m.group(3)].nonNulls.join('.') + (m.group(4) ?? '');
 }
+
+final _checkedKey = RegExp(r'^(?:[^.]+\.)?checked\.');
 
 /// A placeholder with no value in the request, e.g. no row selected yet.
 class MissingValue implements Exception {
   MissingValue(this.key);
   final String key;
 
-  /// `selected`, `row`, `seg` or `input`.
-  String get kind => key.split('.').first;
+  /// `selected`, `row`, `seg`, `input` or `checked`.
+  String get kind => _checkedKey.hasMatch(key) ? 'checked' : key.split('.').first;
 
   @override
   String toString() => 'no value for {{$key}}';
@@ -131,10 +170,56 @@ sealed class ToolbarItem {
   Map<String, dynamic> toJson();
 }
 
+/// How an action asks first (`confirm:`): `true`, a message, or a map of
+/// these. Whatever it says, the dialog also shows the exact command — what
+/// it shows is what runs.
+class ConfirmSpec {
+  const ConfirmSpec({this.title, this.message, this.danger = false, this.button, this.preview, this.allowOnPreviewError = false});
+
+  /// null: `Run “<label>”?`.
+  final String? title;
+
+  /// Text under the title; may hold placeholders, filled as plain text.
+  final String? message;
+
+  /// Hard to undo: the Run button stands out, and Enter alone doesn't run it.
+  final bool danger;
+
+  /// The Run button's text; null: `Run`.
+  final String? button;
+
+  /// Runs before the dialog opens; its stdout shows in the dialog, and a
+  /// failure keeps Run disabled unless [allowOnPreviewError].
+  final PageCommand? preview;
+  final bool allowOnPreviewError;
+
+  /// The placeholders used, as in [PageCommand.placeholders].
+  Set<String> get placeholders => {
+        for (final text in [?title, ?message])
+          for (final m in _placeholder.allMatches(text)) PageCommand._key(m),
+        ...?preview?.placeholders,
+      };
+
+  /// The lists whose checked rows the title, message and preview read, as
+  /// in [PageCommand.checkedLists].
+  Set<String> checkedLists(String? checkList) => {
+        for (final text in [?title, ?message]) ...PageCommand._checkedIn(text, checkList),
+        ...?preview?.checkedLists(checkList),
+      };
+
+  /// [text] with its placeholders filled from [vars] and [checked], as plain
+  /// text (`{{checked.count}}`, a checked column comma-joined). Throws
+  /// [MissingValue] like [PageCommand.fill].
+  static String fillText(String text, Map<String, String> vars,
+          {Map<String, List<Map<String, String>>> checked = const {}, String? checkList}) =>
+      PageCommand._fillText(text, vars, checked, checkList);
+}
+
 /// Runs [run] when pressed — a toolbar button, a button on each row of a list
 /// (`rowActions`) or under a form. Instead of a command it may open
 /// [openUrl] on the device, the way `emu open-url` does. With [confirm], the
-/// dashboard shows what will run and asks first, and `emu run` needs `--yes`.
+/// dashboard shows what will run and asks first, and `emu run` asks too (or
+/// takes `--yes`).
 class PageAction extends ToolbarItem {
   const PageAction({
     required super.id,
@@ -143,7 +228,10 @@ class PageAction extends ToolbarItem {
     this.openUrl,
     super.then = Then.none,
     super.timeout = defaultTimeout,
-    this.confirm = false,
+    this.confirm,
+    this.needsChecked,
+    this.bulk = false,
+    this.auto,
   }) : assert((run == null) != (openUrl == null));
 
   final PageCommand? run;
@@ -151,12 +239,25 @@ class PageAction extends ToolbarItem {
   /// The deep link to open, as a one-argument command (so placeholders fill
   /// the same way).
   final PageCommand? openUrl;
-  final bool confirm;
+
+  /// null: runs without asking.
+  final ConfirmSpec? confirm;
+
+  /// `needs: checked`: the list that must have a checked row before this runs.
+  final String? needsChecked;
+
+  /// A row button that also runs once per checked row, from the list's head
+  /// (`bulk: true`). The dashboard does the rounds; each is a plain row run.
+  final bool bulk;
+
+  /// `auto:` — the server also runs it when a file it watches changes, while
+  /// it is switched on. Toolbar actions only, with nothing to fill or ask.
+  final AutoRun? auto;
 
   /// What it does, for people.
   String get display => run?.display ?? 'open-url ${openUrl!.argv!.single}';
 
-  Set<String> get placeholders => (run ?? openUrl)!.placeholders;
+  Set<String> get placeholders => {...(run ?? openUrl)!.placeholders, ...?confirm?.placeholders};
 
   @override
   Map<String, dynamic> toJson() => {
@@ -167,8 +268,30 @@ class PageAction extends ToolbarItem {
         if (openUrl != null) 'openUrl': openUrl!.argv!.single,
         'uses': placeholders.toList(),
         'then': then.name,
-        'confirm': confirm,
+        'confirm': confirm != null,
+        if (confirm?.danger == true) 'danger': true,
+        'preview': ?confirm?.preview?.display,
+        'needsChecked': ?needsChecked,
+        if (bulk) 'bulk': true,
+        'auto': ?auto?.toJson(),
       };
+}
+
+const defaultAutoDebounce = Duration(milliseconds: 400);
+
+/// When an action runs on its own (`auto:`): a change to a project file that
+/// matches [watch], once the changes have rested for [debounce]. [on] is
+/// where the dashboard's switch starts; the server keeps it per project.
+class AutoRun {
+  const AutoRun({required this.watch, this.debounce = defaultAutoDebounce, this.on = false});
+
+  final List<String> watch;
+  final Duration debounce;
+  final bool on;
+
+  bool matches(String relPath) => watch.any((g) => globToRegExp(g).hasMatch(relPath));
+
+  Map<String, dynamic> toJson() => {'watch': watch, 'debounce': debounce.inMilliseconds, 'on': on};
 }
 
 /// A switch: [state] prints `{"on": bool, "detail"?: string}`; flipping it
@@ -233,18 +356,96 @@ class OutputBlock extends PageBlock {
 /// How a list column shows its value.
 const columnFormats = {'text', 'chip', 'count'};
 
+/// A text column's widest, as `<n>em`, `<n>ch` or `<n>px`.
+final _columnWidth = RegExp(r'^\d+(?:\.\d+)?(?:em|ch|px)$');
+
 class ListColumn {
-  const ListColumn(this.key, [this.format = 'text']);
+  const ListColumn(this.key, [this.format = 'text', this.width, this.clipStart = false]);
   final String key;
   final String format;
 
-  Map<String, dynamic> toJson() => {'key': key, 'format': format};
+  /// How wide a text column grows before a longer value is cut with an
+  /// ellipsis (`40em`); null: the dashboard's default.
+  final String? width;
+
+  /// Cut a long text value at its start, so the end of a path stays in view.
+  final bool clipStart;
+
+  Map<String, dynamic> toJson() => {'key': key, 'format': format, 'width': ?width, if (clipStart) 'clip': 'start'};
 }
+
+/// A `columns:` entry: `name`, `name:text|chip|count`, and for text a width
+/// (`40em`) and `start`, in any order (`path:start` is `path:text:start`).
+ListColumn? parseColumn(String spec) {
+  final parts = spec.split(':');
+  if (parts.first.isEmpty) return null;
+  final named = parts.length > 1 && columnFormats.contains(parts[1]);
+  final format = named ? parts[1] : 'text';
+  String? width;
+  var start = false;
+  for (final mod in parts.skip(named ? 2 : 1)) {
+    if (format != 'text') return null;
+    if (mod == 'start' && !start) {
+      start = true;
+    } else if (_columnWidth.hasMatch(mod) && width == null) {
+      width = mod;
+    } else {
+      return null;
+    }
+  }
+  return ListColumn(parts.first, format, width, start);
+}
+
+/// How a list's rows get checked (`check:`): by the dashboard, which keeps
+/// the checked keys per browser (`check: true`), or by the tool — the
+/// [column] of each row says whether it is checked and [toggle] flips it.
+class ListCheck {
+  const ListCheck({this.column, this.toggle});
+
+  final String? column;
+
+  /// Runs with the row in `{{row.<col>}}`; as a row action its id is `check`.
+  final PageAction? toggle;
+
+  Map<String, dynamic> toJson() => {
+        'column': ?column,
+        'toggle': ?toggle?.display,
+      };
+}
+
+/// A list drawn as folders (`tree:`): the values of [columns], each split at
+/// `/`, make a row's path — its last part names the row, the parts before it
+/// are folders. Folders deeper than [open] levels start closed.
+class ListTree {
+  const ListTree(this.columns, {this.open = 0});
+  final List<String> columns;
+  final int open;
+
+  Map<String, dynamic> toJson() => {'columns': columns, 'open': open};
+}
+
+/// The order a list starts in (`sort: minVer:desc`); clicking a column head
+/// in the dashboard changes it.
+class ListSort {
+  const ListSort(this.column, {this.descending = false});
+  final String column;
+  final bool descending;
+
+  Map<String, dynamic> toJson() => {'key': column, 'dir': descending ? 'desc' : 'asc'};
+}
+
+/// Whether a `check.column` value means checked: true, a non-zero number,
+/// or a word like yes/on/checked.
+bool isCheckedValue(Object? v) =>
+    v == true ||
+    (v is num && v != 0) ||
+    (v is String && RegExp(r'^(true|yes|y|on|1|checked)$', caseSensitive: false).hasMatch(v.trim()));
 
 /// A table of the JSON array of objects [run] prints. The first list on a
 /// page holds the page's selection: picking a row fills `{{selected.<col>}}`
 /// for the other blocks and the toolbar. [rowActions] are buttons on every
-/// row, with that row in `{{row.<col>}}`.
+/// row, with that row in `{{row.<col>}}`. With [check], rows can also be
+/// checked — many at once — for `{{checked.<col>...}}` in the page's actions.
 class ListBlock extends PageBlock {
   const ListBlock({
     required super.id,
@@ -255,6 +456,9 @@ class ListBlock extends PageBlock {
     this.key,
     this.columns = const [],
     this.rowActions = const [],
+    this.check,
+    this.sort,
+    this.tree,
   });
 
   final PageCommand run;
@@ -267,11 +471,27 @@ class ListBlock extends PageBlock {
   /// Empty: every field of the first row, as text.
   final List<ListColumn> columns;
   final List<PageAction> rowActions;
+  final ListCheck? check;
+
+  /// The starting order; null: as the command prints the rows.
+  final ListSort? sort;
+
+  /// Draw the rows as folders; null: a flat table.
+  final ListTree? tree;
 
   @override
   PageCommand get command => run;
 
-  PageAction? rowAction(String id) => rowActions.where((a) => a.id == id).firstOrNull;
+  PageAction? rowAction(String id) =>
+      id == 'check' && check?.toggle != null ? check!.toggle : rowActions.where((a) => a.id == id).firstOrNull;
+
+  /// The value that tells [row] apart: [key], else the first column, else
+  /// the row's first field.
+  String? rowKey(Map<String, dynamic> row) {
+    final col = key ?? columns.firstOrNull?.key ?? row.keys.firstOrNull;
+    final v = row[col];
+    return v == null ? null : v is String ? v : v is num || v is bool ? '$v' : null;
+  }
 
   @override
   Map<String, dynamic> toJson() => {
@@ -284,12 +504,16 @@ class ListBlock extends PageBlock {
         'key': ?key,
         'columns': [for (final c in columns) c.toJson()],
         'rowActions': [for (final a in rowActions) a.toJson()],
+        'check': ?check?.toJson(),
+        'sort': ?sort?.toJson(),
+        'tree': ?tree?.toJson(),
         'watch': watch,
       };
 }
 
-/// The unified diff [run] prints, rendered like the Changes tab. With
-/// [segments], a switch picks what to compare against: `{{seg}}`.
+/// The unified diff [run] prints, rendered like the Changes tab; output that
+/// isn't a diff shows as text. With [segments], a switch picks what to compare
+/// against: `{{seg}}`.
 class DiffBlock extends PageBlock {
   const DiffBlock({
     required super.id,
@@ -298,14 +522,27 @@ class DiffBlock extends PageBlock {
     required this.run,
     required this.title,
     this.segments = const [],
+    this.optional = false,
+    this.hide,
   });
 
   final PageCommand run;
   final String title;
   final List<String> segments;
 
+  /// `segments: {optional: true}`: none is picked at first and a click turns
+  /// the picked one off — `{{seg}}` is then empty.
+  final bool optional;
+
+  /// `segments: {hide: "{{selected.env}}"}`: the segment equal to this value,
+  /// filled from the picked row, isn't offered (a branch compared with itself).
+  final String? hide;
+
   @override
   PageCommand get command => run;
+
+  /// The placeholders [hide] reads, as in [PageCommand.placeholders].
+  Set<String> get _hidePlaceholders => {for (final m in _placeholder.allMatches(hide ?? '')) PageCommand._key(m)};
 
   @override
   Map<String, dynamic> toJson() => {
@@ -314,16 +551,20 @@ class DiffBlock extends PageBlock {
         'area': area,
         'title': title,
         'command': run.display,
-        'uses': run.placeholders.toList(),
+        // The picked row also decides which segments show.
+        'uses': {...run.placeholders, ..._hidePlaceholders}.toList(),
         'segments': segments,
+        if (optional) 'segmentsOptional': true,
+        'segmentsHide': ?hide,
         'watch': watch,
       };
 }
 
 /// A project HTML file in a sandboxed frame, for what lists and diffs can't
 /// show (a value tree, an image preview). The frame gets [run]'s output as
-/// data and may ask the dashboard to run the toolbar items in [actions] —
-/// nothing else: no network, no access to the dashboard.
+/// data and may ask the dashboard to run the toolbar items in [actions] and
+/// its own [blockActions], passing [inputs] — nothing else: no network, no
+/// access to the dashboard.
 class HtmlBlock extends PageBlock {
   const HtmlBlock({
     required super.id,
@@ -333,6 +574,8 @@ class HtmlBlock extends PageBlock {
     required this.src,
     this.run,
     this.actions = const [],
+    this.blockActions = const [],
+    this.inputs = const [],
   });
 
   final String title;
@@ -343,8 +586,19 @@ class HtmlBlock extends PageBlock {
   /// Prints the frame's data (JSON, or any text); null: the frame gets none.
   final PageCommand? run;
 
-  /// Toolbar items the frame may run (`postMessage({type: 'emu:action', id})`).
+  /// Toolbar items the frame may run (`emu.run(id)`, or the older
+  /// `postMessage({type: 'emu:action', id})`).
   final List<String> actions;
+
+  /// Actions of this block alone (`- action: {…}` under `actions:`): not in
+  /// the toolbar, run at `frames/<block>/<action>`.
+  final List<PageAction> blockActions;
+
+  /// The `{{input.<name>}}` values the frame may pass with `emu.run`; any
+  /// other name it sends is dropped.
+  final List<String> inputs;
+
+  PageAction? action(String id) => blockActions.where((a) => a.id == id).firstOrNull;
 
   @override
   PageCommand? get command => run;
@@ -359,6 +613,8 @@ class HtmlBlock extends PageBlock {
         'command': ?run?.display,
         'uses': run?.placeholders.toList() ?? const [],
         'actions': actions,
+        'blockActions': [for (final a in blockActions) a.toJson()],
+        'inputs': inputs,
         'watch': watch,
       };
 }
@@ -383,11 +639,22 @@ class FormField {
 
 /// Input fields and the buttons that use them: what's typed fills
 /// `{{input.<field>}}` in the [actions]. Values aren't stored by emu; the
-/// dashboard keeps them per browser.
+/// dashboard keeps them per browser. With no fields it's a button panel
+/// (`panel:` is the same block).
 class FormBlock extends PageBlock {
-  const FormBlock({required super.id, super.area = 'main', required this.title, required this.fields, required this.actions});
+  const FormBlock({
+    required super.id,
+    super.area = 'main',
+    required this.title,
+    this.note,
+    this.fields = const [],
+    required this.actions,
+  });
 
   final String title;
+
+  /// A line of text under the title: what the buttons do.
+  final String? note;
   final List<FormField> fields;
   final List<PageAction> actions;
 
@@ -399,6 +666,7 @@ class FormBlock extends PageBlock {
         'id': id,
         'area': area,
         'title': title,
+        'note': ?note,
         'fields': [for (final f in fields) f.toJson()],
         'actions': [for (final a in actions) a.toJson()],
       };
@@ -417,6 +685,20 @@ class DashboardPage {
 
   /// The list whose picked row is `{{selected.*}}`.
   ListBlock? get selectionList => blocks.whereType<ListBlock>().firstOrNull;
+
+  /// The lists with `check:`.
+  Iterable<ListBlock> get checkLists => blocks.whereType<ListBlock>().where((b) => b.check != null);
+
+  /// The list an unqualified `{{checked.*}}` reads: the page's only one with
+  /// `check:`.
+  String? get checkList => checkLists.length == 1 ? checkLists.first.id : null;
+
+  /// The lists whose checked rows [action] reads or needs.
+  Set<String> checkedListsOf(PageAction action) => {
+        ...(action.run ?? action.openUrl)!.checkedLists(checkList),
+        ...?action.confirm?.checkedLists(checkList),
+        ?action.needsChecked,
+      };
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -470,15 +752,37 @@ PagesConfig parsePages(Object? raw) {
 
 /// Who may use which placeholder: the selection everywhere but in the list
 /// that makes it, a row only in that list's row buttons, a segment only in
-/// a diff with segments, an input only in its own form's buttons.
+/// a diff with segments, an input only in its own form's buttons or an html
+/// block's own actions, the checked rows only in buttons (toolbar, row and
+/// form actions).
 class _Allowed {
-  const _Allowed({this.selected = true, this.row = false, this.seg = false, this.inputs});
+  const _Allowed(
+      {this.selected = true, this.row = false, this.seg = false, this.inputs, this.inputsOf = 'form', this.checks});
   final bool selected;
   final bool row;
   final bool seg;
 
-  /// The form's field names; null outside a form.
+  /// The form's field names or the html block's `inputs:`; null elsewhere.
   final Set<String>? inputs;
+
+  /// What declares [inputs]: `form` or `html`.
+  final String inputsOf;
+
+  /// The page's lists with `check:`; null where `{{checked.*}}` can't be used.
+  final Set<String>? checks;
+
+  _Allowed get noChecks => _Allowed(selected: selected, row: row, seg: seg, inputs: inputs, inputsOf: inputsOf);
+}
+
+/// The list an unqualified (null) [list] means in `{{checked.*}}` or
+/// `needs: checked`, or why there is none.
+(String?, String?) _checkTarget(String? list, Set<String> checks) {
+  if (list != null) return checks.contains(list) ? (list, null) : (null, 'no list "$list" with check: on this page');
+  return switch (checks.length) {
+    0 => (null, 'no list on this page has check: — add check: true to one'),
+    1 => (checks.single, null),
+    _ => (null, 'several lists have check: — say which, as {{<list>.checked.<col>}} or needs: <list>.checked'),
+  };
 }
 
 DashboardPage? _parsePage(Object? raw, String at, List<String> problems) {
@@ -509,9 +813,15 @@ DashboardPage? _parsePage(Object? raw, String at, List<String> problems) {
     return itemId;
   }
 
+  // The lists with check:, known up front: any action may read their rows.
+  final checks = <String>{
+    if (raw['blocks'] case final List bs)
+      for (final b in bs)
+        if (b case {'list': final Map m} when m['check'] != null && m['check'] != false) '${m['id'] ?? 'list'}',
+  };
   final toolbar = <ToolbarItem>[];
   for (final (j, entry) in _entries(raw['toolbar'], '$id.toolbar', problems).indexed) {
-    final item = _parseToolbarItem(entry, '$id.toolbar[$j]', claim, problems);
+    final item = _parseToolbarItem(entry, '$id.toolbar[$j]', claim, problems, checks);
     if (item != null) toolbar.add(item);
   }
   final blocks = <PageBlock>[];
@@ -519,12 +829,19 @@ DashboardPage? _parsePage(Object? raw, String at, List<String> problems) {
   for (final (j, entry) in _entries(raw['blocks'], '$id.blocks', problems).indexed) {
     // The first list makes the selection, so it can't depend on it.
     final makesSelection = entry.$1 == 'list' && !listSeen;
-    final block = _parseBlock(entry, '$id.blocks[$j]', claim, problems, makesSelection: makesSelection);
+    final block = _parseBlock(entry, '$id.blocks[$j]', claim, problems, checks, makesSelection: makesSelection);
     if (block is ListBlock) listSeen = true;
     if (block is HtmlBlock) {
       final unknown = block.actions.where((a) => toolbar.whereType<PageAction>().every((i) => i.id != a)).toList();
       if (unknown.isNotEmpty) {
         problems.add('$id.${block.id}.actions: no toolbar action ${unknown.map((a) => '"$a"').join(', ')} on this page');
+        continue;
+      }
+      // The frame names either kind by id alone, so one id means one thing.
+      final both = block.blockActions.where((a) => toolbar.any((i) => i.id == a.id)).toList();
+      if (both.isNotEmpty) {
+        problems.add('$id.${block.id}.actions: ${both.map((a) => '"${a.id}"').join(', ')} is also a toolbar id — '
+            'name the block\'s own action differently');
         continue;
       }
     }
@@ -553,7 +870,7 @@ List<(String, Map)> _entries(Object? raw, String at, List<String> problems) {
 }
 
 ToolbarItem? _parseToolbarItem((String, Map) entry, String at,
-    String? Function(Object?, String) claim, List<String> problems) {
+    String? Function(Object?, String) claim, List<String> problems, Set<String> checks) {
   final (kind, m) = entry;
   if (kind != 'action' && kind != 'toggle') {
     problems.add('$at: unknown toolbar item "$kind" (action, toggle)');
@@ -562,7 +879,7 @@ ToolbarItem? _parseToolbarItem((String, Map) entry, String at,
   final id = claim(m['id'], at);
   if (id == null) return null;
   final where = '${at.split('.').first}.$id';
-  if (kind == 'action') return _parseAction(m, id, where, const _Allowed(), problems);
+  if (kind == 'action') return _parseAction(m, id, where, _Allowed(checks: checks), problems, toolbar: true);
   final common = _common(m, id, where, problems);
   if (common == null) return null;
   final (label, then, timeout) = common;
@@ -574,11 +891,44 @@ ToolbarItem? _parseToolbarItem((String, Map) entry, String at,
   return PageToggle(id: id, label: label, state: state, on: on, off: off, then: then, timeout: timeout);
 }
 
-PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<String> problems) {
+PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<String> problems,
+    {bool bulk = false, bool toolbar = false}) {
   final common = _common(m, id, where, problems);
   if (common == null) return null;
   final (label, then, timeout) = common;
-  final confirm = m['confirm'] == true;
+  final (confirm, confirmOk) = _confirm(m['confirm'], '$where.confirm', allowed, problems);
+  if (!confirmOk) return null;
+  AutoRun? auto;
+  if (m['auto'] != null) {
+    // It runs with no one there: nothing to fill in, nothing to ask.
+    final String? why = !toolbar
+        ? 'only toolbar actions run on their own'
+        : m['openUrl'] != null
+            ? 'works with run:, not openUrl'
+            : confirm != null
+                ? 'an action that asks first (confirm) can\'t run on its own'
+                : m['needs'] != null
+                    ? 'an action that runs on its own has no checked rows — drop needs'
+                    : null;
+    if (why != null) {
+      problems.add('$where.auto: $why');
+      return null;
+    }
+    auto = _parseAuto(m['auto'], '$where.auto', problems);
+    if (auto == null) return null;
+  }
+  String? needsChecked;
+  if (m['needs'] != null) {
+    final needs = '${m['needs']}';
+    final list = needs == 'checked' ? null : needs.endsWith('.checked') ? needs.substring(0, needs.length - 8) : '';
+    final checks = allowed.checks;
+    final (target, why) = list == '' || checks == null ? (null, 'needs takes checked or <list>.checked') : _checkTarget(list, checks);
+    if (target == null) {
+      problems.add('$where.needs: $why');
+      return null;
+    }
+    needsChecked = target;
+  }
   if (m['openUrl'] != null) {
     if (m['run'] != null) {
       problems.add('$where: give run or openUrl, not both');
@@ -595,11 +945,106 @@ PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<
       if (url is! String || url.trim().isEmpty) problems.add('$where.openUrl: expected a URL like "myapp://home?id={{row.id}}"');
       return null;
     }
-    return PageAction(id: id, label: label, openUrl: openUrl, timeout: timeout, confirm: confirm);
+    return PageAction(
+        id: id, label: label, openUrl: openUrl, timeout: timeout, confirm: confirm, needsChecked: needsChecked, bulk: bulk);
   }
   final run = _command(m['run'], '$where.run', allowed, problems);
   if (run == null) return null;
-  return PageAction(id: id, label: label, run: run, then: then, timeout: timeout, confirm: confirm);
+  if (auto != null && run.placeholders.isNotEmpty) {
+    problems.add('$where.auto: an action that runs on its own has no pick, row or input to fill '
+        '${run.placeholders.map((k) => '{{$k}}').join(', ')} with');
+    return null;
+  }
+  return PageAction(
+      id: id,
+      label: label,
+      run: run,
+      then: then,
+      timeout: timeout,
+      confirm: confirm,
+      needsChecked: needsChecked,
+      bulk: bulk,
+      auto: auto);
+}
+
+/// `auto: {watch: [globs], debounce: <ms>, on: true|false}`.
+AutoRun? _parseAuto(Object? v, String at, List<String> problems) {
+  if (v is! Map || v.keys.any((k) => !const {'watch', 'debounce', 'on'}.contains(k))) {
+    problems.add('$at: expected {watch: ["templates/**"], debounce: <ms>, on: true|false}');
+    return null;
+  }
+  final watch = _watch(v['watch'], '$at.watch', problems);
+  if (watch == null) return null;
+  if (watch.isEmpty) {
+    problems.add('$at.watch: say which project files start it, like "templates/**"');
+    return null;
+  }
+  final debounce = v['debounce'] ?? defaultAutoDebounce.inMilliseconds;
+  if (debounce is! int || debounce < 0) {
+    problems.add('$at.debounce: expected milliseconds (got "$debounce")');
+    return null;
+  }
+  final on = v['on'] ?? false;
+  if (on is! bool) {
+    problems.add('$at.on: expected true or false');
+    return null;
+  }
+  return AutoRun(watch: watch, debounce: Duration(milliseconds: debounce), on: on);
+}
+
+const _confirmKeys = {'title', 'message', 'danger', 'button', 'preview', 'allowOnPreviewError'};
+
+/// `confirm:` → (spec, ok): `true`, a message, or a map of [_confirmKeys].
+(ConfirmSpec?, bool) _confirm(Object? v, String at, _Allowed allowed, List<String> problems) {
+  if (v == null || v == false) return (null, true);
+  if (v == true) return (const ConfirmSpec(), true);
+  if (v is String) {
+    if (!_textPlaceholders(v, at, allowed, problems)) return (null, false);
+    return (ConfirmSpec(message: v.trim().isEmpty ? null : v), true);
+  }
+  if (v is! Map) {
+    problems.add('$at: expected true, a message, or a map with ${_confirmKeys.join(', ')}');
+    return (null, false);
+  }
+  final unknown = v.keys.where((k) => !_confirmKeys.contains(k)).toList();
+  if (unknown.isNotEmpty) {
+    problems.add('$at: unknown ${unknown.map((k) => '"$k"').join(', ')} (${_confirmKeys.join(', ')})');
+    return (null, false);
+  }
+  for (final key in const ['title', 'message', 'button']) {
+    if (v[key] != null && v[key] is! String && v[key] is! num) {
+      problems.add('$at.$key: expected text');
+      return (null, false);
+    }
+  }
+  for (final key in const ['danger', 'allowOnPreviewError']) {
+    if (v[key] != null && v[key] is! bool) {
+      problems.add('$at.$key: expected true or false');
+      return (null, false);
+    }
+  }
+  String? text(String key) => v[key] == null || '${v[key]}'.trim().isEmpty ? null : '${v[key]}';
+  final title = text('title'), message = text('message'), button = text('button');
+  for (final (key, t) in [('title', title), ('message', message)]) {
+    if (t != null && !_textPlaceholders(t, '$at.$key', allowed, problems)) return (null, false);
+  }
+  if (button != null && button.contains('{{')) {
+    problems.add('$at.button: placeholders work only in title and message');
+    return (null, false);
+  }
+  final preview = v['preview'] == null ? null : _command(v['preview'], '$at.preview', allowed, problems);
+  if (v['preview'] != null && preview == null) return (null, false);
+  return (
+    ConfirmSpec(
+      title: title,
+      message: message,
+      danger: v['danger'] == true,
+      button: button,
+      preview: preview,
+      allowOnPreviewError: v['allowOnPreviewError'] == true,
+    ),
+    true
+  );
 }
 
 /// label, then, timeout — shared by actions, toggles and row actions.
@@ -615,16 +1060,16 @@ PageAction? _parseAction(Map m, String id, String where, _Allowed allowed, List<
 }
 
 PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?, String) claim,
-    List<String> problems, {required bool makesSelection}) {
+    List<String> problems, Set<String> checks, {required bool makesSelection}) {
   final (kind, m) = entry;
-  if (!const {'output', 'list', 'diff', 'html', 'form'}.contains(kind)) {
-    problems.add('$at: unknown block "$kind" (list, diff, html, form, output)');
+  if (!const {'output', 'list', 'diff', 'html', 'form', 'panel'}.contains(kind)) {
+    problems.add('$at: unknown block "$kind" (list, diff, html, form, panel, output)');
     return null;
   }
   final id = claim(m['id'] ?? kind, at);
   if (id == null) return null;
   final where = '${at.split('.').first}.$id';
-  final area = '${m['area'] ?? switch (kind) { 'list' => 'left', 'diff' || 'html' || 'form' => 'main', _ => 'bottom' }}';
+  final area = '${m['area'] ?? switch (kind) { 'list' => 'left', 'diff' || 'html' || 'form' || 'panel' => 'main', _ => 'bottom' }}';
   if (!blockAreas.contains(area)) {
     problems.add('$where: area must be left, main or bottom (got "$area")');
     return null;
@@ -638,7 +1083,9 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
     return OutputBlock(id: id, area: area);
   }
   final title = '${m['title'] ?? id}';
-  if (kind == 'form') return _parseForm(m, id, area, title, where, problems);
+  if (kind == 'form' || kind == 'panel') {
+    return _parseForm(m, id, area, title, where, problems, checks, panel: kind == 'panel');
+  }
   final watch = _watch(m['watch'], '$where.watch', problems);
   if (watch == null) return null;
   if (kind == 'html') {
@@ -649,22 +1096,27 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
     }
     final run = m['run'] == null ? null : _command(m['run'], '$where.run', const _Allowed(), problems);
     if (m['run'] != null && run == null) return null;
-    final actions = m['actions'] == null ? const <String>[] : _strings(m['actions']);
-    if (actions == null) {
-      problems.add('$where.actions: expected a list of toolbar action ids');
-      return null;
-    }
-    return HtmlBlock(id: id, area: area, watch: watch, title: title, src: src, run: run, actions: actions);
+    return _parseHtml(m, id, area, watch, title, src, run, where, problems);
   }
   if (kind == 'diff') {
-    final segments = m['segments'] == null ? const <String>[] : _strings(m['segments']);
-    if (segments == null) {
-      problems.add('$where.segments: expected a list of names');
+    // `segments: [a, b]`, or `{values: [a, b], optional: true, hide: "{{selected.env}}"}`.
+    final raw = m['segments'];
+    final spec = raw is Map ? raw : null;
+    final segments = raw == null ? const <String>[] : _strings(spec != null ? spec['values'] : raw);
+    final optional = spec?['optional'] ?? false;
+    final hide = spec?['hide'];
+    if (segments == null ||
+        (spec != null && (segments.isEmpty || spec.keys.any((k) => !const {'values', 'optional', 'hide'}.contains(k)))) ||
+        optional is! bool ||
+        (hide != null && hide is! String)) {
+      problems.add('$where.segments: expected a list of names, or {values: [a, b], optional: true, hide: "{{selected.<col>}}"}');
       return null;
     }
+    if (hide is String && !_textPlaceholders(hide, '$where.segments.hide', const _Allowed(), problems)) return null;
     final run = _command(m['run'], '$where.run', _Allowed(seg: segments.isNotEmpty), problems);
     if (run == null) return null;
-    return DiffBlock(id: id, area: area, watch: watch, run: run, title: title, segments: segments);
+    return DiffBlock(
+        id: id, area: area, watch: watch, run: run, title: title, segments: segments, optional: optional, hide: hide as String?);
   }
   final run = _command(m['run'], '$where.run', _Allowed(selected: !makesSelection), problems);
   if (run == null) return null;
@@ -675,25 +1127,69 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
   }
   final columns = <ListColumn>[];
   for (final c in columnSpecs) {
-    final parts = c.split(':');
-    final format = parts.length > 1 ? parts.sublist(1).join(':') : 'text';
-    if (parts.first.isEmpty || !columnFormats.contains(format)) {
-      problems.add('$where.columns: "$c" should be name or name:text|chip|count');
+    final column = parseColumn(c);
+    if (column == null) {
+      problems.add('$where.columns: "$c" should be name or name:text|chip|count — a text column may add '
+          'a width (name:text:40em) and :start to cut long values at their start');
       return null;
     }
-    columns.add(ListColumn(parts.first, format));
+    columns.add(column);
+  }
+  final rowAllowed = _Allowed(selected: !makesSelection, row: true, checks: checks);
+  ListCheck? check;
+  switch (m['check']) {
+    case null || false:
+      break;
+    case true:
+      check = const ListCheck();
+    case {'column': final String column, 'toggle': final Object toggle} when column.isNotEmpty:
+      final run = _command(toggle, '$where.check.toggle', rowAllowed.noChecks, problems);
+      if (run == null) return null;
+      check = ListCheck(column: column, toggle: PageAction(id: 'check', label: 'check', run: run));
+    default:
+      problems.add('$where.check: expected true, or {column: <col>, toggle: [program, arg, …]}');
+      return null;
   }
   final rowActions = <PageAction>[];
-  final rowIds = <String>{};
+  final rowIds = <String>{if (check?.toggle != null) 'check'};
   for (final (j, e) in _entries(m['rowActions'], '$where.rowActions', problems).indexed) {
     final (k, body) = e;
     final rid = body['id']?.toString();
     if (k != 'action' || rid == null || !isPageId(rid) || !rowIds.add(rid)) {
-      problems.add('$where.rowActions[$j]: expected `- action: {id: …, run: […]}` with an id unique in this list');
+      problems.add('$where.rowActions[$j]: expected `- action: {id: …, run: […]}` with an id unique in this list'
+          '${rid == 'check' && check?.toggle != null ? ' (check is taken by check.toggle)' : ''}');
       continue;
     }
-    final a = _parseAction(body, rid, '$where.$rid', _Allowed(selected: !makesSelection, row: true), problems);
+    final bulk = body['bulk'] == true;
+    if (bulk && check == null) {
+      problems.add('$where.$rid.bulk: it runs on the checked rows — give the list check:');
+      continue;
+    }
+    final a = _parseAction(body, rid, '$where.$rid', rowAllowed, problems, bulk: bulk);
     if (a != null) rowActions.add(a);
+  }
+  ListSort? sort;
+  if (m['sort'] != null) {
+    final parts = '${m['sort']}'.split(':');
+    final order = parts.length == 2 ? parts[1] : 'asc';
+    if (m['sort'] is! String || parts.first.isEmpty || parts.length > 2 || !const {'asc', 'desc'}.contains(order)) {
+      problems.add('$where.sort: expected <col> or <col>:asc|desc (got "${m['sort']}")');
+      return null;
+    }
+    sort = ListSort(parts.first, descending: order == 'desc');
+  }
+  ListTree? tree;
+  if (m['tree'] case final Object raw) {
+    // `tree: path`, `tree: [env, path]` or `tree: {columns: …, open: <depth>}`.
+    final spec = raw is Map ? raw['columns'] : raw;
+    final columns = spec is String ? [spec] : _strings(spec);
+    final open = raw is Map ? raw['open'] ?? 0 : 0;
+    final extra = raw is Map && raw.keys.any((k) => k != 'columns' && k != 'open');
+    if (columns == null || columns.isEmpty || columns.any((c) => c.isEmpty) || open is! int || open < 0 || extra) {
+      problems.add('$where.tree: expected a column, a list of columns, or {columns: [env, path], open: <depth>}');
+      return null;
+    }
+    tree = ListTree(columns, open: open);
   }
   return ListBlock(
     id: id,
@@ -704,13 +1200,73 @@ PageBlock? _parseBlock((String, Map) entry, String at, String? Function(Object?,
     key: m['key']?.toString(),
     columns: columns,
     rowActions: rowActions,
+    check: check,
+    sort: sort,
+    tree: tree,
   );
 }
 
-FormBlock? _parseForm(Map m, String id, String area, String title, String where, List<String> problems) {
-  final rawFields = m['fields'];
-  if (rawFields is! List || rawFields.isEmpty) {
+/// An html block's `inputs:` and `actions:` — toolbar ids as strings, its own
+/// actions as `- action: {…}` maps that may read `{{input.<name>}}`.
+HtmlBlock? _parseHtml(Map m, String id, String area, List<String> watch, String title, String src, PageCommand? run,
+    String where, List<String> problems) {
+  final inputs = m['inputs'] == null ? const <String>[] : _strings(m['inputs']);
+  if (inputs == null || !inputs.every(isPageId) || inputs.toSet().length != inputs.length) {
+    problems.add('$where.inputs: expected a list of distinct names of letters, digits, - or _');
+    return null;
+  }
+  final rawActions = m['actions'] ?? const [];
+  if (rawActions is! List) {
+    problems.add('$where.actions: expected a list of toolbar action ids and `- action: {…}` entries');
+    return null;
+  }
+  final allowed = _Allowed(inputs: inputs.toSet(), inputsOf: 'html');
+  final actions = <String>[];
+  final blockActions = <PageAction>[];
+  for (final (j, e) in rawActions.indexed) {
+    if (e is String) {
+      actions.add(e);
+      continue;
+    }
+    final body = e is Map && e.length == 1 && e.keys.first == 'action' ? e.values.first : null;
+    final aid = body is Map ? body['id']?.toString() : null;
+    if (aid == null || !isPageId(aid) || blockActions.any((a) => a.id == aid)) {
+      problems.add('$where.actions[$j]: expected a toolbar action id, or `- action: {id: …, run: […]}` '
+          'with an id unique in this block');
+      continue;
+    }
+    final a = _parseAction(body as Map, aid, '$where.$aid', allowed, problems);
+    if (a != null) blockActions.add(a);
+  }
+  return HtmlBlock(
+    id: id,
+    area: area,
+    watch: watch,
+    title: title,
+    src: src,
+    run: run,
+    actions: actions,
+    blockActions: blockActions,
+    inputs: inputs,
+  );
+}
+
+/// A form; with no `fields` (or `panel:`, which takes none) just its buttons.
+FormBlock? _parseForm(
+    Map m, String id, String area, String title, String where, List<String> problems, Set<String> checks,
+    {required bool panel}) {
+  final rawFields = m['fields'] ?? const [];
+  if (panel && m['fields'] != null) {
+    problems.add('$where.fields: a panel has no fields — make it a form to add some');
+    return null;
+  }
+  if (rawFields is! List) {
     problems.add('$where.fields: expected a list like [{name: url, label: URL}]');
+    return null;
+  }
+  final note = m['note'];
+  if (note != null && note is! String) {
+    problems.add('$where.note: expected a line of text');
     return null;
   }
   final fields = <FormField>[];
@@ -727,7 +1283,7 @@ FormBlock? _parseForm(Map m, String id, String area, String title, String where,
       initial: f['default']?.toString(),
     ));
   }
-  final allowed = _Allowed(inputs: {for (final f in fields) f.name});
+  final allowed = _Allowed(inputs: {for (final f in fields) f.name}, checks: checks);
   final actions = <PageAction>[];
   for (final (j, e) in _entries(m['actions'], '$where.actions', problems).indexed) {
     final (k, body) = e;
@@ -740,10 +1296,10 @@ FormBlock? _parseForm(Map m, String id, String area, String title, String where,
     if (a != null) actions.add(a);
   }
   if (actions.isEmpty) {
-    problems.add('$where.actions: a form needs at least one action');
+    problems.add('$where.actions: a ${panel ? 'panel' : 'form'} needs at least one action');
     return null;
   }
-  return FormBlock(id: id, area: area, title: title, fields: fields, actions: actions);
+  return FormBlock(id: id, area: area, title: title, note: note as String?, fields: fields, actions: actions);
 }
 
 /// [program] is false for an openUrl, whose one argument is the URL itself.
@@ -772,33 +1328,57 @@ PageCommand? _command(Object? v, String at, _Allowed allowed, List<String> probl
     return null;
   }
   for (final arg in command.argv ?? const <String>[]) {
-    for (final m in _braces.allMatches(arg)) {
-      final p = _placeholder.matchAsPrefix(m.group(0)!);
-      final kind = p?.group(1);
-      final name = p?.group(2);
-      final hasName = name != null;
-      final unknown = 'unknown placeholder ${m.group(0)} (selected.<col>, row.<col>, seg, input.<field>)';
-      final String? why = switch (kind) {
-        null => unknown,
-        'selected' when !hasName => '{{selected}} needs a column: {{selected.<col>}}',
-        'row' when !hasName => '{{row}} needs a column: {{row.<col>}}',
-        'input' when !hasName => '{{input}} needs a field: {{input.<field>}}',
-        'seg' when hasName => '{{seg}} takes no column',
-        'selected' when !allowed.selected => '{{selected.*}} can\'t be used by the list that makes the selection',
-        'row' when !allowed.row => '{{row.*}} only works in a list\'s rowActions',
-        'seg' when !allowed.seg => '{{seg}} only works in a diff block with segments',
-        'input' when allowed.inputs == null => '{{input.*}} only works in a form\'s actions',
-        'input' when !allowed.inputs!.contains(name) => 'no field "$name" in this form',
-        'selected' || 'row' || 'seg' || 'input' => null,
-        _ => unknown,
-      };
-      if (why != null) {
-        problems.add('$at: $why');
-        return null;
-      }
-    }
+    if (!_textPlaceholders(arg, at, allowed, problems, arg: arg, program: program)) return null;
   }
   return command;
+}
+
+/// Whether every `{{…}}` in [text] is a placeholder [allowed] here; adds the
+/// first that isn't to [problems]. [arg]: [text] is that whole argument of a
+/// command ([program] false for an openUrl's); null for a confirm's text.
+bool _textPlaceholders(String text, String at, _Allowed allowed, List<String> problems,
+    {String? arg, bool program = true}) {
+  for (final m in _braces.allMatches(text)) {
+    final p = _placeholder.matchAsPrefix(m.group(0)!);
+    final kind = p?.group(2);
+    final name = p?.group(3);
+    final hasName = name != null;
+    final spread = p?.group(4) != null;
+    final checks = allowed.checks;
+    final unknown = 'unknown placeholder ${m.group(0)} '
+        '(selected.<col>, row.<col>, seg, input.<field>, checked.<col>, checked.<col>..., checked.count)';
+    final String? why = switch (kind) {
+      null => unknown,
+      'selected' when !hasName => '{{selected}} needs a column: {{selected.<col>}}',
+      'row' when !hasName => '{{row}} needs a column: {{row.<col>}}',
+      'input' when !hasName => '{{input}} needs a field: {{input.<field>}}',
+      'checked' when !hasName => '{{checked}} needs a column: {{checked.<col>}}, {{checked.<col>...}} or {{checked.count}}',
+      'seg' when hasName => '{{seg}} takes no column',
+      _ when spread && kind != 'checked' => '... only spreads checked rows: {{checked.<col>...}}',
+      'checked' when spread && name == 'count' => '{{checked.count}} is one number — drop the ...',
+      'checked' when spread && arg == null => '${m.group(0)} spreads into arguments — in text use {{checked.<col>}} '
+          '(comma-joined) or {{checked.count}}',
+      'checked' when spread && !program => 'an openUrl is one URL — use {{checked.<col>}} (comma-joined)',
+      'checked' when spread && m.group(0) != arg =>
+        '${m.group(0)} must be a whole argument — it becomes one argument per checked row',
+      'selected' when !allowed.selected => '{{selected.*}} can\'t be used by the list that makes the selection',
+      'row' when !allowed.row => '{{row.*}} only works in a list\'s rowActions',
+      'seg' when !allowed.seg => '{{seg}} only works in a diff block with segments',
+      'input' when allowed.inputs == null => '{{input.*}} only works in a form\'s actions or an html block\'s own actions',
+      'input' when allowed.inputsOf == 'html' && !allowed.inputs!.contains(name) => 'no "$name" in this block\'s inputs:',
+      'input' when allowed.inputs!.isEmpty => 'no field "$name" — this form has no fields',
+      'input' when !allowed.inputs!.contains(name) => 'no field "$name" in this form',
+      'checked' when checks == null => '{{checked.*}} only works in actions (toolbar, row and form buttons)',
+      'checked' => _checkTarget(p!.group(1), checks!).$2,
+      'selected' || 'row' || 'seg' || 'input' => null,
+      _ => unknown,
+    };
+    if (why != null) {
+      problems.add('$at: $why');
+      return false;
+    }
+  }
+  return true;
 }
 
 List<String>? _strings(Object? v) => v is List && v.every((e) => e is String) ? v.cast<String>() : null;

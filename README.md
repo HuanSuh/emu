@@ -715,6 +715,38 @@ emu memory --diff-across "emu tap --text '상세보기' && emu tap --text '뒤�
 A class that grows across repeated round-trips of something that should return
 to its starting state is the leak signal this is built to catch.
 
+### report — tell emu about a bug or an idea
+
+`emu report` files an issue on [github.com/HuanSuh/emu](https://github.com/HuanSuh/emu/issues) from where you
+are — the CLI, the dashboard's **⚑ Report** button, or the hub's drawer. It always shows the whole issue first
+and sends it only once you say so.
+
+```bash
+emu report bug "reload leaves the old screen" -m "1. edit … 2. r … 3. …" --attach logs --attach errors
+# → the title, label and the full body, exactly as it will be sent, then: Send this issue? [y/N]
+emu report feature "…" --body-file idea.md      # or -m; --body-file - reads stdin
+emu report question "…" --dry-run               # only show it; keeps a draft → emu report --send <id>
+emu report --mine                               # your reports and their status (open · fixing · fixed · closed)
+```
+
+- **Kind** — `bug` / `feature` / `question`, labelled `bug` / `enhancement` / `question` when the repo has
+  that label (and you may set it).
+- **Attachments** — none unless you ask: `--attach logs[:N]` (last N lines, default 200), `errors` (the last
+  exception banners), `shot` (the screen now), or a file (text goes in the body, images as screenshots).
+- **Environment** — every report ends with emu version and install, OS, Flutter/Dart, the device's kind
+  (`android · emulator · Android 14 (API 34)` — never its name or id) and the app state.
+- **Masked** in everything, before you see the preview: home and project paths (`~`, `<project>`), the
+  project's and app's names (`<project>`, `<app-id>`), tokens and keys (`ghp_…`, `sk-…`, JWTs, `Bearer …`,
+  `password=…`, `?token=`), URL credentials, the VM Service auth code, e-mail addresses.
+- **Sending** — with `gh` signed in to github.com: `gh issue create`. Without: the prefilled GitHub form
+  opens in the browser and you submit it there.
+- **Screenshots** can't be uploaded through any GitHub API, so they never go in the body. Once the issue is
+  open, paste them into a comment: the CLI (macOS) puts the image on the clipboard and opens the issue; the
+  dashboard has a **Copy image** button.
+- The same report sent again within 10 minutes points to the issue already made instead of a second one.
+- `--json` never prompts: use `--dry-run` to preview and `--yes` / `--send <id>` to send.
+- In Claude Code, the `emu:report` skill does this as a conversation.
+
 ## Web dashboard
 
 `emu up` serves a dashboard at `http://127.0.0.1:4577`:
@@ -727,7 +759,10 @@ to its starting state is the leak signal this is built to catch.
   focused field (unicode). Coordinate conversion is handled by the dashboard (the
   screenshot-ratio trap agents hit doesn't exist for humans). Check `auto` to
   refresh periodically. The first screenshot loads on its own once the app is running.
-  Drag the panel's left edge to widen it (kept in the browser; double-click to reset).
+  Drag the panel's left edge to widen it (kept in the browser; double-click to reset). Its › (or the
+  `s` key) folds it into a strip on the right edge for work that doesn't look at the device: the page
+  takes its width and no screenshot is fetched — auto refresh pauses — until a click on the strip (or
+  `s`) unfolds it (kept in the browser).
 - **Deep link box** — under the text box: enter a URL and press `open` (or Enter) to
   send it like `emu open-url`; the screen refreshes once the app settles. The last
   10 URLs are remembered per browser.
@@ -847,21 +882,24 @@ pages:
 | `toolbar` | `action` (a button) and `toggle` (a switch) |
 | `run` / `state` / `on` / `off` | A command: `[program, arg, …]` runs directly, a string runs with `sh -c`. A relative program (`./tool/x`) resolves against the project root |
 | `then` | `reload` or `restart` once the command succeeds (default `none`) |
-| `confirm` | The dashboard shows the exact command and asks first; `emu run` needs `--yes` |
+| `confirm` | Ask first: `true`, a message, or a map (below). The dialog always shows the exact command; `emu run` asks y/N on a terminal, `--yes` skips it |
 | `timeout` | Seconds before the command is killed (default 60) |
-| `blocks` | Panels in the page body, placed with `area: left \| main \| bottom` (defaults: list left, diff main, output bottom). Drag the left area's right edge or the bottom area's top edge to resize — kept per page in the browser; double-click an edge to reset |
+| `auto` | Toolbar actions: also run on their own when project files change — `{watch: ["tpl/**"], debounce: 400, on: false}` (below) |
+| `blocks` | Panels in the page body, placed with `area: left \| main \| bottom` (defaults: list left, diff main, output bottom). Drag the left area's right edge or the bottom area's top edge to resize — kept per page in the browser; double-click an edge to reset. The chevron in an area's first block head folds it to a strip of its block titles — left upright, main and bottom as a bar — and the others take its room; a click on the strip unfolds it in place. A folded area's blocks are fetched when it unfolds, except the lists that hold the pick and the checks |
 
 | Block | Its command prints | It shows |
 |-------|--------------------|----------|
-| `list` | a JSON array of objects | A table: `columns` as `name` or `name:text\|chip\|count` (default: every field of the first row), a filter box, and a `rowActions` button on each row. The first list on a page holds its selection: picking a row fills `{{selected.<col>}}` |
-| `diff` | a unified diff | The Changes tab view. `segments` adds a switch whose choice fills `{{seg}}` |
-| `html` | anything — JSON goes over as a value | A project HTML file (`src:`) in a sandboxed frame, for what a table or a diff can't show: a value tree, an image preview. `run:` is optional; `actions: [sync]` names the toolbar actions it may ask for |
-| `form` | — | Labeled fields (`fields: [{name, label, placeholder, default}]`) and `actions` buttons that read them as `{{input.<field>}}`. What's typed is kept per browser |
-| `output` | — | The page's last run: command, exit code, time, output |
+| `list` | a JSON array of objects | A table: `columns` as `name` or `name:text\|chip\|count` (default: every field of the first row), a filter box, and a `rowActions` button on each row. The first list on a page holds its selection: picking a row fills `{{selected.<col>}}`. A long text value is cut with an ellipsis at its column's width — 32em, or `name:text:40em` (`em`, `ch`, `px`) — and shows whole on hover; `:start` cuts the front instead, for paths (`path:text:start` → `…/4.49.1/home.json`). The row buttons stay at the right edge when the table scrolls sideways. Click a column head to sort by it (ascending, descending, then the command's order; numbers as numbers, versions like `1.2.10` after `1.2.9`); `sort: minVer:desc` sets where it starts. In the selection list, ↑/↓ pick the row above or below — the blocks that follow the pick fetch once the keys rest — and `/` jumps to the filter (↓ or Enter comes back) |
+| `diff` | a unified diff — anything else shows as numbered lines | The Changes tab view. `segments` adds a switch whose choice fills `{{seg}}`. As `{values: [prod, stage, dev], optional: true, hide: "{{selected.env}}"}`: nothing is picked at first and a click on the picked one turns it off (`{{seg}}` is then empty — show the file itself rather than a diff), and the segment equal to the picked row's `env` isn't offered |
+| `html` | anything — JSON goes over as a value | A project HTML file (`src:`) in a sandboxed frame, for what a table or a diff can't show: a value tree, an image preview. `run:` is optional; `actions:` lists the toolbar actions it may run (`- sync`) and actions of its own (`- action: {…}`), `inputs:` the `{{input.*}}` names it may pass |
+| `form` | — | Labeled fields (`fields: [{name, label, placeholder, default}]`) and `actions` buttons that read them as `{{input.<field>}}`. What's typed is kept per browser. `note:` adds a line of text under the title |
+| `panel` | — | A form with no fields: a title, an optional `note:` and a row of `actions` buttons — group buttons in an area instead of the toolbar. `{{input.*}}` in its buttons is a config error (a `form` with `fields` left out or `[]` is the same) |
+| `output` | — | The page's runs: one in flight shows its output as it comes, a finished one its command, exit code, time and output. Addresses (`https://…`) are links that open in a new tab — in the Logs tab too. The head's menu goes back to one of the last 10 runs (kept in this tab) |
 
 - Placeholders: `{{selected.<col>}}` — the picked row, anywhere except the list that makes
   the selection; `{{row.<col>}}` — a row button's own row; `{{seg}}` — a diff's segment;
-  `{{input.<field>}}` — a form's field, in that form's buttons.
+  `{{input.<field>}}` — a form's field, in that form's buttons, or a value an html block passes
+  to its own actions (only names in its `inputs:`).
   They work only in `[program, arg, …]` commands, and each value stays inside its own
   argument: a row value with spaces, `;` or `$(…)` reaches the program as one argument and
   is never run. A shell-string command with a placeholder is a config error, and so is one
@@ -870,9 +908,106 @@ pages:
   is neutral.
 - An item that reads `{{selected.*}}` is disabled until a row is picked; a `confirm: true`
   item shows the command with the values filled in.
+- `confirm:` can say what the action does, and show what it would change before it runs:
+
+  ```yaml
+  - action:
+      id: stage
+      label: stage deploy
+      run: [./tool/deploy, --env, stage, "{{selected.name}}"]
+      confirm:
+        title: Push to the stage branch?
+        message: "{{selected.name}} goes straight to the stage branch of the deploy repo."
+        danger: true            # red Run button, focus on Cancel: Enter alone doesn't run it
+        button: push            # the Run button's text
+        preview: [./tool/deploy, --env, stage, --dry-run, "{{selected.name}}"]
+  ```
+
+  | Key | Meaning | Default |
+  |-----|---------|---------|
+  | (a string) | `confirm: "…"` is a `message` alone | — |
+  | `title` | The dialog's title | `Run “<label>”?` |
+  | `message` | Text under the title | none |
+  | `danger` | Hard to undo: the Run button turns red and Cancel has the focus | `false` |
+  | `button` | The Run button's text | `Run` |
+  | `preview` | A command run before the dialog opens; its stdout shows in the dialog | none |
+  | `allowOnPreviewError` | Let Run through when the preview fails | `false` |
+
+  `title` and `message` take the same placeholders as the command and are shown as plain
+  text, never HTML. The command itself is always in the dialog, folded under the message —
+  what the dialog shows is what runs. A preview that prints a unified diff is drawn like a
+  diff block, a JSON array of objects as a table, anything else as text; a failed preview
+  (non-zero exit, timeout) shows its output and keeps Run disabled. An unknown key or a
+  wrong type is a config problem, listed by `emu pages`.
+- **Checked rows.** `check: true` on a list adds a checkbox column with check-all and a count;
+  the picked row (`selected`) stays the one the other blocks follow, the checked rows are for
+  doing one thing to many:
+
+  ```yaml
+  - list:
+      id: templates
+      run: [./tool/tpl.sh, list, --json]
+      key: name
+      check: true
+      rowActions:
+        - action: { id: push, run: [./tool/tpl.sh, push, "{{row.name}}"], bulk: true }
+  - form:
+      id: deploy
+      fields: [{ name: env, default: stage }]
+      actions:
+        - action:
+            id: stage
+            run: [./tool/tpl.sh, deploy, --env, "{{input.env}}", "{{checked.name...}}"]
+            needs: checked        # disabled while nothing is checked
+            confirm: true
+  ```
+
+  `{{checked.<col>...}}` must be a whole argument and becomes one argument per checked row
+  (`deploy a b c`; none when nothing is checked) — values are still never split or run.
+  `{{checked.<col>}}` is one comma-joined argument (`--names a,b,c`), `{{checked.count}}` the
+  number. They work in buttons (toolbar, row and form actions), and the last two in their
+  `confirm:` title and message too (`Deploy {{checked.count}} templates?`). With more than one `check:`
+  list on a page, say which: `{{templates.checked.name...}}`, `needs: templates.checked`.
+  The dashboard keeps the checked keys per browser and drops those a fresh fetch no longer
+  lists. When the tool keeps the state itself (shared with the CLI or other tabs), use
+  `check: {column: upload, toggle: [./tool/tpl.sh, pick, --toggle, "{{row.name}}"]}`: a row is
+  checked when its `upload` value is true/yes/on/1/checked, and a click runs `toggle` on that
+  row and fetches the list again. A row action with `bulk: true` also gets a button in the
+  list's head that runs it once per checked row, in turn, stopping at the first failure (a
+  `confirm: true` one asks once).
+- **Folders.** `tree: path` (or `tree: [env, path]`) draws a list as folders: the values of those
+  columns, each split at `/`, make a row's path — `prod / tpl / home / 4.48.0 / home_banner.txt`. Its
+  last part names the row; the parts before it are folders, with a row count, that a click opens or
+  closes. Rows keep their columns, buttons, pick and checks; a folder's checkbox checks every row
+  below it, and a closed folder holding the picked row is marked. Folders start closed —
+  `tree: {columns: [env, path], open: 1}` opens the first level — and what you open is kept per
+  browser. A filter also matches the path and shows the matching rows with every folder above them
+  open. The tree's head sorts folders and rows by name; another column's head sorts the rows within
+  each folder. Without `columns:`, the path columns aren't repeated as columns. `emu block` prints
+  the rows flat, the path columns first.
+- **Run on save.** An action with `auto:` also runs when a project file it watches changes — save
+  a template and it syncs and reloads with no click:
+
+  ```yaml
+  - action:
+      id: sync
+      run: [./tool/tpl.sh, sync]
+      then: reload
+      auto:
+        watch: ["tpl/**/*.txt"]   # project-relative globs
+        debounce: 400             # ms the changes must rest: a burst of saves runs it once
+  ```
+
+  ⚡ beside the button switches it on and off (`on: true` starts it on). The server keeps the switch
+  per project (`.emu/pages_auto.json`) and does the watching, so it works with no dashboard open. A
+  file that changes while it runs makes it run once more right after; what changes during that once
+  more doesn't count — a tool that writes the files it watches runs twice, not forever. A run shows in
+  the output block and the Logs tab like a press (`[ext] … (auto: tpl/a.txt changed)`); a failed one
+  also shows a toast. `auto:` takes toolbar actions with nothing to fill in or confirm: no
+  placeholders, `confirm`, `needs` or `openUrl`. `emu pages` shows the switch.
 - `watch: ["templates/**"]` on a list or diff fetches it again when a matching project file
-  changes — git-ignored work folders included. The picked row and segment are remembered
-  per browser.
+  changes — git-ignored work folders included. The picked row, the segment and a clicked sort
+  are remembered per browser.
 - Instead of `run:`, an action may have `openUrl: "myapp://item?id={{row.id}}"`: it opens the
   link on the device the way `emu open-url` does (argv only, the device-shell quoting, then
   waits for the app to settle) and refreshes the screen panel. A deep-link page needs no
@@ -893,24 +1028,90 @@ pages:
           actions:
             - action: { id: open, label: open on device, openUrl: "{{input.url}}" }
   ```
+- Buttons that shouldn't sit in the always-visible toolbar (a deploy, say) go in a `panel`,
+  with a `note:` saying what they do. `emu run <page>.<panel>.<action>` runs one:
+
+  ```yaml
+      - panel:
+          id: deploy
+          title: Deploy
+          area: left
+          note: stage and dev push straight to the remote branch.
+          actions:
+            - action: { id: stage, label: deploy stage, run: [./tool/deploy, stage], confirm: true }
+            - action: { id: dev, label: deploy dev, run: [./tool/deploy, dev], confirm: true }
+  ```
 - An `html` block's file must be self-contained (inline CSS and JS). It runs in a sandboxed
   frame with its own opaque origin and no network (`default-src 'none'`): it can't read the
-  dashboard, the session token or other blocks. Its data arrives by `postMessage` as
-  `{type: "emu:data", ok, data, text, error, needs, selected}` after it loads and on every
-  refresh (post `{type: "emu:ready"}` to ask again). It runs a toolbar action by posting
-  `{type: "emu:action", id}` — only ids listed in `actions:`, with the same confirmation as
-  the button. Saving the file reloads the frame.
+  dashboard, the session token or other blocks. The dashboard puts a small helper in front of
+  the file, `window.emu`, so the view talks to the dashboard without handling `postMessage`
+  itself. Saving the file reloads the frame.
 
-  ```html
-  <!doctype html>
-  <pre id="out"></pre>
-  <script>
-    addEventListener('message', (e) => {
-      if (e.data?.type === 'emu:data') out.textContent = JSON.stringify(e.data.data, null, 2);
-    });
-    parent.postMessage({ type: 'emu:ready' }, '*');
-  </script>
+  | Call | Does | Resolves to |
+  |------|------|-------------|
+  | `emu.onData(fn)` | `fn({ok, data, text, error, needs, selected})` with the block's `run:` output — now if it came already, and on every refresh | an unsubscribe function |
+  | `emu.run(id, {input, confirm})` | runs an id from the block's `actions:` — its own action, or a toolbar action it lists. `confirm: {title, message, detail, danger}` (or a title): the view's words for the run, asked in one dialog (below) | `{ok, exitCode, error, output, data}` — `data` when stdout is JSON; `cancelled` / `busy` / `needs` when it didn't run |
+  | `emu.confirm({title, message, detail, danger, button})` | asks yes/no | `true` / `false` |
+  | `emu.prompt({title, message, fields: [{name, label, default}]})` | asks for text | `{name: value, …}` or `null` |
+  | `emu.choose({title, message, options: [{value, label}], multiple})` | asks to pick one (or, `multiple`, any) — an option may be a bare value | the value (`multiple`: an array) or `null` |
+  | `emu.select(key)` | picks the row with that key in the page's selection list, as a click would — blocks that read `{{selected.*}}` follow | `{ok}`, or `{ok: false, error}` when the page has no such row |
+  | `emu.refresh(blockId)` | fetches the block's data again (its `onData` gets it); with an id, another block of the page | `{ok}`, or `{ok: false, error}` (no such block, already loading) |
+  | `emu.toast(text, level)` | a toast, prefixed with the block's title | — |
+
+  ```yaml
+  - html:
+      id: view
+      title: Deploy
+      src: tool/emu/deploy.html
+      run: [./tool/tpl.sh, list]          # → emu.onData
+      inputs: [env, message]              # what emu.run may pass as {{input.*}}
+      actions:
+        - sync                            # a toolbar action the view may run
+        - action:                         # this block's own: not in the toolbar
+            id: plan
+            run: [./tool/tpl.sh, plan, "{{input.env}}"]
+        - action:
+            id: deploy
+            run: [./tool/tpl.sh, deploy, "{{input.env}}", "{{input.message}}"]
+            confirm: { title: "Push to {{input.env}}", danger: true, button: push }
   ```
+
+  ```js
+  emu.onData(({ data }) => render(data));
+  const env = await emu.choose({ title: 'Deploy to', options: ['stage', 'prod'] });
+  if (!env) return;
+  const plan = await emu.run('plan', { input: { env } });
+  if (!plan.ok) return emu.toast(`preview failed: ${plan.error}`, 'error');
+  // One dialog: these words, then emu.yaml's confirm: and the exact command.
+  await emu.run('deploy', {
+    input: { env, message: 'from the view' },
+    confirm: { title: `Push ${plan.data.length} templates?`, detail: plan.data.map(t => t.path).join('\n') },
+  });
+  ```
+
+  A full example is in [`docs/examples/html-block`](docs/examples/html-block). What keeps a
+  view in its place:
+  - Dialogs are drawn by the dashboard, outside the frame, headed with who asks
+    (`"Deploy" (emu.yaml · tool/emu/deploy.html) asks:`), and every text in them is shown as text,
+    never as HTML. One dialog at a time: a request while one is open answers `busy`
+    (`false`/`null`). Only a frame of the page on screen gets answers.
+  - `emu.confirm` is the view's own question; it doesn't stand in for `confirm:`. Such an
+    action asks in the dashboard's own dialog with the exact command, also when a frame runs it —
+    a frame can't send `confirmed`. Not twice, though:
+    - `emu.run(id, {confirm})` puts the view's words on top of that dialog (under its "from"
+      line), with emu.yaml's `confirm:` words, preview and command below — one dialog, one Run.
+      For an action without `confirm:`, the view's words are asked alone before it runs.
+    - `emu.confirm` and then, within a second, a `confirm:` action of the same view: on OK the
+      dialog stays up and goes on to that run's command in place — one window, Run pressed for
+      the command. Anything else in between, or a later run, asks in a dialog of its own.
+  - A view whose dialogs keep getting cancelled is offered **Block requests from this view**;
+    then, until the dashboard reloads, its `confirm`/`prompt`/`choose` answer no at once.
+  - `emu.select` only picks rows the page's list has; `emu.refresh` only fetches blocks of the
+    view's own page, not while one is loading or twice in a second.
+  - `input` goes only into names listed in `inputs:` (anything else is dropped), each value inside
+    one argument as with every placeholder.
+  - Without the helper: data arrives as `{type: "emu:data", …}`, `{type: "emu:ready"}` asks for it
+    again, and `{type: "emu:action", id}` runs an action with no answer — as before.
 
 - A toggle's `state` command prints `{"on": true|false, "detail"?: "…"}` — its last line is
   enough, so the tool may log first. `on`/`off` flip it, and the state is read again afterwards.
@@ -931,9 +1132,12 @@ emu pages                          # pages, items and blocks (--json available)
 emu run templates.sync             # same as pressing the button: its output, then a result line
 emu run templates.local on         # a toggle takes on/off
 emu run templates.local            # …or nothing, to print where it stands
-emu run templates.publish --select name=home_banner --yes   # {{selected.name}}; confirm: true needs --yes
+emu run templates.publish --select name=home_banner         # confirm: prints the dialog and preview, asks y/N (--yes skips)
 emu run links.routes.open --row route=home        # a row button, as if pressed on that row
 emu run links.link.open --input url=myapp://home   # a form button with what's typed
+emu run deploy.view.plan --input env=stage         # an html block's own action, with its inputs:
+emu run tpl.deploy.stage --checked home,card --yes  # {{checked.*}}: rows of the check: true list, by key
+emu run tpl.picks.check --row name=home            # check.toggle runs as the row action "check"
 emu block templates.items          # what a list shows, as a table
 emu block templates.changes --select name=home_banner --seg prod   # a diff, as if that row were picked
 ```
@@ -1063,6 +1267,7 @@ Stored in the project's `.emu/` directory and auto git-ignored:
 | `server.log` | Server startup diagnostics |
 | `shot-*.png` | Screenshots |
 | `memory.json` | Learned recomputation hints (lastScreen, etc.) |
+| `pages_auto.json` | Dashboard pages' `auto:` switches, as flipped |
 
 ## Device ownership
 
