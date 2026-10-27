@@ -363,7 +363,8 @@ class SelfUpdater {
 
   /// Take [lockFile]: only an exclusive create counts. A lock left by a dead
   /// process is removed and the create tried again; an empty one is being
-  /// taken by someone else right now.
+  /// taken by someone else right now — unless it is old: the holder died
+  /// between the create and writing its pid, which is otherwise instant.
   void _lock() {
     lockFile.parent.createSync(recursive: true);
     for (var attempt = 0; attempt < 3; attempt++) {
@@ -379,7 +380,7 @@ class SelfUpdater {
           continue; // the holder just finished: try again
         }
         final holder = int.tryParse(content);
-        if (content.isEmpty || (holder != null && holder != pid && _alive(holder))) {
+        if ((content.isEmpty && !_old(lockFile)) || (holder != null && holder != pid && _alive(holder))) {
           throw UpdateError('another emu update is running${holder == null ? '' : ' (pid $holder)'}.', refused: true);
         }
         try {
@@ -397,6 +398,14 @@ class SelfUpdater {
       if (lockFile.readAsStringSync().trim() == '$pid') lockFile.deleteSync();
     } on FileSystemException {
       // Gone.
+    }
+  }
+
+  static bool _old(File f) {
+    try {
+      return DateTime.now().difference(f.lastModifiedSync()) > const Duration(seconds: 5);
+    } on FileSystemException {
+      return false; // gone: the next create decides
     }
   }
 

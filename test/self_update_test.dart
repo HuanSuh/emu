@@ -143,6 +143,14 @@ void main() {
       expect((await updater('$repo/emu').apply('0.2.0')).updated, isTrue);
       expect(lock.existsSync(), isFalse);
     });
+
+    test('an empty lock left long ago (died before writing its pid) is removed and taken', () async {
+      final lock = File('$home/.emu/update.lock')..createSync(recursive: true);
+      lock.setLastModifiedSync(DateTime.now().subtract(const Duration(minutes: 1)));
+      builds(repo);
+      expect((await updater('$repo/emu').apply('0.2.0')).updated, isTrue);
+      expect(lock.existsSync(), isFalse);
+    });
   });
 
   group('Claude Code plugin', () {

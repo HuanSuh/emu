@@ -7,6 +7,10 @@
 ## [Unreleased]
 
 ### Fixed
+- `emu update` 가 잠금 파일을 만들고 pid 를 쓰기 전에 죽으면 빈 `~/.emu/update.lock` 이 남아, 손으로 지우기 전까지 `emu update`
+  와 허브 Update 버튼이 늘 "another emu update is running" 으로 거절되던 문제. 이제 빈 잠금 파일이라도 몇 초 넘게 지났으면 남은
+  것으로 보고 지운 뒤 잡는다.
+- 개발 모드(`EMU_WEB_DIR` 또는 소스의 `web/`)에서 대시보드 정적 파일 경로가 web 디렉터리 밖을 가리키면 디스크에서 읽지 않는다.
 - `emu down` 때 서버 정리 중 한 단계가 실패하면(`.emu/` 에 쓸 수 없어 `server.json` 을 못 지우는 등) 나머지 정리를 건너뛰고
   서버 프로세스가 끝나지 않던 문제. 이제 단계마다 따로 정리해 세션 목록·기기 점유·`flutter` 프로세스·포트를 모두 놓고 종료한다.
 - mock 서버가 요청마다 emu.yaml·emu.local.yaml·시나리오 파일을 다시 읽어, 앱이 시작할 때 API 를 한꺼번에 부르면 응답이
