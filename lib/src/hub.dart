@@ -419,7 +419,7 @@ class HubServer {
         try {
           await close();
         } finally {
-          exit(0);
+          _exit(0);
         }
       });
       return _json({'ok': true});
