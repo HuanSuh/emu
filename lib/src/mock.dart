@@ -469,10 +469,42 @@ class MockServer {
 
   int? get port => _https?.port;
 
+  MockConfig? _config;
+  String? _configStamp;
+
+  /// The config, read again only when one of its files changed (emu.yaml,
+  /// emu.local.yaml, ~/.emu/config.yaml, the scenario folder's files) — so
+  /// an edit applies to the next request without every request reading them.
   MockConfig load() {
+    final stamp = _stamp(_config?.dir ?? 'mocks');
+    final cached = _config;
+    if (cached != null && stamp != null && stamp == _configStamp) return cached;
     final config = loadProjectConfig(projectRoot, home: home, profile: profile);
-    return withScenarioFiles(parseMocks(config.mocks), projectRoot);
+    _configStamp = stamp;
+    return _config = withScenarioFiles(parseMocks(config.mocks), projectRoot);
   }
+
+  /// Path, size and mtime of each config file, or null while one was written
+  /// too recently for its mtime to tell a second edit apart (a coarse clock).
+  String? _stamp(String dir) {
+    final now = DateTime.now();
+    final homeDir = home ?? Platform.environment['HOME'] ?? '';
+    final folder = Directory(p.join(projectRoot, dir));
+    final out = StringBuffer();
+    for (final path in [
+      if (homeDir.isNotEmpty) p.join(homeDir, '.emu', 'config.yaml'),
+      p.join(projectRoot, 'emu.yaml'),
+      p.join(projectRoot, 'emu.local.yaml'),
+      if (folder.existsSync()) ...[for (final f in folder.listSync()) if (f.path.endsWith('.json')) f.path]..sort(),
+    ]) {
+      final stat = FileStat.statSync(path);
+      if (now.difference(stat.modified) < _settled) return null;
+      out.writeln('$path ${stat.type} ${stat.size} ${stat.modified.microsecondsSinceEpoch}');
+    }
+    return '$out';
+  }
+
+  static const _settled = Duration(seconds: 2);
 
   /// How much of each body a [MockHit] keeps.
   static const bodyLimit = 64 * 1024;
@@ -632,37 +664,42 @@ class MockServer {
   /// Send [req] on to [origin] and stream the answer back as it came.
   Future<int> _forward(HttpRequest req, Uri origin, MockHit hit) async {
     final up = await _upstream.openUrl(req.method, origin);
-    up.followRedirects = false; // the app follows them itself (and routes them again)
-    req.headers.forEach((name, values) {
-      if (_hopByHop.contains(name)) return;
-      for (final v in values) {
-        up.headers.add(name, v, preserveHeaderCase: true);
-      }
-    });
-    if (req.contentLength >= 0) up.contentLength = req.contentLength;
-    final sent = BytesBuilder(copy: false);
-    await up.addStream(req.map((chunk) {
-      if (sent.length < bodyLimit) sent.add(chunk);
-      return chunk;
-    }));
-    hit.requestBody = _text(sent.takeBytes(), req.headers.value('content-encoding'));
-    final answer = await up.close();
-    final res = req.response..statusCode = answer.statusCode;
-    answer.headers.forEach((name, values) {
-      if (_hopByHop.contains(name)) return;
-      for (final v in values) {
-        res.headers.add(name, v, preserveHeaderCase: true);
-      }
-    });
-    if (answer.contentLength >= 0) res.contentLength = answer.contentLength;
-    final got = BytesBuilder(copy: false);
-    await res.addStream(answer.map((chunk) {
-      if (got.length < bodyLimit) got.add(chunk);
-      return chunk;
-    }));
-    hit
-      ..responseType = answer.headers.contentType?.mimeType
-      ..responseBody = _text(got.takeBytes(), answer.headers.value('content-encoding'));
-    return answer.statusCode;
+    try {
+      up.followRedirects = false; // the app follows them itself (and routes them again)
+      req.headers.forEach((name, values) {
+        if (_hopByHop.contains(name)) return;
+        for (final v in values) {
+          up.headers.add(name, v, preserveHeaderCase: true);
+        }
+      });
+      if (req.contentLength >= 0) up.contentLength = req.contentLength;
+      final sent = BytesBuilder(copy: false);
+      await up.addStream(req.map((chunk) {
+        if (sent.length < bodyLimit) sent.add(chunk);
+        return chunk;
+      }));
+      hit.requestBody = _text(sent.takeBytes(), req.headers.value('content-encoding'));
+      final answer = await up.close();
+      final res = req.response..statusCode = answer.statusCode;
+      answer.headers.forEach((name, values) {
+        if (_hopByHop.contains(name)) return;
+        for (final v in values) {
+          res.headers.add(name, v, preserveHeaderCase: true);
+        }
+      });
+      if (answer.contentLength >= 0) res.contentLength = answer.contentLength;
+      final got = BytesBuilder(copy: false);
+      await res.addStream(answer.map((chunk) {
+        if (got.length < bodyLimit) got.add(chunk);
+        return chunk;
+      }));
+      hit
+        ..responseType = answer.headers.contentType?.mimeType
+        ..responseBody = _text(got.takeBytes(), answer.headers.value('content-encoding'));
+      return answer.statusCode;
+    } catch (e, st) {
+      up.abort(e, st); // else the connection to the real server stays open
+      rethrow;
+    }
   }
 }
