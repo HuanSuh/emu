@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-10-27
+
 ### Fixed
 - 대시보드 페이지에서 버튼(행 버튼·툴바·체크)을 누를 때마다 블록이 두세 번 깜빡이던 문제. 실행이 시작·끝날 때 모든 목록을
   다시 그리고, 끝나면 모든 블록을 흐리게 한 채 다시 받고, 명령이 감시 파일을 썼으면 0.5초쯤 뒤 한 번 더 그랬다. 이제 실행
@@ -477,7 +479,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.17.1...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.17.2...HEAD
+[0.17.2]: https://github.com/HuanSuh/emu/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/HuanSuh/emu/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/HuanSuh/emu/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/HuanSuh/emu/compare/v0.15.0...v0.16.0
