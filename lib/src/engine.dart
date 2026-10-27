@@ -299,6 +299,13 @@ class FlutterEngine {
     }
     final label = fullRestart ? 'hot restart' : 'hot reload';
     logStore.system('$label requested');
+    final proc = _process;
+    if (proc == null) {
+      // The app died earlier; keep the failed/stopped state [_handleExit] set.
+      final msg = '$label failed: not running';
+      logStore.add(msg, level: LogLevel.error, source: 'system');
+      return ActionResult(ok: false, message: msg);
+    }
     _setStatus(_status.copyWith(state: AppRunState.restarting));
     final resp = await _request('app.restart', {
       'appId': appId,
@@ -306,10 +313,15 @@ class FlutterEngine {
       'pause': false,
       'reason': 'manual',
     });
-    _setStatus(_status.copyWith(
-      state: AppRunState.running,
-      lastReloadAt: DateTime.now(),
-    ));
+    // Only settle back to running if the same process is still alive and
+    // nothing else moved the state meanwhile: an exit ([_handleExit]) or
+    // [stop] during the wait already recorded the real state.
+    if (identical(_process, proc) && _status.state == AppRunState.restarting) {
+      _setStatus(_status.copyWith(
+        state: AppRunState.running,
+        lastReloadAt: resp.isError ? null : DateTime.now(),
+      ));
+    }
     if (resp.isError) {
       final msg = '$label failed: ${resp.error}';
       logStore.add(msg, level: LogLevel.error, source: 'system');

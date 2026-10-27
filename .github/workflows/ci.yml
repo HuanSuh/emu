@@ -13,8 +13,17 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dart-lang/setup-dart@v1
+        id: dart
         with:
           sdk: stable
+
+      # setup-dart installs the SDK only; it does not cache ~/.pub-cache.
+      # packages/emu_hook commits no lock file, so its pubspec.yaml stands in.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ steps.dart.outputs.dart-version }}-${{ hashFiles('pubspec.lock', 'packages/emu_hook/pubspec.yaml') }}
+          restore-keys: pub-${{ runner.os }}-${{ steps.dart.outputs.dart-version }}-
 
       - name: Install dependencies
         run: dart pub get
@@ -38,6 +47,36 @@ jobs:
         run: |
           dart run tool/bundle_web.dart
           git diff --exit-code lib/src/web_assets.g.dart lib/src/macos_sources.g.dart
+
+      - name: README.md and README.ko.md share one structure
+        run: dart run tool/check_readme_sync.dart
+
+  test-sdk-min:
+    # The lower bound of `environment: sdk` in pubspec.yaml. A separate job, not
+    # a matrix on `test`: main's ruleset requires a check named exactly `test`.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        id: dart
+        with:
+          sdk: 3.8.0
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ steps.dart.outputs.dart-version }}-${{ hashFiles('pubspec.lock', 'packages/emu_hook/pubspec.yaml') }}
+          restore-keys: pub-${{ runner.os }}-${{ steps.dart.outputs.dart-version }}-
+
+      - name: Install dependencies
+        run: dart pub get
+
+      - name: Analyze
+        run: dart analyze --fatal-infos
+
+      - name: Run tests
+        run: dart test
 
   macos-app:
     # emu.app (macos/Emu) is built on users' machines by `emu app install`;
