@@ -1,5 +1,41 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:emu/src/engine.dart';
+import 'package:emu/src/log_store.dart';
+import 'package:emu/src/models.dart';
 import 'package:test/test.dart';
+
+/// A stand-in `flutter run --machine`: announces app `a1` as started, then
+/// answers `app.restart` with [onRestart] (a shell snippet) and quits on
+/// `app.stop`.
+String _fakeFlutter(Directory dir, String onRestart) {
+  final f = File('${dir.path}/flutter');
+  f.writeAsStringSync('''#!/bin/sh
+echo '[{"event":"app.start","params":{"appId":"a1","deviceId":"d1"}}]'
+echo '[{"event":"app.started","params":{"appId":"a1"}}]'
+while IFS= read -r line; do
+  case "\$line" in
+    *app.restart*) $onRestart ;;
+    *app.stop*) exit 0 ;;
+  esac
+done
+''');
+  Process.runSync('chmod', ['+x', f.path]);
+  return f.path;
+}
+
+Future<FlutterEngine> _startedEngine(Directory dir, String onRestart) async {
+  final engine = FlutterEngine(
+    projectRoot: dir.path,
+    logStore: LogStore(),
+    flutterExecutable: _fakeFlutter(dir, onRestart),
+  );
+  final running = engine.statusStream.firstWhere((s) => s.state == AppRunState.running);
+  await engine.start(['run', '--machine']);
+  await running.timeout(const Duration(seconds: 10));
+  return engine;
+}
 
 void main() {
   group('FlutterEngine.buildRunArgs', () {
@@ -82,6 +118,51 @@ void main() {
       final a = FlutterEngine.buildAttachArgs(run, deviceId: 'X', appId: 'com.x.dev');
       expect(a, containsAllInOrder(['--app-id', 'com.x.dev']));
       expect(a, isNot(contains('--debug-url')));
+    });
+  });
+
+  group('restart vs process exit', () {
+    late Directory dir;
+    late FlutterEngine engine;
+    setUp(() => dir = Directory.systemTemp.createTempSync('emu_engine_'));
+    tearDown(() async {
+      await engine.dispose();
+      dir.deleteSync(recursive: true);
+    });
+
+    test('flutter dying mid-reload leaves failed, not running', () async {
+      engine = await _startedEngine(dir, 'exit 3');
+      final r = await engine.hotReload();
+      expect(r.ok, isFalse);
+      expect(engine.hasProcess, isFalse);
+      expect(engine.status.state, AppRunState.failed);
+      expect(engine.status.lastReloadAt, isNull);
+    });
+
+    test('reload after the process died keeps failed', () async {
+      engine = await _startedEngine(dir, 'exit 3');
+      await engine.hotReload();
+      final r = await engine.hotRestart();
+      expect(r.ok, isFalse);
+      expect(engine.status.state, AppRunState.failed);
+    });
+
+    test('successful reload marks running with lastReloadAt', () async {
+      engine = await _startedEngine(
+          dir, 'echo \'[{"id":1,"result":{"code":0,"message":""}}]\'');
+      final r = await engine.hotReload();
+      expect(r.ok, isTrue);
+      expect(engine.status.state, AppRunState.running);
+      expect(engine.status.lastReloadAt, isNotNull);
+    });
+
+    test('error response with a live process stays running', () async {
+      engine = await _startedEngine(dir, 'echo \'[{"id":1,"error":"boom"}]\'');
+      final r = await engine.hotReload();
+      expect(r.ok, isFalse);
+      expect(engine.hasProcess, isTrue);
+      expect(engine.status.state, AppRunState.running);
+      expect(engine.status.lastReloadAt, isNull);
     });
   });
 }
