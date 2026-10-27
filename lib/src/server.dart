@@ -117,12 +117,26 @@ class LaunchOptions {
 }
 
 class EmuServer {
-  EmuServer({required this.session, DeviceLeases? leases, SessionRegistry? registry, RecentProjects? recent})
-      : leases = leases ?? DeviceLeases(),
+  EmuServer({
+    required this.session,
+    DeviceLeases? leases,
+    SessionRegistry? registry,
+    RecentProjects? recent,
+    this.flutterExecutable = 'flutter',
+    void Function(int code)? exitProcess,
+  })  : leases = leases ?? DeviceLeases(),
         registry = registry ?? SessionRegistry(),
-        recent = recent ?? RecentProjects();
+        recent = recent ?? RecentProjects(),
+        devices = DeviceManager(flutterExecutable: flutterExecutable),
+        _exit = exitProcess ?? exit;
 
   final Session session;
+
+  /// The `flutter` the engine and device manager run — a seam for tests.
+  final String flutterExecutable;
+
+  /// What `/api/shutdown` ends the process with — a seam for tests.
+  final void Function(int) _exit;
 
   /// Machine-wide device ownership, so two sessions never drive one device.
   final DeviceLeases leases;
@@ -185,7 +199,7 @@ class EmuServer {
   StreamSubscription<FileSystemEvent>? _fileWatch;
   Timer? _fileWatchDebounce;
   StreamSubscription<AppStatus>? _snapshotSub;
-  final DeviceManager devices = DeviceManager();
+  final DeviceManager devices;
 
   /// Dashboard pages from `emu.yaml` (`pages.dart`) and the runs of their items.
   late final PagesApi pages;
@@ -249,7 +263,7 @@ class EmuServer {
   Future<void> start(int requestedPort, LaunchOptions opts) async {
     session.ensureState();
     logStore = LogStore(persistFile: session.logFile..writeAsStringSync(''));
-    engine = FlutterEngine(projectRoot: session.projectRoot.path, logStore: logStore);
+    engine = FlutterEngine(projectRoot: session.projectRoot.path, logStore: logStore, flutterExecutable: flutterExecutable);
 
     // Fan out engine activity to connected dashboards.
     logStore.stream.listen((e) => _broadcast({'type': 'log', 'entry': e.toJson()}));
@@ -908,8 +922,11 @@ class EmuServer {
       case '/api/shutdown':
         // Graceful server shutdown (used by `emu down`).
         scheduleMicrotask(() async {
-          await dispose();
-          exit(0);
+          try {
+            await dispose();
+          } finally {
+            _exit(0);
+          }
         });
         return _json({'ok': true, 'message': 'shutting down'});
       default:
@@ -1508,38 +1525,47 @@ class EmuServer {
   Response _json(Object data, {int status = 200}) =>
       Response(status, body: jsonEncode(data), headers: {'Content-Type': 'application/json'});
 
+  /// Each step on its own: one that throws (a `.emu/` that can't be written,
+  /// adb gone) must not leave the rest — the lease, the registry entry, the
+  /// `flutter` process, the port — behind.
   Future<void> dispose() async {
     _disposed = true;
-    await _postHocClaim?.cancel();
+    Future<void> step(FutureOr<void> Function() f) async {
+      try {
+        await f();
+      } catch (_) {}
+    }
+
+    await step(() => _postHocClaim?.cancel());
     _fileWatchDebounce?.cancel();
     _pagesChangedDebounce?.cancel();
     _pageWatchDebounce?.cancel();
-    pages.dispose();
-    await _fileWatch?.cancel();
-    await _snapshotSub?.cancel(); // no git snapshots while shutting down
-    await _setupWatch?.cancel();
+    await step(pages.dispose);
+    await step(() => _fileWatch?.cancel());
+    await step(() => _snapshotSub?.cancel()); // no git snapshots while shutting down
+    await step(() => _setupWatch?.cancel());
     _portWatch?.cancel();
-    await mock?.close();
-    await _reapplyRun;
+    await step(() => mock?.close());
+    await step(() => _reapplyRun);
     final prepared = _preparedDevice;
     if (prepared != null && setup.hasPorts && platformForDeviceId(prepared) == 'android') {
-      await setup.removePorts(prepared);
+      await step(() => setup.removePorts(prepared));
     }
-    session.clearServerInfo();
-    await _registrySub?.cancel();
+    await step(session.clearServerInfo);
+    await step(() => _registrySub?.cancel());
     final entry = _entry;
-    if (entry != null) registry.remove(entry.id, pid);
-    if (_leasedDevice != null) leases.release(_leasedDevice!, pid);
+    if (entry != null) await step(() => registry.remove(entry.id, pid));
+    if (_leasedDevice != null) await step(() => leases.release(_leasedDevice!, pid));
     // Over a copy: closing a socket runs its onDone, which removes it from
     // [_sockets] — iterating the set itself threw there, and the server never
     // reached exit(). Bounded, so a client that never answers the close
     // handshake can't hold the shutdown either.
     for (final s in _sockets.toList()) {
-      await s.sink.close().timeout(const Duration(seconds: 2), onTimeout: () {});
+      await step(() => s.sink.close().timeout(const Duration(seconds: 2), onTimeout: () {}));
     }
-    await engine.dispose();
-    await logStore.close();
-    await _http?.close(force: true);
+    await step(engine.dispose);
+    await step(logStore.close);
+    await step(() => _http?.close(force: true));
   }
 }
 
