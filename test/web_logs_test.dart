@@ -4,11 +4,13 @@ import 'dart:io';
 
 import 'package:test/test.dart';
 
-/// `function <name>(…) {…}` at the top level of [src]: up to the first `}`
-/// alone on a line.
+/// `function <name>(…) {…}` at the top level of [src]: its line when it ends
+/// there, else up to the first `}` alone on a line.
 String _fn(String src, String name) {
   final start = src.indexOf('\nfunction $name(');
   if (start < 0) throw StateError('no function $name in web/app.js');
+  final eol = src.indexOf('\n', start + 1);
+  if (src.substring(start, eol).endsWith('}')) return src.substring(start + 1, eol);
   final end = src.indexOf('\n}\n', start);
   return src.substring(start + 1, end + 2);
 }
@@ -43,7 +45,7 @@ const URL_RE = /https?:\\/\\/[^\\s<>"'`]+/g;
 const folds = new Map();
 const foldState = new Map();
 let tail = null;
-${['escapeHtml', 'highlight', 'linkify', 'clock', 'foldKey', 'foldLabel', 'rowHtml', 'rowsHtml'].map((n) => _fn(src, n)).join('\n')}
+${['escapeHtml', 'escapeRe', 'highlight', 'linkify', 'clock', 'foldKey', 'foldLabel', 'rowHtml', 'rowsHtml'].map((n) => _fn(src, n)).join('\n')}
 let seq = 0;
 const line = (text, o = {}) => ({ seq: ++seq, ts: '2026-10-27T10:00:00.100Z', level: 'info', source: 'app', text, ...o });
 // Each row as "<head|cont|shut|plain> <text> [badge]".
@@ -91,6 +93,14 @@ const rows = (html) => [...html.matchAll(/<div class="row (\\w+)([^"]*)"[^>]*>.*
       expect(r, ['head a1 ▾ 2 lines', 'cont a2', 'head b1 ▸ 2 lines', 'shut b2']);
     });
 
+    test('a search highlights the head and the rest of its run', () async {
+      final r = await _js(prelude, '''
+        state.search = 'amp';
+        return rows(rowsHtml([line('a & amp'), line('amp & b')]));
+      ''');
+      expect(r, ['head a &amp; <mark>amp</mark> ▸ 2 lines', 'shut <mark>amp</mark> &amp; b']);
+    });
+
     test('fold off draws plain rows', () async {
       final r = await _js(prelude, '''
         state.fold = false;
@@ -100,6 +110,65 @@ const rows = (html) => [...html.matchAll(/<div class="row (\\w+)([^"]*)"[^>]*>.*
         'rows': ['plain a1', 'plain a2'],
         'runs': 0,
       });
+    });
+  });
+
+  group('Logs search highlight', skip: _node ? false : 'node is not installed', () {
+    final prelude = '''
+const state = { search: '', regex: false };
+const URL_RE = /https?:\\/\\/[^\\s<>"'`]+/g;
+${['escapeHtml', 'escapeRe', 'highlight', 'linkify'].map((n) => _fn(src, n)).join('\n')}
+const hl = (search, text, regex = false) => { state.search = search; state.regex = regex; return highlight(text); };
+''';
+
+    test('marks matches in the text, not in its escaped entities', () async {
+      final r = await _js(prelude, '''
+        return [
+          hl('amp', 'a & b, amp'),
+          hl('lt', 'x < y, lt'),
+          hl('A', 'a <b> A'),
+          hl('<b', 'a <b> c'),
+        ];
+      ''');
+      expect(r, [
+        'a &amp; b, <mark>amp</mark>',
+        'x &lt; y, <mark>lt</mark>',
+        '<mark>a</mark> &lt;b&gt; <mark>A</mark>',
+        'a <mark>&lt;b</mark>&gt; c',
+      ]);
+    });
+
+    test('regex: entities stay whole, empty matches mark nothing, a bad pattern only escapes', () async {
+      final r = await _js(prelude, '''
+        return [
+          hl(';', 'a & b;', true),
+          hl('l.', '<lt>', true),
+          hl('x*', 'a&b', true),
+          hl('^', 'a&b', true),
+          hl('(', 'a&b', true),
+          hl('b|', 'a&b', true),
+        ];
+      ''');
+      expect(r, [
+        'a &amp; b<mark>;</mark>',
+        '&lt;<mark>lt</mark>&gt;',
+        'a&amp;b',
+        'a&amp;b',
+        'a&amp;b',
+        'a&amp;<mark>b</mark>',
+      ]);
+    });
+
+    test('a link keeps its address whole and highlights its text', () async {
+      final r = await _js(prelude, '''
+        state.search = 'amp';
+        return linkify('see https://x.io/?a=1&amp=2 & amp', highlight);
+      ''');
+      expect(
+        r,
+        'see <a href="https://x.io/?a=1&amp;amp=2" target="_blank" rel="noopener noreferrer">'
+        'https://x.io/?a=1&amp;<mark>amp</mark>=2</a> &amp; <mark>amp</mark>',
+      );
     });
   });
 
