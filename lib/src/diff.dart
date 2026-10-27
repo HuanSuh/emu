@@ -222,7 +222,10 @@ class GitDiff {
       await _out(['add', '-A', '--', '.'], environment: env);
       return (await _out(['write-tree'], environment: env)).trim();
     } finally {
-      tmp.deleteSync(recursive: true);
+      // Best-effort: a failed cleanup must not replace the capture's own error.
+      try {
+        tmp.deleteSync(recursive: true);
+      } catch (_) {}
     }
   }
 
