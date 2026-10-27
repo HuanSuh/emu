@@ -9,18 +9,13 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        # The lower bound of `environment: sdk` in pubspec.yaml, and stable.
-        sdk: ['3.8.0', stable]
     steps:
       - uses: actions/checkout@v4
 
       - uses: dart-lang/setup-dart@v1
         id: dart
         with:
-          sdk: ${{ matrix.sdk }}
+          sdk: stable
 
       # setup-dart installs the SDK only; it does not cache ~/.pub-cache.
       # packages/emu_hook commits no lock file, so its pubspec.yaml stands in.
@@ -39,9 +34,7 @@ jobs:
       - name: Run tests
         run: dart test
 
-      # The steps below don't depend on the SDK version; run them once.
       - name: emu_hook (app-side package)
-        if: matrix.sdk == 'stable'
         working-directory: packages/emu_hook
         run: |
           dart pub get
@@ -49,7 +42,6 @@ jobs:
           dart test
 
       - name: Verify embedded web assets are current
-        if: matrix.sdk == 'stable'
         # bundle_web.dart regenerates lib/src/web_assets.g.dart from web/.
         # If it drifts from what's committed, the binary would ship stale assets.
         run: |
@@ -57,8 +49,34 @@ jobs:
           git diff --exit-code lib/src/web_assets.g.dart lib/src/macos_sources.g.dart
 
       - name: README.md and README.ko.md share one structure
-        if: matrix.sdk == 'stable'
         run: dart run tool/check_readme_sync.dart
+
+  test-sdk-min:
+    # The lower bound of `environment: sdk` in pubspec.yaml. A separate job, not
+    # a matrix on `test`: main's ruleset requires a check named exactly `test`.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        id: dart
+        with:
+          sdk: 3.8.0
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ steps.dart.outputs.dart-version }}-${{ hashFiles('pubspec.lock', 'packages/emu_hook/pubspec.yaml') }}
+          restore-keys: pub-${{ runner.os }}-${{ steps.dart.outputs.dart-version }}-
+
+      - name: Install dependencies
+        run: dart pub get
+
+      - name: Analyze
+        run: dart analyze --fatal-infos
+
+      - name: Run tests
+        run: dart test
 
   macos-app:
     # emu.app (macos/Emu) is built on users' machines by `emu app install`;
