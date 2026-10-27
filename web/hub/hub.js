@@ -155,26 +155,127 @@ async function loadDevices() {
   }
 }
 
+// ---- version & update ----------------------------------------------------------
+// The Update button asks the hub to run `emu update` (lib/src/self_update.dart,
+// the steps are fixed server side); its steps come back on the stream as
+// {type: 'update', state, log, error}. A finished update restarts the hub: the
+// stream closes, the reconnect gets 401 from the new hub and the page reloads.
+
+let version = null;
+let update = null; // the hub's update state, or null
+let restarting = false; // the hub is replacing itself after an update: no alarm
+const UPDATED_KEY = 'emu.hub.updated';
+
 function renderVersion(v) {
+  version = v;
+  if (v.update !== undefined) update = v.update;
   const b = $('version');
-  b.innerHTML = `v${esc(v.running)}${v.updateAvailable ? ` · <b>new ${esc(v.latest)}</b>` : ''}`;
+  const busy = update && (update.state === 'running' || update.state === 'restarting');
+  b.innerHTML = `v${esc(v.running)}${busy ? ' · <b>updating…</b>' : v.updateAvailable ? ` · <b>new ${esc(v.latest)}</b>` : ''}${appStale() ? ' · <b>app ↻</b>' : ''}`;
   b.title = v.latest ? `This emu ${v.running} · latest release ${v.latest}` : `This emu ${v.running}`;
   b.onclick = () => showVersion(v);
 }
 
+// The macOS app (macos/) says which build it is; the hub says which one is on disk.
+const appStale = () => !!(window.emuApp?.rev && version?.appRev && window.emuApp.rev !== version.appRev);
+
+function relaunchApp() {
+  window.webkit?.messageHandlers?.emu?.postMessage({ type: 'relaunch' });
+}
+
 function showVersion(v) {
-  const body = v.updateAvailable
-    ? `<p>emu <b>${esc(v.latest)}</b> is out (this is ${esc(v.running)}). Update, then restart the hub and your sessions:</p>
-       <pre>${esc(v.command)}\nemu hub --stop && emu hub</pre>
-       ${v.notes ? `<p>What changed:</p><pre>${esc(v.notes)}</pre>` : ''}
-       <div class="actions"><button data-copy="${esc(v.command)}" class="primary">Copy command</button></div>`
+  const app = appStale()
+    ? `<p class="note-line">The emu app was rebuilt — reopen it to use the new build.</p>
+       <div class="actions"><button id="app-relaunch">Reopen the app</button></div>` : '';
+  const body = v.updateAvailable || update
+    ? `<p>emu <b>${esc(v.latest)}</b> is out (this is ${esc(v.running)}).</p>
+       ${v.notesHtml ? `<p>What changed:</p><div class="notes md">${v.notesHtml}</div>`
+         : v.notes ? `<p>What changed:</p><pre class="notes">${esc(v.notes)}</pre>` : ''}
+       <div class="upd" id="upd"></div>
+       <p class="sub">Update fetches the release (${v.install === 'plugin' ? '<code>claude plugin update</code>' : '<code>git pull</code>'}),
+         rebuilds emu and the macOS app, and restarts the hub. Sessions keep running — restart them to pick it up.
+         In a terminal: <code>${esc(v.command)}</code>.</p>
+       <div class="actions"><button id="ver-update" class="primary">Update to ${esc(v.latest)}</button></div>${app}`
     : `<p>emu ${esc(v.running)}${v.latest ? ' — the latest release.' : ' (could not check for a newer release).'}</p>
-       <div class="actions"><button id="ver-refresh">Check again</button></div>`;
+       <div class="actions"><button id="ver-refresh">Check again</button></div>${app}`;
   modal('Version', body);
+  renderUpdate();
   $('ver-refresh')?.addEventListener('click', async () => {
     renderVersion(await api('/api/version?refresh=1'));
     closeModal();
   });
+  $('ver-update')?.addEventListener('click', startUpdate);
+  $('app-relaunch')?.addEventListener('click', relaunchApp);
+}
+
+async function startUpdate() {
+  const btn = $('ver-update');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api('/api/update', { method: 'POST' });
+    onUpdate(r.update);
+  } catch (e) {
+    // Refused before anything changed: dirty checkout, no claude CLI, already running…
+    onUpdate({ state: 'refused', error: e.message, log: [] });
+  }
+}
+
+function onUpdate(next) {
+  const was = update?.state;
+  update = next;
+  if (!next || next.state === 'failed' || next.state === 'done') restarting = false; // a failed restart: this hub serves again
+  if (next?.state === 'restarting') {
+    store(UPDATED_KEY, JSON.stringify({ to: next.to, app: next.result?.app || null }));
+    restarting = true;
+  }
+  if (next?.state === 'failed' && was === 'running') toast(`Update failed: ${next.error}`, true);
+  if (version) renderVersion(version);
+  renderUpdate();
+}
+
+// The progress box and the button in the version window, when it is open.
+function renderUpdate() {
+  const box = $('upd');
+  if (!box) return;
+  const btn = $('ver-update');
+  const u = update;
+  const busy = u && (u.state === 'running' || u.state === 'restarting');
+  if (btn) {
+    btn.disabled = !!busy;
+    btn.textContent = busy ? 'Updating…' : u?.state === 'failed' || u?.state === 'refused' ? 'Try again' : btn.textContent;
+  }
+  if (!u) { box.hidden = true; return; }
+  const head = {
+    running: `Updating to ${esc(u.to || '')}…`,
+    restarting: 'Updated — restarting the hub…',
+    done: 'Already up to date.',
+    failed: 'Update failed',
+    refused: 'Cannot update',
+  }[u.state] || esc(u.state);
+  box.hidden = false;
+  box.className = `upd ${esc(u.state)}`;
+  box.innerHTML = `<div class="upd-head">${busy ? '<i class="sdot pending"></i>' : ''}${head}</div>
+    ${u.log?.length ? `<pre class="upd-log">${esc(u.log.join('\n'))}</pre>` : ''}
+    ${u.error ? `<div class="upd-err">${esc(u.error)}</div>` : ''}`;
+  const log = box.querySelector('.upd-log');
+  if (log) log.scrollTop = log.scrollHeight;
+}
+
+// After the restart: say what happened, and reopen the app if it was rebuilt.
+function afterUpdate(v) {
+  let done = null;
+  try { done = JSON.parse(store(UPDATED_KEY) || 'null'); } catch (_) { /* bad value */ }
+  if (!done) return;
+  store(UPDATED_KEY, '');
+  const inApp = !!window.webkit?.messageHandlers?.emu;
+  if (appStale()) {
+    toast(`Updated to emu ${v.running} — reopening the app…`);
+    setTimeout(relaunchApp, 1500);
+  } else if (done.app === 'updated') {
+    toast(`Updated to emu ${v.running}. The emu app was rebuilt — ${inApp ? 'quit it (⌘Q) and open it again' : 'if it is open, quit and reopen it'}.`);
+  } else {
+    toast(`Updated to emu ${v.running}`);
+  }
 }
 
 // ---- main area: one frame per picked session -----------------------------------
@@ -329,13 +430,14 @@ function connect() {
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === 'sessions') onSnapshot(msg);
+    if (msg.type === 'update') onUpdate(msg);
     if (msg.type === 'started') {
       const name = msg.project.split('/').pop();
       toast(msg.ok ? `${name}: ${msg.state || 'started'}` : `${name}: emu up failed\n${msg.output || ''}`, !msg.ok);
     }
   };
   ws.onclose = () => {
-    if (online) toast('Lost the hub — reconnecting… (is `emu hub` still running?)', true);
+    if (online && !restarting) toast('Lost the hub — reconnecting… (is `emu hub` still running?)', true);
     online = false;
     $('drawer').classList.add('offline');
     // A restarted hub has a new token: this call gets 401 and reloads the page.
@@ -427,6 +529,6 @@ NARROW.addEventListener('change', () => setDrawer(!NARROW.matches && store('emu.
 
 setDrawer(!NARROW.matches && store('emu.hub.drawer') !== '0');
 api('/api/sessions').then(onSnapshot).catch((e) => toast(e.message, true));
-api('/api/version').then(renderVersion).catch(() => {});
+api('/api/version').then((v) => { renderVersion(v); afterUpdate(v); }).catch(() => {});
 setInterval(renderSessions, 30000); // keep the "2m" ages fresh between updates
 connect();

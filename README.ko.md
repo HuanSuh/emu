@@ -156,7 +156,7 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 |------|------|
 | `emu --version` / `-v` | 설치된 버전 표시 + 최신 릴리스 존재 여부 확인 |
 | `emu doctor` | 의존성 점검 (flutter / adb / emulator / xcrun) + 업데이트 상태 |
-| `emu update [-y]` | 최신 릴리스를 pull + 재빌드 (`emu`가 git 체크아웃에서 실행 중일 때만 동작 — 예: `emu-setup` 이후) |
+| `emu update [-y]` | 최신 릴리스 설치: git 체크아웃은 pull + 재빌드, Claude Code 플러그인 설치는 `claude plugin marketplace update` + `claude plugin update` 로 새 버전을 받아 빌드하고 PATH 심링크를 옮긴다(`claude` CLI 가 없으면 `/plugin update emu` + `/emu-setup` 안내). macOS 앱이 있으면 다시 빌드. `--json` 은 stdout 에 결과 객체 하나, 단계는 stderr |
 | `emu uninstall [-y]` | 현재 실행 중인 바이너리를 가리키는 PATH 심링크 제거 |
 | `emu devices` | `flutter devices` + Android AVD 목록. 다른 emu 세션이 점유한 기기는 `(in use: <project>, <dashboard>)` 로 표시(`--json` 은 기기별 `lease` 필드) |
 | `emu configs` | `.vscode/launch.json` 의 실행 구성 목록 (debug만 실행 가능) + `emu.yaml`/`emu.local.yaml` 의 profile 목록 |
@@ -697,7 +697,13 @@ emu report --mine                               # 내가 보낸 리포트와 상
 
 `emu up` 이 `http://127.0.0.1:4577` 에 대시보드를 띄운다:
 
-- 실시간 로그 스트림 — **정규식 검색**, **레벨 필터**(debug/info/warn/error), 매치 하이라이트, copy, clear
+- 실시간 로그 스트림 — **정규식 검색**, **레벨 필터**(debug/info/warn/error), 매치 하이라이트, copy, clear.
+  `autoscroll` 은 바닥에 있을 때만 새 줄을 따라간다. `bulk`(기본 켬)는 함께 들어온 줄을 한 프레임에 한 번에
+  그려, 수천 줄이 한꺼번에 와도 한 줄씩 기어가지 않고 바로 붙는다(끄면 오는 대로 한 줄씩). `fold` 는 시간(보이는
+  초)·레벨·소스(`app`·`stderr`·`system`·`ext`)가 같은 연속된 줄을 첫 줄 + `▸ N lines` 로 접는다 — 눌러 그
+  묶음을 펴고 접고, `expand all`/`collapse all` 은 모든 묶음을(그 뒤 생기는 묶음도 그대로) 편다/접는다. 직전
+  묶음을 잇는 새 줄은 그 묶음에 더해지고 펴진 상태는 그대로다. 검색 중에는 접혀 있어도 맞는 줄을 모두 보인다.
+  `bulk`·`fold` 는 브라우저에 기억.
 - 버튼: **Hot reload / Hot restart / Cold restart / Stop** (`r` / `R` 키도 지원)
 - **인터랙티브 스크린샷 패널** — 기기 화면을 표시하고 **클릭=탭 / 드래그=스와이프**로 직접 몬다.
   하단 입력창으로 포커스된 필드에 텍스트 입력(유니코드). 좌표 변환은 대시보드가 알아서 한다
@@ -731,7 +737,10 @@ emu report --mine                               # 내가 보낸 리포트와 상
   `mock`, 옛 emu 로 띄운 세션이면 버전 배지). `⋮` 메뉴: 새 창으로 열기·프로젝트 경로 복사·Finder 에서 보기·
   hot reload/restart·종료(확인 후 `emu down`). **Recent projects** 에서 다시 시작(그 프로젝트 `emu.yaml`
   기본값으로 `emu up`), **Devices** 에서 누가 어떤 기기를 잡고 있는지. 맨 아래에 emu 버전, 새 릴리스가 있으면
-  바뀐 것과 `emu update` 명령.
+  바뀐 것(CHANGELOG 절을 렌더링해서)과 **Update** 버튼: 허브가 `emu update --yes` 와 같은 절차로 받고·emu 와
+  macOS 앱을 다시 빌드하고·새 바이너리로 스스로 다시 뜨며, 단계마다 진행 상황이나 못 하는 이유(체크아웃에 커밋
+  안 된 변경, `claude` CLI 없음…)를 보인다. 페이지는 스스로 다시 붙고, macOS 앱은 다시 빌드됐으면 다시 열린다.
+  세션은 그대로 — 새 버전을 쓰려면 세션을 다시 띄운다.
 - **본문** — 고른 세션의 대시보드 그대로. 최근 고른 3개는 띄워 둔 채라 다시 고르면 바로 보이고 로그 스트림도
   끊기지 않는다. 주소의 `#/s/<id>` 로 세션을 고른다.
 
@@ -753,7 +762,8 @@ emu report --mine                               # 내가 보낸 리포트와 상
   기본 브라우저로.
 
 `emu app status|open|uninstall`. 설치한 셸의 `PATH` 를 기억하고(Finder 로 뜬 앱의 PATH 는 최소라서),
-`emu update` 가 앱 소스가 바뀌었으면 다시 빌드한다.
+`emu update` 가 앱 소스나 앱이 실행하는 emu 바이너리(플러그인 업데이트는 새 폴더에 빌드)가 바뀌었으면 다시
+빌드한다.
 
 ## 대시보드 페이지
 

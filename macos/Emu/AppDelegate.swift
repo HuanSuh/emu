@@ -65,12 +65,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
                                   sessionPorts: { [weak self] in Set(self?.snap?.sessions.map { $0.port } ?? []) })
                 w.onOpenWindow = { [weak self] u in self?.openSessionWindow(u) }
                 w.onClose = { [weak self] _ in self?.main = nil }
+                w.onRelaunch = { [weak self] in self?.relaunch() }
                 self.main = w
                 w.show()
                 if case .failure(let why) = r { w.showError("Could not start the hub", detail: why.message) }
                 self.refresh()
             }
         }
+    }
+
+    /// Quit and open this bundle again — an update rebuilt it in place. The
+    /// hub keeps running (the new app finds it), even one this app started.
+    private func relaunch() {
+        hub.disown()
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "sleep 1; /usr/bin/open \"$0\"", Bundle.main.bundlePath]
+        do { try p.run() } catch { return }
+        NSApp.terminate(nil)
     }
 
     private func openSessionWindow(_ url: URL) {

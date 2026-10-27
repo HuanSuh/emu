@@ -78,6 +78,9 @@ final class HubClient {
         request(path, method: "POST", body: json.flatMap { try? JSONSerialization.data(withJSONObject: $0) }, timeout: 120) != nil
     }
 
+    /// Leave the hub running on quit, even one this app started.
+    func disown() { startedByApp = false }
+
     /// Stop the hub — only one this app started; sessions are never touched.
     func stopIfOwned() {
         guard startedByApp else { return }

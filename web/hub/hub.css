@@ -109,6 +109,29 @@ button.dhead:hover { color: var(--fg); }
 .mbody .actions button { padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); }
 .mbody .actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .mbody .actions button.danger { background: #8b2c28; border-color: #8b2c28; color: #fff; }
+.mbody .actions button:disabled { opacity: .55; cursor: default; }
+.mbody .sub { color: var(--muted); font-size: 12px; }
+.mbody .sub code, .mbody .note-line code { color: var(--fg); }
+
+/* "What changed": the CHANGELOG sections (server-rendered, escaped markdown). */
+.notes { max-height: 38vh; overflow: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 12px; margin: 8px 0; }
+.md h3 { font-size: 13.5px; margin: 12px 0 4px; color: var(--fg); }
+.md h4 { font-size: 11px; margin: 10px 0 2px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+.md ul { margin: 2px 0 6px; padding-left: 18px; }
+.md li { margin: 2px 0; }
+.md p { margin: 4px 0; }
+.md code { font: 11.5px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--bg-alt); padding: 0 4px; border-radius: 4px; }
+.md pre code { background: none; padding: 0; }
+.md a { color: var(--accent); }
+
+/* Update progress. */
+.upd { margin: 10px 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
+.upd[hidden] { display: none; }
+.upd.failed, .upd.refused { border-color: var(--error); }
+.upd.restarting, .upd.done { border-color: var(--ok); }
+.upd-head { display: flex; align-items: center; gap: 7px; font-weight: 600; }
+.mbody pre.upd-log { max-height: 160px; overflow: auto; margin: 6px 0 0; }
+.upd-err { color: var(--error); margin-top: 6px; white-space: pre-wrap; }
 
 .toast { position: fixed; right: 16px; bottom: 16px; z-index: 40; max-width: 420px; padding: 10px 12px; background: var(--bg-alt); border: 1px solid var(--border); border-radius: 8px; white-space: pre-wrap; font-size: 12px; box-shadow: 0 8px 24px #0008; }
 .toast.err { border-color: var(--error); }

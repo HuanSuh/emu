@@ -11,6 +11,11 @@ const state = {
   search: '',
   regex: false,
   autoscroll: true,
+  bulk: true,         // draw lines that arrive together once per frame (see receive)
+  fold: false,        // fold runs of lines with the same second, level and source
+  foldOpenAll: false, // what a run opens as: the last expand all / collapse all
+  shown: 0,           // entries that pass the filter — the count, kept as lines come
+  lastSeq: 0,         // the newest line this tab has taken
   shotLoaded: false,  // first screenshot of the current `running` session fetched
   lastRunState: null, // previous app state, to spot the edge into `starting`
 };
@@ -21,6 +26,9 @@ const els = {
   search: document.getElementById('search'),
   regex: document.getElementById('regex'),
   autoscroll: document.getElementById('autoscroll'),
+  bulk: document.getElementById('log-bulk'),
+  fold: document.getElementById('log-fold'),
+  foldAll: document.getElementById('log-fold-all'),
   statePill: document.getElementById('state-pill'),
   deviceName: document.getElementById('device-name'),
   devtools: document.getElementById('devtools'),
@@ -123,35 +131,182 @@ function linkify(text, fmt = escapeHtml) {
   return out + fmt(text.slice(at));
 }
 
-function rowHtml(e) {
+// hh:mm:ss of the line, as the row shows it (and runs fold by).
+function clock(e) {
+  if (e.clock) return e.clock;
   const ts = new Date(e.ts);
-  const hh = String(ts.getHours()).padStart(2, '0');
-  const mm = String(ts.getMinutes()).padStart(2, '0');
-  const ss = String(ts.getSeconds()).padStart(2, '0');
-  return `<div class="row ${e.level}"><span class="ts">${hh}:${mm}:${ss}</span>`
+  const two = (n) => String(n).padStart(2, '0');
+  return (e.clock = `${two(ts.getHours())}:${two(ts.getMinutes())}:${two(ts.getSeconds())}`);
+}
+
+// [run]: the fold the line is in — its head gets the run's toggle, the rest
+// hide while the run is shut.
+function rowHtml(e, run) {
+  let cls = '', fold = '';
+  if (run) {
+    const head = run.gid === e.seq;
+    cls = head ? ' head' : run.open ? ' cont' : ' cont shut';
+    if (head) fold = `<span class="fold" title="Fold or unfold this run"${run.n < 2 ? ' hidden' : ''}>${foldLabel(run)}</span>`;
+  }
+  return `<div class="row ${e.level}${cls}"${run ? ` data-g="${run.gid}"` : ''}><span class="ts">${clock(e)}</span>`
        + `<span class="tag">${TAG[e.level] || 'I'}</span>`
-       + `<span class="txt">${linkify(e.text, highlight)}</span></div>`;
+       + `<span class="txt">${linkify(e.text, highlight)}</span>${fold}</div>`;
+}
+
+// ---- folding ----------------------------------------------------------------
+// With fold on, consecutive shown lines with the same second (as displayed),
+// level and source make one run: its first line, then "▸ N lines" to unfold the
+// rest. A line that joins the last run adds to it, open or shut as it is.
+// While a search is on every run shows all of its lines (they all match).
+
+const folds = new Map();     // run id (its first line's seq) → {gid, key, n, open, head}, for the rows on screen
+const foldState = new Map(); // run id → open, where the user flipped one from foldOpenAll
+let tail = null;             // the last run on screen: the one the next line may join
+
+function foldKey(e) { return `${clock(e)}|${e.level}|${e.source}`; }
+function foldLabel(run) { return `${run.open ? '▾' : '▸'} ${run.n} lines`; }
+
+function setBadge(run) {
+  run.head ??= els.log.querySelector(`.row.head[data-g="${run.gid}"]`);
+  const badge = run.head?.querySelector('.fold');
+  if (!badge) return;
+  badge.hidden = run.n < 2;
+  badge.textContent = foldLabel(run);
+}
+
+function toggleRun(run, open) {
+  run.open = open;
+  if (open === state.foldOpenAll) foldState.delete(run.gid);
+  else foldState.set(run.gid, open);
+  els.log.querySelectorAll(`.row.cont[data-g="${run.gid}"]`).forEach(r => r.classList.toggle('shut', !open));
+  setBadge(run);
+}
+
+function setAllFolds(open) {
+  state.foldOpenAll = open;
+  foldState.clear();
+  for (const run of folds.values()) run.open = open;
+  els.log.querySelectorAll('.row.cont').forEach(r => r.classList.toggle('shut', !open));
+  els.log.querySelectorAll('.row.head').forEach(h => {
+    const run = folds.get(Number(h.dataset.g));
+    if (run) { run.head = h; setBadge(run); }
+  });
+  els.foldAll.textContent = open ? 'collapse all' : 'expand all';
+}
+
+// [list] as rows; with fold on it continues [tail] and opens runs as it goes.
+function rowsHtml(list) {
+  if (!state.fold) return list.map(e => rowHtml(e)).join('');
+  // Runs first, so a head is written with its run's count.
+  const runs = list.map((e) => {
+    const key = foldKey(e);
+    if (tail?.key !== key) {
+      const gid = e.seq;
+      tail = { gid, key, n: 0, open: foldState.get(gid) ?? state.foldOpenAll, head: null };
+      folds.set(gid, tail);
+    }
+    tail.n++;
+    return tail;
+  });
+  return list.map((e, i) => rowHtml(e, runs[i])).join('');
+}
+
+// Keep the DOM at MAX_ROWS, dropping from the top in one go. A run that loses
+// its head to the cap goes on from its first line left.
+function trimRows() {
+  const log = els.log;
+  const over = log.childElementCount - MAX_ROWS;
+  if (over <= 0) return;
+  if (state.fold) {
+    for (let r = log.firstElementChild, i = 0; i < over; r = r.nextElementSibling, i++) {
+      const gid = Number(r.dataset.g), run = folds.get(gid);
+      if (run && --run.n === 0) { folds.delete(gid); foldState.delete(gid); }
+    }
+  }
+  const range = document.createRange();
+  range.setStartBefore(log.firstElementChild);
+  range.setEndBefore(log.children[over]);
+  range.deleteContents();
+  const first = log.firstElementChild;
+  if (state.fold && first?.classList.contains('cont')) {
+    const run = folds.get(Number(first.dataset.g));
+    first.classList.remove('cont', 'shut');
+    first.classList.add('head');
+    first.insertAdjacentHTML('beforeend', '<span class="fold" title="Fold or unfold this run" hidden></span>');
+    if (run) { run.head = first; setBadge(run); }
+  }
 }
 
 function render() {
   const visible = state.entries.filter(matches);
-  const shown = visible.slice(-MAX_ROWS);
-  els.log.innerHTML = shown.map(rowHtml).join('');
-  els.count.textContent = visible.length;
+  state.shown = visible.length;
+  tail = null;
+  folds.clear();
+  els.log.classList.toggle('searching', !!state.search);
+  els.log.innerHTML = rowsHtml(visible.slice(-MAX_ROWS));
+  els.count.textContent = state.shown;
+  els.foldAll.hidden = !state.fold;
+  els.foldAll.disabled = !!state.search; // every run is open while searching
   if (state.autoscroll) els.log.scrollTop = els.log.scrollHeight;
 }
 
-function appendEntry(e) {
-  state.entries.push(e);
-  if (state.entries.length > MAX_ROWS * 2) {
-    state.entries.splice(0, state.entries.length - MAX_ROWS * 2);
+// ---- incoming lines ---------------------------------------------------------
+// The server sends one message per line, so a burst (a stack trace, the 500
+// lines a new connection is primed with, an app logging in a loop) comes as
+// hundreds of messages. Drawn one by one, each forced a layout, a scroll and a
+// recount of every entry. With bulk on (the default) lines wait for the next
+// frame and go in together: one insert, one layout read, one scroll — ~16ms
+// later, which the eye doesn't see. Bulk off draws each line as it comes.
+
+let pending = [];
+let flushFrame = 0;
+
+// Every socket starts with the server's last REPLAY lines (server.dart), so a
+// reconnect brings lines this tab has: those are dropped by seq. One that
+// starts further back than a replay reaches is another stream (a new server
+// this tab didn't reload for): the log starts over.
+const REPLAY = 500;
+function replayStart(seq) {
+  if (seq >= state.lastSeq - REPLAY) return;
+  state.entries = [];
+  pending = [];
+  state.lastSeq = 0;
+  render();
+}
+
+function receive(e) {
+  if (e.seq <= state.lastSeq) return;
+  state.lastSeq = e.seq;
+  pending.push(e);
+  // A hidden tab gets no frames: keep the queue to what would be kept anyway.
+  if (pending.length > MAX_ROWS * 3) pending.splice(0, pending.length - MAX_ROWS * 2);
+  if (!state.bulk) flush();
+  else if (!flushFrame) flushFrame = requestAnimationFrame(flush);
+}
+
+function flush() {
+  if (flushFrame) { cancelAnimationFrame(flushFrame); flushFrame = 0; }
+  const batch = pending;
+  if (!batch.length) return;
+  pending = [];
+  state.entries.push(...batch);
+  const over = state.entries.length - MAX_ROWS * 2;
+  if (over > 0) state.shown -= state.entries.splice(0, over).filter(matches).length;
+  const add = batch.filter(matches);
+  state.shown += add.length;
+  if (add.length) {
+    // Read before writing anything, or the read forces a layout of its own.
+    const log = els.log;
+    const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 40;
+    const grown = tail, n = tail?.n;
+    log.insertAdjacentHTML('beforeend', rowsHtml(add.slice(-MAX_ROWS)));
+    if (grown && grown.n !== n) setBadge(grown); // the batch went on with the last run
+    trimRows();
+    els.count.textContent = state.shown; // with the rows, in the layout the scroll below forces anyway
+    if (state.autoscroll && atBottom) log.scrollTop = log.scrollHeight;
+  } else {
+    els.count.textContent = state.shown;
   }
-  if (!matches(e)) return;
-  const atBottom = els.log.scrollTop + els.log.clientHeight >= els.log.scrollHeight - 40;
-  els.log.insertAdjacentHTML('beforeend', rowHtml(e));
-  while (els.log.childElementCount > MAX_ROWS) els.log.removeChild(els.log.firstChild);
-  els.count.textContent = state.entries.filter(matches).length;
-  if (state.autoscroll && atBottom) els.log.scrollTop = els.log.scrollHeight;
 }
 
 function setStatus(s) {
@@ -198,9 +353,13 @@ function connect() {
     // the session check reloads the page in that case (see api()).
     api('/api/session').catch(() => {}).finally(() => setTimeout(connect, 1000)); // auto-reconnect
   };
+  let replayed = false; // this socket's first line seen
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
-    if (msg.type === 'log') appendEntry(msg.entry);
+    if (msg.type === 'log') {
+      if (!replayed) { replayed = true; replayStart(msg.entry.seq); }
+      receive(msg.entry);
+    }
     else if (msg.type === 'status') setStatus(msg.status);
     else if (msg.type === 'diff') onDiffChanged(); // files edited, or a launch/reload snapshotted the tree
     else if (msg.type === 'ext') onPageRun(msg);   // a page item started/finished (here, another tab or the CLI), or asks this tab
@@ -639,10 +798,12 @@ document.getElementById('btn-shot').onclick = async () => {
 
 document.getElementById('btn-clear').onclick = () => {
   state.entries = [];
+  pending = [];
   render();
   api('/api/logs/clear', { method: 'POST' });
 };
 document.getElementById('btn-copy').onclick = () => {
+  flush(); // lines still waiting for their frame
   const text = state.entries.filter(matches).map(e => e.text).join('\n');
   navigator.clipboard.writeText(text).then(() => toast('copied'));
 };
@@ -654,6 +815,37 @@ els.search.addEventListener('input', () => {
 });
 els.regex.addEventListener('change', () => { state.regex = els.regex.checked; state._re = null; render(); });
 els.autoscroll.addEventListener('change', () => { state.autoscroll = els.autoscroll.checked; });
+
+// bulk and fold, kept per browser.
+const LOG_PREFS_KEY = 'emu.logPrefs';
+try {
+  const p = JSON.parse(localStorage.getItem(LOG_PREFS_KEY)) || {};
+  if (typeof p.bulk === 'boolean') state.bulk = p.bulk;
+  if (typeof p.fold === 'boolean') state.fold = p.fold;
+} catch (_) {}
+els.bulk.checked = state.bulk;
+els.fold.checked = state.fold;
+els.foldAll.hidden = !state.fold;
+function saveLogPrefs() {
+  try { localStorage.setItem(LOG_PREFS_KEY, JSON.stringify({ bulk: state.bulk, fold: state.fold })); } catch (_) {}
+}
+els.bulk.addEventListener('change', () => {
+  state.bulk = els.bulk.checked;
+  saveLogPrefs();
+  if (!state.bulk) flush();
+});
+els.fold.addEventListener('change', () => {
+  state.fold = els.fold.checked;
+  saveLogPrefs();
+  flush();
+  render();
+});
+els.foldAll.onclick = () => setAllFolds(!state.foldOpenAll);
+els.log.addEventListener('click', (ev) => {
+  const badge = ev.target.closest('.fold');
+  const run = badge && folds.get(Number(badge.parentElement.dataset.g));
+  if (run) toggleRun(run, !run.open);
+});
 
 document.querySelectorAll('.lvl').forEach(btn => {
   btn.addEventListener('click', () => {

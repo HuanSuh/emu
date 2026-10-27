@@ -49,6 +49,9 @@
           </div>
           <span class="grow"></span>
           <label class="chk"><input type="checkbox" id="autoscroll" checked /> autoscroll</label>
+          <label class="chk" title="Draw lines that arrive together once per frame, not one by one"><input type="checkbox" id="log-bulk" checked /> bulk</label>
+          <label class="chk" title="Fold consecutive lines with the same second, level and source into one"><input type="checkbox" id="log-fold" /> fold</label>
+          <button id="log-fold-all" title="Unfold or fold every run of lines" hidden>expand all</button>
           <button id="btn-clear" title="Clear log view">clear</button>
           <button id="btn-copy" title="Copy visible logs">copy</button>
           <span class="count" id="count">0</span>

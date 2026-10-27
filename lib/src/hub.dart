@@ -23,11 +23,14 @@ import 'package:shelf_web_socket/shelf_web_socket.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'api_guard.dart';
+import 'app_install.dart' show installedAppRev;
+import 'changelog_html.dart';
 import 'device_lease.dart';
 import 'device_manager.dart';
 import 'registry.dart';
 import 'report.dart';
 import 'report_api.dart';
+import 'self_update.dart';
 import 'server.dart' show readWebAsset, contentTypeFor;
 import 'session.dart';
 import 'version.dart';
@@ -117,6 +120,10 @@ String changelogBetween(String changelog, String from, String to) {
 /// What the hub runs for a session action — a seam for tests.
 typedef HubRunner = Future<ProcessResult> Function(List<String> args, {String? workingDirectory});
 
+/// Replaces this hub with one running [exe] (after an update). Returns only
+/// when that failed — this hub then serves again. A seam for tests.
+typedef HubRestart = Future<void> Function(String exe);
+
 class HubServer {
   HubServer({
     SessionRegistry? registry,
@@ -125,13 +132,20 @@ class HubServer {
     HubRunner? run,
     Future<String?> Function()? latestVersion,
     Future<String?> Function()? fetchChangelog,
+    SelfUpdater Function()? updater,
+    HubRestart? restart,
+    void Function(int code)? exitProcess,
     this.pollInterval = const Duration(seconds: 3),
   })  : registry = registry ?? SessionRegistry(),
         recent = recent ?? RecentProjects(),
         infoFile = infoFile ?? hubInfoFile(),
         _run = run ?? _runSelf,
         _latestVersion = latestVersion ?? latestReleaseVersion,
-        _fetchChangelog = fetchChangelog ?? _githubChangelog;
+        _fetchChangelog = fetchChangelog ?? _githubChangelog {
+    _updater = updater ?? () => SelfUpdater(latestVersion: _latestVersion);
+    _restart = restart ?? _restartInto;
+    _exit = exitProcess ?? exit;
+  }
 
   final SessionRegistry registry;
   final RecentProjects recent;
@@ -140,6 +154,9 @@ class HubServer {
   final Future<String?> Function() _latestVersion;
   final Future<String?> Function() _fetchChangelog;
   final Duration pollInterval;
+  late final SelfUpdater Function() _updater;
+  late final HubRestart _restart;
+  late final void Function(int) _exit;
 
   final String token = newSessionToken();
   HttpServer? _http;
@@ -154,11 +171,19 @@ class HubServer {
 
   ({String? latest, DateTime at})? _latest;
 
+  /// The update the Update button started: `state` running → restarting
+  /// (then this process is replaced) or failed / done, with its step lines.
+  Map<String, dynamic>? _update;
+
   Future<void> start({int port = hubDefaultPort}) async {
-    _http = await _bind(port);
+    _serve(await _bind(port));
+  }
+
+  void _serve(HttpServer server) {
+    _http = server;
     infoFile.parent.createSync(recursive: true);
     infoFile.writeAsStringSync(jsonEncode({
-      'port': this.port,
+      'port': port,
       'pid': pid,
       'token': token,
       'version': kEmuVersion,
@@ -183,7 +208,7 @@ class HubServer {
   Future<void> close() async {
     _poll?.cancel();
     final info = HubInfo.read(infoFile);
-    if (info?.pid == pid && info?.port == port) {
+    if (info?.pid == pid && _http != null && info?.port == port) {
       try {
         infoFile.deleteSync();
       } on FileSystemException {
@@ -260,8 +285,102 @@ class HubServer {
       'latest': latest,
       'updateAvailable': newer,
       'notes': ?notes,
+      if (notes != null) 'notesHtml': renderChangelogHtml(notes),
+      'install': _updater().kind.name,
+      'update': ?_update,
+      // The macOS app on disk — the app compares it with its own build.
+      'appRev': ?installedAppRev(),
       'command': 'emu update',
     };
+  }
+
+  // ---- update ----------------------------------------------------------------
+
+  /// The Update button. The page only asks; what runs is fixed here — the
+  /// same steps as `emu update --yes` ([SelfUpdater]). Refusals (dirty
+  /// checkout, no `claude` CLI, up to date, already updating) answer 409
+  /// before anything changes; the steps then go out on the stream.
+  Future<Response> _startUpdate() async {
+    final busy = _update?['state'];
+    if (busy == 'running' || busy == 'restarting') {
+      return _json({'ok': false, 'error': 'an update is already running'}, status: 409);
+    }
+    // Claimed before the first await: a second click finds it taken.
+    _update = {'state': 'running', 'log': <String>[]};
+    final up = _updater();
+    String latest;
+    try {
+      await up.preflight();
+      final l = await up.latest();
+      if (l == null) throw UpdateError('could not reach GitHub to check for updates.', refused: true);
+      if (!isNewer(l, up.currentVersion)) throw UpdateError('already up to date (v${up.currentVersion}).', refused: true);
+      latest = l;
+    } on UpdateError catch (e) {
+      _update = null;
+      return _json({'ok': false, 'error': e.message}, status: 409);
+    } catch (e) {
+      _update = null; // never left "running" by a check that broke
+      return _json({'ok': false, 'error': 'could not check for an update: $e'}, status: 500);
+    }
+    _update = {..._update!, 'to': latest, 'install': up.kind.name};
+    _pushUpdate();
+    unawaited(_runUpdate(up, latest));
+    return _json({'ok': true, 'update': _update}, status: 202);
+  }
+
+  Future<void> _runUpdate(SelfUpdater up, String latest) async {
+    final log = _update!['log'] as List<String>;
+    try {
+      final r = await up.apply(latest, log: (line) {
+        log.add(line);
+        _pushUpdate();
+      });
+      if (!r.updated || r.binary == null) {
+        _update = {..._update!, 'state': 'done', 'result': r.toJson()};
+        _pushUpdate();
+        return;
+      }
+      _update = {..._update!, 'state': 'restarting', 'result': r.toJson()};
+      _pushUpdate();
+      await Future<void>.delayed(const Duration(milliseconds: 300)); // let the message out
+      await _restart(r.binary!);
+      // Still here: the new hub did not come up, and this one serves again.
+      _update = {
+        ..._update!,
+        'state': 'failed',
+        'error': 'updated to v$latest, but the new hub did not start — run `emu hub --stop && emu hub`.',
+      };
+    } catch (e) {
+      _update = {..._update!, 'state': 'failed', 'error': e is UpdateError ? e.message : '$e'};
+    }
+    _pushUpdate();
+  }
+
+  void _pushUpdate() => _broadcast(jsonEncode({'type': 'update', ...?_update}));
+
+  /// Hand over to a hub running [exe], on this port: stop serving (the page
+  /// sees the stream close and reconnects), start it, and exit once it
+  /// answers. If it doesn't, serve again here.
+  Future<void> _restartInto(String exe) async {
+    final port = this.port;
+    _poll?.cancel();
+    for (final s in _sockets.toList()) {
+      await s.sink.close().timeout(const Duration(seconds: 2), onTimeout: () {});
+    }
+    _sockets.clear();
+    await _http?.close(force: true);
+    _http = null;
+    try {
+      await Process.start(exe, ['__hub', '--port', '$port'], mode: ProcessStartMode.detached);
+      for (var i = 0; i < 50; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        final next = HubInfo.read(infoFile);
+        if (next != null && next.pid != pid && await runningHub(file: infoFile) != null) return _exit(0);
+      }
+    } catch (_) {
+      // Could not start it: fall through and serve again.
+    }
+    _serve(await _bind(port));
   }
 
   // ---- routes ----------------------------------------------------------------
@@ -273,6 +392,7 @@ class HubServer {
         _sockets.add(ws);
         ws.stream.listen((_) {}, onDone: () => _sockets.remove(ws), onError: (_) => _sockets.remove(ws));
         unawaited(_push(force: true));
+        if (_update != null) ws.sink.add(jsonEncode({'type': 'update', ..._update!}));
       })(req);
     }
     if (path.startsWith('/api/')) return _api(req, path);
@@ -292,6 +412,8 @@ class HubServer {
       return _json(await _version(force: req.url.queryParameters['refresh'] == '1'));
     }
     if (path == '/api/devices' && get) return _json(await _devices());
+    if (path == '/api/update' && get) return _json({'ok': true, 'update': _update});
+    if (path == '/api/update' && req.method == 'POST') return _startUpdate();
     if (path == '/api/shutdown' && req.method == 'POST') {
       scheduleMicrotask(() async {
         try {

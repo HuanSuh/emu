@@ -6,6 +6,36 @@
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-27
+
+### Added
+- 대시보드 Logs 탭 `fold` — 시간(보이는 초)·레벨·소스가 같은 연속된 줄을 첫 줄 + `▸ N lines` 로 접는다. 눌러
+  묶음 하나를, `expand all`/`collapse all` 로 전부(그 뒤 생기는 묶음도) 펴고 접는다. 직전 묶음을 잇는 새 줄은
+  그 묶음에 더해지고(펴진 상태 유지), 검색 중엔 접힌 줄도 맞으면 보인다. 기본 끔, 브라우저에 기억.
+- 허브의 업데이트 버튼. 새 릴리스가 있으면 버전 창의 **Update** 가 `emu update --yes` 와 같은 절차(새 버전 받기 →
+  emu 다시 빌드 → macOS 앱 갱신)를 허브 프로세스에서 돌리고, 단계마다 진행 상황과 실패 이유를 보인 뒤 새
+  바이너리로 같은 포트에 허브를 다시 띄운다(새 허브가 안 뜨면 옛 허브가 다시 받는다). 페이지는 스스로 다시 붙고,
+  macOS 앱은 다시 빌드됐으면 스스로 다시 열린다. API `POST /api/update`(본문 없음 — 무엇을 돌릴지는 서버가
+  정함, 동시에 하나, 거절은 409)·`GET /api/update`, 진행은 stream 의 `{type: "update"}`.
+- 허브 버전 창의 "What changed" 를 markdown 으로 렌더링 — 머리글·목록(들여쓴 이어지는 줄)·`code`·굵게·http(s)
+  링크만 태그로 바꾸고 나머지는 모두 escape(원격 CHANGELOG 는 믿지 않음). 길면 스크롤.
+
+### Changed
+- 대시보드 Logs 탭이 들어온 줄을 프레임마다 한 번에 그린다(`bulk`, 기본 켬·브라우저에 기억). 줄마다 하던
+  레이아웃 읽기·스크롤·전체 다시 세기를 묶음당 한 번으로(카운트는 증분), MAX_ROWS 정리도 한 번에 — 화면에
+  5,000줄이 있을 때 5,000줄 burst 가 다 그려지기까지 약 22초 → 0.1초. 끄면 전처럼 한 줄씩.
+- `emu update` 가 Claude Code 플러그인 설치에서도 동작한다: `claude plugin marketplace update` +
+  `claude plugin update` 로 새 버전을 받아 새 캐시 폴더에서 `build.sh` 로 빌드하고, 옛 바이너리를 가리키던 PATH
+  심링크를 rename 으로 옮긴다. `claude` CLI 가 없으면 전처럼 `/plugin update emu` + `/emu-setup` 을 안내한다.
+  `--json` 은 단계를 stderr 로, 결과에 `install`·`binary`·`linked`·`app` 을 더한다. 두 업데이트가 겹치지 않게
+  `~/.emu/update.lock`.
+- `build.sh` 는 임시 파일로 컴파일한 뒤 `emu` 로 rename — 실행 중인 emu(허브)의 파일을 덮어쓰지 않는다.
+- `emu app install --if-changed` 는 앱이 실행하는 emu 바이너리 경로가 바뀌어도 다시 빌드한다.
+
+### Fixed
+- 대시보드가 서버에 다시 붙을 때(연결 끊김 뒤) 서버가 다시 보내는 최근 500줄이 Logs 탭에 한 번 더 쌓이던 것 — 이미 받은
+  줄(seq)은 버린다.
+
 ## [0.16.0] - 2026-10-27
 
 ### Added
@@ -428,7 +458,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/HuanSuh/emu/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/HuanSuh/emu/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/HuanSuh/emu/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/HuanSuh/emu/compare/v0.13.0...v0.14.0

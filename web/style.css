@@ -154,6 +154,15 @@ button:disabled { opacity: .5; cursor: default; pointer-events: none; }
 .row.debug .tag, .row.debug .txt { color: var(--debug); }
 .row.system .tag, .row.system .txt { color: var(--system); }
 .row .txt mark { background: var(--hl); color: inherit; border-radius: 2px; }
+/* Logs fold: a run's head carries its toggle; the rest of a shut run hides (not while searching). */
+.row .fold {
+  flex: 0 0 auto; align-self: flex-start; cursor: pointer; user-select: none;
+  color: var(--muted); font-size: 11px; border: 1px solid var(--border); border-radius: 4px; padding: 0 5px;
+}
+.row .fold:hover { color: var(--fg); border-color: var(--accent); }
+.row.cont .ts { visibility: hidden; }
+#log:not(.searching) .row.shut { display: none; }
+#log.searching .row .fold { pointer-events: none; opacity: .5; }
 
 .actionbar {
   position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);

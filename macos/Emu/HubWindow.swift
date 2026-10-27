@@ -24,6 +24,8 @@ final class HubWindow: NSWindowController, NSWindowDelegate, WKNavigationDelegat
     var sessionPorts: () -> Set<Int>
     /// "Open in a new window" from the hub page.
     var onOpenWindow: ((URL) -> Void)?
+    /// "Reopen the app" from the hub page, after an update rebuilt it.
+    var onRelaunch: (() -> Void)?
     var onClose: ((HubWindow) -> Void)?
 
     private var watch: Timer?
@@ -52,6 +54,10 @@ final class HubWindow: NSWindowController, NSWindowDelegate, WKNavigationDelegat
         super.init(window: window)
         window.delegate = self
         config.userContentController.add(WeakHandler(self), name: "emu")
+        // Which build this app is: the hub page compares it with the one on
+        // disk to offer reopening after an update (web/hub/hub.js).
+        config.userContentController.addUserScript(WKUserScript(
+            source: "window.emuApp = \(HubWindow.appInfoJSON);", injectionTime: .atDocumentStart, forMainFrameOnly: true))
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = false
@@ -61,6 +67,14 @@ final class HubWindow: NSWindowController, NSWindowDelegate, WKNavigationDelegat
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// `{"rev": …, "version": …}` of the running bundle (Info.plist, read at launch).
+    static let appInfoJSON: String = {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let m = ["rev": info["CFBundleVersion"] as? String ?? "", "version": info["CFBundleShortVersionString"] as? String ?? ""]
+        guard let data = try? JSONSerialization.data(withJSONObject: m), let s = String(data: data, encoding: .utf8) else { return "{}" }
+        return s
+    }()
 
     func show() {
         showWindow(nil)
@@ -140,12 +154,16 @@ final class HubWindow: NSWindowController, NSWindowDelegate, WKNavigationDelegat
     // ---- bridge (hub page → app) ------------------------------------------------
 
     func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
+        // Only the page itself: a dashboard framed inside the hub page must not drive the app.
+        guard message.frameInfo.isMainFrame,
+              let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
         switch type {
         case "open-window":
             if let s = body["url"] as? String, let url = URL(string: s), allowed(url) { onOpenWindow?(url) }
         case "retry":
             retry()
+        case "relaunch":
+            if isMain { onRelaunch?() }
         default:
             break
         }

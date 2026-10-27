@@ -5,6 +5,7 @@
 
 # Compiled emu binary (produced by build.sh)
 /emu
+/emu.tmp
 
 # Per-project session state
 .emu/

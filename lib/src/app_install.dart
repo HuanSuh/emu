@@ -27,13 +27,26 @@ String appSourcesRev([Map<String, String> sources = kEmbeddedMacSources]) {
 }
 
 /// The rev recorded in an installed bundle, or null.
-String? installedAppRev([Directory? bundle]) {
+String? installedAppRev([Directory? bundle]) => _appJson(bundle)['rev'] as String?;
+
+/// The emu binary an installed bundle runs, or null.
+String? installedAppEmu([Directory? bundle]) => _appJson(bundle)['emu'] as String?;
+
+Map<String, dynamic> _appJson(Directory? bundle) {
   final f = File('${(bundle ?? appBundle()).path}/Contents/Resources/app.json');
   try {
-    return (jsonDecode(f.readAsStringSync()) as Map)['rev'] as String?;
+    return jsonDecode(f.readAsStringSync()) as Map<String, dynamic>;
   } catch (_) {
-    return null;
+    return const {};
   }
+}
+
+/// Whether the installed app is this binary's build: same sources, and it
+/// runs this binary (a plugin update puts the new one in another folder).
+Future<bool> appIsCurrent({Directory? bundle, String? emu}) async {
+  if (installedAppRev(bundle) != appSourcesRev()) return false;
+  final self = emu ?? await emuExecutable();
+  return self == null || installedAppEmu(bundle) == self;
 }
 
 String infoPlist({required String version, required String rev}) => '''<?xml version="1.0" encoding="UTF-8"?>
