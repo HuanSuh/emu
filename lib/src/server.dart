@@ -7,6 +7,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:path/path.dart' as p;
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_web_socket/shelf_web_socket.dart';
@@ -1543,17 +1544,14 @@ class EmuServer {
   }
 }
 
-/// Read a dashboard asset: dev disk first (EMU_WEB_DIR or the tool's web/),
-/// then the embedded base64 map.
-List<int>? readWebAsset(String rel) {
-  final devDir = Platform.environment['EMU_WEB_DIR'];
-  if (devDir != null) {
-    final f = File('$devDir/$rel');
-    if (f.existsSync()) return f.readAsBytesSync();
-  }
-  final toolWeb = _toolWebDir();
-  if (toolWeb != null) {
-    final f = File('$toolWeb/$rel');
+/// Read a dashboard asset: dev disk first ([diskDirs], default EMU_WEB_DIR
+/// or the tool's web/), then the embedded base64 map. A path that would land
+/// outside its dir is never read from disk.
+List<int>? readWebAsset(String rel, {List<String>? diskDirs}) {
+  for (final dir in diskDirs ?? [?Platform.environment['EMU_WEB_DIR'], ?_toolWebDir()]) {
+    final path = p.normalize(p.join(dir, rel));
+    if (!p.isWithin(dir, path)) continue;
+    final f = File(path);
     if (f.existsSync()) return f.readAsBytesSync();
   }
   final b64 = kEmbeddedWebAssets[rel];

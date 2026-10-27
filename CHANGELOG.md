@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+### Fixed
+- `emu update` 가 잠금 파일을 만들고 pid 를 쓰기 전에 죽으면 빈 `~/.emu/update.lock` 이 남아, 손으로 지우기 전까지 `emu update`
+  와 허브 Update 버튼이 늘 "another emu update is running" 으로 거절되던 문제. 이제 빈 잠금 파일이라도 몇 초 넘게 지났으면 남은
+  것으로 보고 지운 뒤 잡는다.
+- 개발 모드(`EMU_WEB_DIR` 또는 소스의 `web/`)에서 대시보드 정적 파일 경로가 web 디렉터리 밖을 가리키면 디스크에서 읽지 않는다.
+
 ## [0.17.2] - 2026-10-27
 
 ### Fixed
