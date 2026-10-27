@@ -245,7 +245,8 @@ async function setChecked(page, block, rows, on) {
     for (const r of change) on ? keys.add(rowKeyOf(block, r)) : keys.delete(rowKeyOf(block, r));
     pageState.checked[blockKey(page, block)] = [...keys];
     savePagePrefs();
-    renderRunning(page); // counts, and buttons that need a checked row
+    renderListRows(page, block); // its boxes, and what their clicks read as checked
+    renderRunning(page); // buttons that need a checked row
     return;
   }
   const toggle = { id: 'check', label: 'check', command: block.check.toggle, then: 'none' };
@@ -378,13 +379,16 @@ async function refreshToggles(page) {
   const sel = selectedRow(page);
   const q = new URLSearchParams();
   if (sel) for (const [k, v] of Object.entries(sel)) q.set(`selected.${k}`, typeof v === 'string' ? v : JSON.stringify(v));
-  await Promise.all(page.toolbar.filter(i => i.kind === 'toggle').map(async (t) => {
+  const toggles = page.toolbar.filter(i => i.kind === 'toggle');
+  const states = () => JSON.stringify(toggles.map(t => pageState.toggles[itemKey(page, t)] ?? null));
+  const before = states();
+  await Promise.all(toggles.map(async (t) => {
     try {
       const r = await api(`/api/pages/${encodeURIComponent(page.id)}/state/${encodeURIComponent(t.id)}?${q}`);
       pageState.toggles[itemKey(page, t)] = await r.json();
     } catch (_) { /* server gone: the websocket reconnect reloads */ }
   }));
-  if (currentPage() === page) renderPageBar(page);
+  if (currentPage() === page && states() !== before) renderPageBar(page);
 }
 
 // Run a toolbar item or row button. An item marked confirm: answers 428 with
@@ -432,7 +436,7 @@ function renderRunning(page) {
   renderPageBar(page);
   renderOutputs(page);
   for (const b of page.blocks) {
-    if (b.kind === 'list') renderListRows(page, b);
+    if (b.kind === 'list') renderListRunning(page, b);
     else if (b.kind === 'form') renderFormButtons(page, b);
   }
 }
@@ -535,6 +539,8 @@ function renderPageBody(page) {
   }
   applyFolds(page);
   addResizers(page, areas);
+  // What the blocks showed when the page was last open, at once; showPage fetches them again (quietly).
+  for (const b of page.blocks) if (pageState.data[blockKey(page, b)]) renderBlockData(page, b);
   renderOutputs(page);
 }
 
@@ -749,12 +755,22 @@ function blockQuery(page, block) {
   return q.toString();
 }
 
+// Fetched again for what it already shows — after a run, a watched change, back
+// on its page, the picked row's other values changed — a block stays as it is,
+// not dimmed, until the answer comes, and is drawn again only if that differs.
+// A new pick or segment shows it loading.
 async function loadBlock(page, block, after = []) {
   const key = blockKey(page, block);
   const query = blockQuery(page, block);
   if (query === null) { pageState.data[key] = { result: null, query: null }; renderBlockData(page, block); return; }
-  const entry = pageState.data[key] = { ...pageState.data[key], loading: true, query };
-  renderBlockData(page, block);
+  const prev = pageState.data[key];
+  const pick = usesSelection(block) ? pageState.selected[page.id] : undefined;
+  const seg = block.kind === 'diff' && block.segments.length ? segOf(page, block) : undefined;
+  // pick and seg are those of the answer on screen; they change with the next answer. A fetch that
+  // shows as loading isn't taken over quietly: its dimming would stay if the new answer is the same.
+  const again = !!prev?.result && !dimmed(prev) && prev.pick === pick && prev.seg === seg;
+  const entry = pageState.data[key] = { ...prev, loading: true, quiet: again, query };
+  if (!again) renderBlockData(page, block);
   let result;
   try {
     result = await (await api(`/api/pages/${encodeURIComponent(page.id)}/blocks/${encodeURIComponent(block.id)}?${query}`)).json();
@@ -762,14 +778,19 @@ async function loadBlock(page, block, after = []) {
     result = { ok: false, error: String(e) };
   }
   if (pageState.data[key] !== entry) return; // a newer fetch took over
-  pageState.data[key] = { result, query };
+  pageState.data[key] = { result, query, pick, seg };
   if (block.check && !block.check.column && result.ok && pageState.checked[key]) {
     // A row that's gone is no longer checked.
     const keys = new Set(result.rows.map(r => rowKeyOf(block, r)));
     const kept = pageState.checked[key].filter(k => keys.has(k));
     if (kept.length !== pageState.checked[key].length) { pageState.checked[key] = kept; savePagePrefs(); }
   }
-  renderBlockData(page, block);
+  // A frame hears of every fetch (onData after each run), the same answer or not.
+  if (!again || block.kind === 'html' || !sameResult(prev.result, result)) renderBlockData(page, block);
+  else if (block.kind === 'diff' && currentPage() === page) {
+    const el = blockEl(block);
+    if (el) renderSegments(page, block, el); // `hide:` may follow another value of the picked row
+  }
   if (block.check) renderRunning(page); // buttons that need a checked row
   if (block.id !== page.selection) return;
   renderPageBar(page); // buttons that need a pick
@@ -784,6 +805,17 @@ function renderBlockData(page, block) {
   else if (block.kind === 'diff') renderDiffView(page, block);
   else if (block.kind === 'html') renderHtmlData(page, block);
 }
+
+// The same answer, but for how long the command took.
+function sameResult(a, b) {
+  if (!a || !b) return false;
+  const { ms: _a, ...x } = a;
+  const { ms: _b, ...y } = b;
+  return JSON.stringify(x) === JSON.stringify(y);
+}
+
+// Dimmed while it loads — not while it is only fetched again (loadBlock).
+function dimmed(entry) { return !!entry?.loading && !entry.quiet; }
 
 // A block's status line when it has nothing (yet) to show.
 function blockNote(page, block, entry) {
@@ -1029,7 +1061,7 @@ function renderListRows(page, block) {
   const entry = pageState.data[key];
   const host = el.querySelector('[data-rows]');
   const rows = entry?.result?.ok ? entry.result.rows : null;
-  el.classList.toggle('loading', !!entry?.loading);
+  el.classList.toggle('loading', dimmed(entry));
   renderChecksHead(page, block, el);
   if (!rows) {
     listShown[key] = [];
@@ -1055,18 +1087,16 @@ function renderListRows(page, block) {
   el.querySelector('[data-count]').textContent = filter ? `${matched.length} / ${rows.length}` : `${rows.length}`;
   const actions = block.rowActions;
   const checked = block.check ? checkedKeys(page, block) : null;
-  const checking = block.check && pageState.running.has(`${page.id}.${block.id}.check`);
+  const checking = !!block.check && pageState.running.has(`${page.id}.${block.id}.check`);
   const checkedIn = (rs) => checked ? rs.filter(r => checked.has(rowKeyOf(block, r))).length : 0;
   const checkBox = (attr, rs) => `<input type="checkbox" ${attr}${rs.length && checkedIn(rs) === rs.length ? ' checked' : ''}`
-    + `${checking || !rs.length ? ' disabled' : ''} />`;
+    + `${rs.length ? '' : ' data-empty'}${checking || !rs.length ? ' disabled' : ''} />`;
   const checkAll = checked
     ? `<th class="lst-check">${checkBox(`data-check-all title="${block.tree && !filter ? 'check all, folded ones too' : 'check all shown'}"`, matched)}</th>` : '';
   const treeHead = block.tree ? sortHead({ key: TREE_SORT, label: block.tree.columns.join(' / ') }, sort) : '';
   const buttons = () => actions.map(a => {
-    const busy = pageState.running.has(`${page.id}.${block.id}.${a.id}`);
-    const blocked = blockedByChecks(page, a);
-    const title = blocked ? `check a row in ${a.needsChecked} first` : a.command;
-    return `<button class="${a.confirm ? 'warnish' : ''}${busy ? ' busy' : ''}" data-action="${escapeHtml(a.id)}" title="${escapeHtml(title)}"${blocked ? ' disabled' : ''}>${escapeHtml(a.label)}${busy ? ' …' : ''}</button>`;
+    const s = rowButtonState(page, block, a);
+    return `<button class="${a.confirm ? 'warnish' : ''}${s.busy ? ' busy' : ''}" data-action="${escapeHtml(a.id)}" title="${escapeHtml(s.title)}"${s.blocked ? ' disabled' : ''}>${escapeHtml(s.text)}</button>`;
   }).join('');
   const rowHtml = ({ row: r, depth }) => {
     const rk = rowKeyOf(block, r);
@@ -1123,6 +1153,37 @@ function renderListRows(page, block) {
       };
     });
   });
+}
+
+// A row button: busy while its action runs (on any row), off while it needs
+// checked rows and there are none.
+function rowButtonState(page, block, a) {
+  const busy = pageState.running.has(`${page.id}.${block.id}.${a.id}`);
+  const blocked = blockedByChecks(page, a);
+  return { busy, blocked, title: blocked ? `check a row in ${a.needsChecked} first` : a.command, text: `${a.label}${busy ? ' …' : ''}` };
+}
+
+// What a run changes in a drawn list, set in place: its row buttons, its
+// checkboxes (off while its check command runs) and its head. Drawing a big
+// table again for every press would flash it.
+function renderListRunning(page, block) {
+  const el = blockEl(block);
+  const host = el?.querySelector('[data-rows]');
+  if (!host || currentPage() !== page) return;
+  const checking = !!block.check && pageState.running.has(`${page.id}.${block.id}.check`);
+  host.querySelectorAll('[data-check], [data-check-dir], [data-check-all]').forEach(box => {
+    box.disabled = checking || box.hasAttribute('data-empty');
+  });
+  renderChecksHead(page, block, el);
+  for (const a of block.rowActions) {
+    const s = rowButtonState(page, block, a);
+    host.querySelectorAll(`[data-action="${CSS.escape(a.id)}"]`).forEach(btn => {
+      btn.classList.toggle('busy', s.busy);
+      btn.disabled = s.blocked;
+      btn.title = s.title;
+      btn.textContent = s.text;
+    });
+  }
 }
 
 // The head of a check: list — how many are checked, and its bulk buttons.
@@ -1196,7 +1257,7 @@ function renderDiffView(page, block) {
   if (!el || currentPage() !== page) return;
   const entry = pageState.data[blockKey(page, block)];
   const r = entry?.result;
-  el.classList.toggle('loading', !!entry?.loading);
+  el.classList.toggle('loading', dimmed(entry));
   renderSegments(page, block, el); // the picked row may hide one
   const sel = usesSelection(block) ? selectedRow(page) : null;
   const list = selectionList(page);
@@ -1368,7 +1429,7 @@ function renderHtmlData(page, block) {
   const el = blockEl(block);
   if (!el || currentPage() !== page) return;
   const entry = pageState.data[blockKey(page, block)];
-  el.classList.toggle('loading', !!entry?.loading);
+  el.classList.toggle('loading', dimmed(entry));
   el.querySelector('[data-cmd]').textContent = entry?.result?.command || '';
   if (!entry?.loading) postFrameData(page, block);
 }
