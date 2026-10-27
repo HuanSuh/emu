@@ -66,4 +66,46 @@ void main() {
       expect(r.last.text, 'user tapped button');
     });
   });
+
+  group('LogStore capacity', () {
+    test('keeps exactly the newest capacity entries, seq keeps rising', () {
+      final store = LogStore(capacity: 10);
+      for (var i = 1; i <= 37; i++) {
+        store.add('line $i');
+        final all = store.query();
+        expect(all.length, i < 10 ? i : 10);
+        expect(all.last.seq, i);
+        expect(all.first.seq, i < 10 ? 1 : i - 9);
+      }
+      expect(store.query(sinceSeq: 30).map((e) => e.seq), [31, 32, 33, 34, 35, 36, 37]);
+      expect(store.query(limit: 3).map((e) => e.text), ['line 35', 'line 36', 'line 37']);
+      expect(store.query(grep: r'line [0-9]$'), isEmpty); // 1-9 already dropped
+    });
+
+    test('clear empties the buffer but seq continues', () {
+      final store = LogStore(capacity: 10);
+      for (var i = 0; i < 25; i++) {
+        store.add('x');
+      }
+      store.clear();
+      expect(store.query(), isEmpty);
+      expect(store.add('after').seq, 26);
+      expect(store.query().map((e) => e.seq), [26]);
+    });
+
+    test('appending at capacity stays cheap', () {
+      // Shifting the whole buffer on every line made this take seconds.
+      final store = LogStore();
+      for (var i = 0; i < store.capacity; i++) {
+        store.add('fill');
+      }
+      final sw = Stopwatch()..start();
+      for (var i = 0; i < 20000; i++) {
+        store.add('more');
+      }
+      sw.stop();
+      expect(store.query().length, store.capacity);
+      expect(sw.elapsedMilliseconds, lessThan(1000));
+    });
+  });
 }
