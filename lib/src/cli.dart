@@ -5,9 +5,11 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:args/args.dart';
 import 'package:http/http.dart' as http;
+import 'package:web_socket_channel/io.dart';
 
 import 'app_install.dart';
 import 'assertions.dart';
@@ -21,6 +23,7 @@ import 'memory_diff.dart';
 import 'models.dart';
 import 'open_url.dart';
 import 'mock.dart';
+import 'page_ask.dart';
 import 'pages.dart';
 import 'project_config.dart';
 import 'project_memory.dart';
@@ -2175,6 +2178,7 @@ Future<int> _pagesCmd(List<String> args) async {
       final notes = [
         if (i['then'] != 'none') 'then ${i['then']}',
         if (i['confirm'] == true) 'asks first',
+        if (i['interactive'] == true) 'may ask while it runs',
         if (i['needsChecked'] != null) 'needs a checked row in ${i['needsChecked']}',
         if (auto != null) 'runs on change of ${(auto['watch'] as List).join(', ')}: ${autoOn == true ? 'on' : 'off'}',
       ];
@@ -2194,18 +2198,26 @@ Future<int> _pagesCmd(List<String> args) async {
           : check['toggle'] == null
               ? '   (check)'
               : '   (check: ${check['column']} · toggle: ${check['toggle']})';
-      print('  ${col('block', 7)}${col(b['id'], 16)}${col('$kind (${b['area']})', 16)}${b['command'] ?? ''}$segs$checks'
+      final tree = b['tree'] as Map?, sort = b['sort'] as Map?;
+      final order = [
+        if (tree != null) 'tree: ${(tree['columns'] as List).join(' / ')}${tree['open'] == 0 ? '' : ', ${tree['open']} open'}',
+        if (sort != null) 'sort: ${sort['key']} ${sort['dir']}',
+      ];
+      print(('  ${col('block', 7)}${col(b['id'], 16)}${col('$kind (${b['area']})', 16)}${b['command'] ?? ''}$segs$checks'
+              '${order.isEmpty ? '' : '   (${order.join(', ')})'}')
           .trimRight());
       for (final a in (b['rowActions'] as List? ?? const []).cast<Map<String, dynamic>>()) {
         print('  ${col('  row', 7)}${col('${b['id']}.${a['id']}', 16)}${a['command']}'
-            '${a['bulk'] == true ? '   (bulk: also on the checked rows)' : ''}');
+            '${a['bulk'] == true ? '   (bulk: also on the checked rows)' : ''}'
+            '${a['interactive'] == true ? '   (may ask while it runs)' : ''}');
       }
       if (b['kind'] == 'html') {
         final inputs = (b['inputs'] as List? ?? const []);
         if (inputs.isNotEmpty) print('  ${col('  input', 7)}${inputs.join(', ')}');
         for (final a in (b['blockActions'] as List? ?? const []).cast<Map<String, dynamic>>()) {
           print('  ${col('  html', 7)}${col('${b['id']}.${a['id']}', 16)}${a['command']}'
-              '${a['confirm'] == true ? '   (asks first)' : ''}');
+              '${a['confirm'] == true ? '   (asks first)' : ''}'
+              '${a['interactive'] == true ? '   (may ask while it runs)' : ''}');
         }
       }
       if (b['kind'] == 'form') {
@@ -2215,6 +2227,7 @@ Future<int> _pagesCmd(List<String> args) async {
         for (final a in (b['actions'] as List).cast<Map<String, dynamic>>()) {
           final notes = [
             if (a['confirm'] == true) 'asks first',
+            if (a['interactive'] == true) 'may ask while it runs',
             if (a['needsChecked'] != null) 'needs a checked row in ${a['needsChecked']}',
           ];
           print('  ${col('  form', 7)}${col('${b['id']}.${a['id']}', 16)}${a['command']}'
@@ -2252,7 +2265,9 @@ Future<int> _runCmd(List<String> args) async {
       '   {{row.<col>}}, --input {{input.<field>}} (for an html block, only names\n'
       '   in its inputs:), --checked the rows of a check: list by their key\n'
       '   ({{checked.<col>...}}, {{checked.count}}; <list>= when the page has\n'
-      '   several). A toggle without on|off prints its state. Exit 0 = the command\n'
+      '   several). An action marked interactive: may ask while it runs: on a\n'
+      '   terminal the question shows here; otherwise it is answered null. A\n'
+      '   toggle without on|off prints its state. Exit 0 = the command\n'
       '   and its then: reload/restart succeeded; a failed command exits with its\n'
       '   own code. `emu pages` lists the items.';
   final (res, code) = _parseOrUsage(parser, args, usage);
@@ -2345,11 +2360,30 @@ Future<int> _runCmd(List<String> args) async {
     path = '/api/pages/$page/${switch (kind) { 'list' => 'rows', 'form' => 'forms', _ => 'frames' }}/'
         '${Uri.encodeComponent(target[1])}/${Uri.encodeComponent(target[2])}';
   }
+  // On a terminal, what an interactive: action asks while it runs is asked here.
+  final asker = canAskInTerminal(
+          stdinTerminal: stdin.hasTerminal, stderrTerminal: stdioType(stderr) == StdioType.terminal)
+      ? await _TerminalAsker.connect(info)
+      : null;
+  try {
+    return await _runPosting(res, rest, info, path, asker, selected: selected, row: row, input: input, onOff: onOff, checked: checked);
+  } finally {
+    await asker?.close();
+  }
+}
+
+Future<int> _runPosting(ArgResults res, List<String> rest, ServerInfo info, String path, _TerminalAsker? asker,
+    {required Map<String, String> selected,
+    required Map<String, String> row,
+    required Map<String, String> input,
+    required String? onOff,
+    required Object? checked}) async {
   Future<Map<String, dynamic>?> post({required bool confirmed}) => _postJson(
         info,
         path,
         jsonEncode({
           'confirmed': confirmed,
+          'asker': ?asker?.id,
           if (onOff != null) 'on': onOff == 'on',
           if (selected.isNotEmpty) 'selected': selected,
           if (row.isNotEmpty) 'row': row,
@@ -2424,6 +2458,99 @@ Future<int> _runCmd(List<String> args) async {
     stderr.writeln(line);
   }
   return exit;
+}
+
+/// `emu run` on a terminal, as the asker of its run (`/api/stream?asker=`):
+/// what an `interactive:` action asks while it runs is asked here, one at a
+/// time, and answered over the API. A question that went away meanwhile
+/// (timed out, the command ended) is dropped.
+class _TerminalAsker {
+  _TerminalAsker._(this.id, this._info, this._channel);
+
+  final String id;
+  final ServerInfo _info;
+  final IOWebSocketChannel _channel;
+  var _queue = Future<void>.value();
+  final Set<String> _gone = {};
+  String? _current;
+  StreamSubscription<String>? _stdin;
+  Completer<String?>? _line;
+  bool _stdinDone = false;
+
+  /// Null when the server can't be reached that way (an older one, say): the run then asks no one.
+  static Future<_TerminalAsker?> connect(ServerInfo info) async {
+    final random = Random.secure();
+    final id = 'cli-${List.generate(8, (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0')).join()}';
+    try {
+      final channel = IOWebSocketChannel.connect(
+          Uri.parse('ws://127.0.0.1:${info.port}/api/stream?asker=$id&only=ask'),
+          headers: info.headers);
+      await channel.ready.timeout(const Duration(seconds: 3));
+      final asker = _TerminalAsker._(id, info, channel);
+      final hello = Completer<void>();
+      channel.stream.listen((data) {
+        final Map m;
+        try {
+          m = jsonDecode('$data') as Map;
+        } catch (_) {
+          return;
+        }
+        if (m['type'] == 'asker' && !hello.isCompleted) hello.complete();
+        if (m['type'] != 'ext') return;
+        final askId = '${m['askId']}';
+        if (m['event'] == 'ask') asker._queue = asker._queue.then((_) => asker._ask(askId, m));
+        if (m['event'] == 'ask-done') asker._goneAway(askId);
+      }, onError: (_) {}, cancelOnError: false);
+      await hello.future.timeout(const Duration(seconds: 3));
+      return asker;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<String?> _readLine() {
+    if (_stdinDone) return Future.value(null);
+    _stdin ??= stdin.transform(utf8.decoder).transform(const LineSplitter()).listen((l) {
+      final c = _line;
+      _line = null;
+      c?.complete(l); // typed while nothing is asked: dropped
+    }, onDone: () {
+      _stdinDone = true;
+      final c = _line;
+      _line = null;
+      c?.complete(null);
+    });
+    return (_line = Completer<String?>()).future;
+  }
+
+  void _goneAway(String askId) {
+    _gone.add(askId);
+    if (_current != askId) return;
+    _current = null;
+    final c = _line;
+    _line = null;
+    c?.complete(null);
+  }
+
+  Future<void> _ask(String askId, Map m) async {
+    if (_gone.contains(askId)) return;
+    _current = askId;
+    final value = await askInTerminal((m['ask'] as Map).cast<String, dynamic>(), m['from'] as Map? ?? const {},
+        readLine: _readLine, err: stderr);
+    if (_current != askId) {
+      stderr.writeln('\n  (no longer asked — it timed out, or the command ended)');
+      return;
+    }
+    _current = null;
+    await _postJson(_info, '/api/pages/${Uri.encodeComponent('${m['page']}')}/asks/$askId', jsonEncode({'value': value}));
+  }
+
+  Future<void> close() async {
+    _line?.complete(null);
+    _line = null;
+    await _stdin?.cancel();
+    await _channel.sink.close();
+  }
 }
 
 /// A 428 from `emu run` as the dashboard's confirm dialog, on stderr.

@@ -234,6 +234,11 @@ class EmuServer {
   HttpServer? _http;
   final Set<WebSocketChannel> _sockets = {};
 
+  /// Sockets that said who they are (`/api/stream?asker=<id>`): a dashboard
+  /// tab, or `emu run` on a terminal. A page command's questions go to the
+  /// asker that started it alone.
+  final Map<String, Set<WebSocketChannel>> _askers = {};
+
   /// Every API call but the liveness ping must carry this (see
   /// `api_guard.dart`). New on every start, so a dashboard left open from an
   /// earlier session can't drive this one.
@@ -261,6 +266,8 @@ class EmuServer {
       broadcast: _broadcast,
       log: (text, level) => logStore.add(text, level: level, source: 'ext'),
       autoStateFile: File('${session.stateDir.path}/pages_auto.json'),
+      askerHere: (asker) => _askers[asker]?.isNotEmpty ?? false,
+      sendToAsker: _sendToAsker,
     );
     for (final problem in pages.load().problems) {
       logStore.add('emu.yaml pages: $problem', level: LogLevel.warn, source: 'system');
@@ -772,7 +779,10 @@ class EmuServer {
 
     // WebSocket stream.
     if (path == '/api/stream') {
-      final ws = webSocketHandler(_onSocket);
+      // ?asker=<id>: questions of the runs it starts come here; &only=ask: nothing else (emu run).
+      final q = req.url.queryParameters;
+      final asker = switch (q['asker']) { final String a when askerIdPattern.hasMatch(a) => a, _ => null };
+      final ws = webSocketHandler((WebSocketChannel s, String? _) => _onSocket(s, asker: asker, askOnly: q['only'] == 'ask'));
       return await ws(req);
     }
 
@@ -1157,14 +1167,15 @@ class EmuServer {
     _pageWatchDebounce = Timer(const Duration(milliseconds: 300), () {
       final paths = _pageWatchPaths.toList();
       _pageWatchPaths.clear();
-      final hits = pages.watching(paths);
+      final config = pages.load();
+      final hits = pages.watching(paths, config: config);
       if (hits.isNotEmpty) {
         _broadcast({
           'type': 'ext-watch',
           'blocks': {for (final e in hits.entries) e.key: e.value.toList()},
         });
       }
-      pages.filesChanged(paths);
+      pages.filesChanged(paths, config: config);
     });
   }
 
@@ -1419,18 +1430,44 @@ class EmuServer {
     }
   }
 
-  void _onSocket(WebSocketChannel socket, _) {
-    _sockets.add(socket);
-    // Prime the new client with current status and recent logs.
-    socket.sink.add(jsonEncode({'type': 'status', 'status': engine.status.toJson()}));
-    for (final e in logStore.query(limit: 500)) {
-      socket.sink.add(jsonEncode({'type': 'log', 'entry': e.toJson()}));
+  void _onSocket(WebSocketChannel socket, {String? asker, bool askOnly = false}) {
+    void gone() {
+      _sockets.remove(socket);
+      if (asker == null) return;
+      final mine = _askers[asker];
+      mine?.remove(socket);
+      if (mine == null || mine.isNotEmpty) return;
+      _askers.remove(asker);
+      pages.askerGone(asker);
     }
-    socket.stream.listen(
-      (_) {},
-      onDone: () => _sockets.remove(socket),
-      onError: (_) => _sockets.remove(socket),
-    );
+
+    if (asker != null) {
+      _askers.putIfAbsent(asker, () => {}).add(socket);
+      socket.sink.add(jsonEncode({'type': 'asker', 'asker': asker})); // registered: runs may name it now
+    }
+    if (!(askOnly && asker != null)) {
+      _sockets.add(socket);
+      // Prime the new client with current status and recent logs.
+      socket.sink.add(jsonEncode({'type': 'status', 'status': engine.status.toJson()}));
+      for (final e in logStore.query(limit: 500)) {
+        socket.sink.add(jsonEncode({'type': 'log', 'entry': e.toJson()}));
+      }
+    }
+    socket.stream.listen((_) {}, onDone: gone, onError: (_) => gone());
+  }
+
+  bool _sendToAsker(String asker, Map<String, dynamic> msg) {
+    final data = jsonEncode(msg);
+    var sent = false;
+    for (final s in (_askers[asker] ?? const <WebSocketChannel>{}).toList()) {
+      try {
+        s.sink.add(data);
+        sent = true;
+      } catch (_) {
+        // closing: its onDone cleans up
+      }
+    }
+    return sent;
   }
 
   void _broadcast(Map<String, dynamic> msg) {

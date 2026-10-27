@@ -53,6 +53,10 @@ function api(path, opts = {}) {
   });
 }
 
+// This tab, to the server: what a command started here asks while it runs
+// (an `interactive:` page action) comes to this tab alone (pages.js).
+const ASKER = `tab-${Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('')}`;
+
 // For URLs that can't carry a header (WebSocket, <img>).
 function withToken(url) {
   return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(TOKEN)}`;
@@ -186,7 +190,7 @@ function setStatus(s) {
 // ---- websocket --------------------------------------------------------------
 
 function connect() {
-  const ws = new WebSocket(withToken(`ws://${location.host}/api/stream`));
+  const ws = new WebSocket(withToken(`ws://${location.host}/api/stream?asker=${ASKER}`));
   ws.onopen = () => els.connDot.classList.add('on');
   ws.onclose = () => {
     els.connDot.classList.remove('on');
@@ -199,7 +203,7 @@ function connect() {
     if (msg.type === 'log') appendEntry(msg.entry);
     else if (msg.type === 'status') setStatus(msg.status);
     else if (msg.type === 'diff') onDiffChanged(); // files edited, or a launch/reload snapshotted the tree
-    else if (msg.type === 'ext') onPageRun(msg);   // a page item started/finished (here, another tab or the CLI)
+    else if (msg.type === 'ext') onPageRun(msg);   // a page item started/finished (here, another tab or the CLI), or asks this tab
     else if (msg.type === 'pages') loadPages();    // emu.yaml changed
     else if (msg.type === 'ext-watch') onPageWatch(msg); // a file a page block watches changed
     else if (msg.type === 'ext-auto') onPageAuto(msg);   // an `auto:` action switched on or off

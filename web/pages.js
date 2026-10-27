@@ -29,7 +29,9 @@ const pageState = {
   current: 'debug',
   history: {},           // page id → its recent finished runs, newest first (this tab only)
   viewing: {},           // page id → the history entry the output shows; null: the newest, or the run in flight
-  live: {},              // 'page.item' → the output of a run in flight, as it comes
+  live: {},              // 'page.item' → the output of a run in flight, as it comes (its last LIVE_LIMIT characters)
+  liveTotal: {},         // 'page.item' → how many characters of it came in all
+  liveSince: {},         // 'page.item' → when this tab saw it start
   running: new Set(),    // 'page.item' in flight, from any client
   toggles: {},           // 'page.item' → {ok, on, detail, error}
   auto: {},              // 'page.item' → whether an `auto:` action runs on file changes (the server keeps it)
@@ -42,9 +44,10 @@ const pageState = {
   data: {},              // 'page.block' → {loading, result, query}
   search: {},            // 'page.block' → filter text
   input: {},             // 'page.form' → {field: value}
-  stale: new Set(),      // 'page.block' changed (watch) while its page was hidden
+  stale: new Set(),      // 'page.block' to fetch when it shows: changed (watch) while hidden or folded
   sizes: {},             // page id → {left, bottom}: dragged panel sizes, as % of the page body
   folded: {},            // page id → the areas folded to a strip
+  foldedBlocks: {},      // page id → the blocks folded to their head
 };
 const PAGE_KEY = 'emu.page';
 const PAGE_PREFS_KEY = 'emu.pagePrefs';
@@ -59,12 +62,13 @@ try {
   if (prefs.input && typeof prefs.input === 'object') pageState.input = prefs.input;
   if (prefs.sizes && typeof prefs.sizes === 'object') pageState.sizes = prefs.sizes;
   if (prefs.folded && typeof prefs.folded === 'object') pageState.folded = prefs.folded;
+  if (prefs.foldedBlocks && typeof prefs.foldedBlocks === 'object') pageState.foldedBlocks = prefs.foldedBlocks;
 } catch (_) {}
 function savePagePrefs() {
   try {
     localStorage.setItem(PAGE_PREFS_KEY, JSON.stringify({
       selected: pageState.selected, checked: pageState.checked, seg: pageState.seg, sort: pageState.sort, tree: pageState.tree,
-      input: pageState.input, sizes: pageState.sizes, folded: pageState.folded,
+      input: pageState.input, sizes: pageState.sizes, folded: pageState.folded, foldedBlocks: pageState.foldedBlocks,
     }));
   } catch (_) {}
 }
@@ -109,7 +113,7 @@ function showPage(id) {
   pageEls.debugToolbar.hidden = !debug;
   pageEls.bar.hidden = debug;
   pageEls.body.hidden = debug;
-  if (debug) { showTab(debugTab); return; }
+  if (debug) { pruneFrameRefreshed(null); showTab(debugTab); return; }
   for (const id of ['log', 'changes', 'mocks']) document.getElementById(id).hidden = true;
   renderPageBar(page);
   renderPageBody(page);
@@ -141,10 +145,11 @@ const followTimers = {}; // page id → the pending fetch after a pick made with
 // the keys rest, so stepping through rows fetches only the row stopped at.
 function select(page, list, row, { soon = false } = {}) {
   const key = rowKeyOf(list, row);
-  if (pageState.selected[page.id] === key) return;
+  const before = pageState.selected[page.id];
+  if (before === key) return;
   pageState.selected[page.id] = key;
   savePagePrefs();
-  renderListRows(page, list);
+  if (!movePick(list, before, key)) renderListRows(page, list);
   renderPageBar(page);
   // Everything that reads {{selected.*}} follows the pick.
   // A frame that isn't fetched again still hears of the pick (onData's
@@ -158,14 +163,29 @@ function select(page, list, row, { soon = false } = {}) {
   else follow();
 }
 
-// ↑/↓ in the selection list: pick the row above or below, as shown (filter
-// and order applied).
+// The highlight moves to the picked row as drawn, so an arrow key doesn't
+// redraw a big list. False when that's not enough: the row isn't drawn, or in
+// a tree the old pick isn't either (a closed folder marks it).
+function movePick(list, from, to) {
+  const host = blockEl(list)?.querySelector('[data-rows]');
+  const drawn = (k) => host?.querySelector(`tr[data-row="${CSS.escape(k)}"]`);
+  const next = to === undefined ? null : drawn(to);
+  if (!next || (list.tree && from !== undefined && !drawn(from))) return false;
+  host.querySelectorAll('tr.sel').forEach(tr => tr.classList.remove('sel'));
+  next.classList.add('sel');
+  return true;
+}
+
+// The keys in the selection list: ↑/↓ the row above or below, PageUp/PageDown
+// ten rows, Home/End the first and last — as shown (filter and order applied).
+const STEP_KEYS = { ArrowDown: 1, ArrowUp: -1, PageDown: 10, PageUp: -10, End: Infinity, Home: -Infinity };
+
 function stepSelection(page, list, step) {
   const rows = listShown[blockKey(page, list)] || [];
   if (!rows.length) return;
   const i = rows.findIndex(r => rowKeyOf(list, r) === pageState.selected[page.id]);
-  const next = i < 0 ? (step > 0 ? 0 : rows.length - 1) : Math.min(Math.max(i + step, 0), rows.length - 1);
-  select(page, list, rows[next], { soon: true });
+  const from = i < 0 ? (step > 0 ? -1 : rows.length) : i;
+  select(page, list, rows[Math.min(Math.max(from + step, 0), rows.length - 1)], { soon: true });
   blockEl(list)?.querySelector('tr.sel')?.scrollIntoView({ block: 'nearest' });
 }
 
@@ -244,7 +264,7 @@ async function runBulk(page, block, a) {
   if (!rows.length || pageState.bulk[key] || pageState.running.has(key)) return;
   const url = `/api/pages/${encodeURIComponent(page.id)}/rows/${encodeURIComponent(block.id)}/${encodeURIComponent(a.id)}`;
   const post = async (row, confirmed) => {
-    const r = await api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...runValues(page, row), confirmed }) });
+    const r = await api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...runValues(page, row), confirmed, asker: ASKER }) });
     return [r, await r.json()];
   };
   const progress = (n) => { pageState.bulk[key] = `${n}/${rows.length}`; renderRunning(page); };
@@ -298,7 +318,9 @@ function renderPageBar(page) {
     return `<button class="ext-action${item.confirm ? ' warnish' : ''}${busy ? ' busy' : ''}" data-item="${escapeHtml(item.id)}"`
       + ` title="${escapeHtml(title)}"${blocked ? ' disabled' : ''}>${escapeHtml(item.label)}${busy ? ' …' : ''}</button>`
       + (item.auto ? autoSwitchHtml(page, item) : '');
-  }).join('') + '<span class="grow"></span><button id="pages-refresh" title="Re-read emu.yaml">↻</button>';
+  }).join('') + '<span class="grow"></span>'
+    + '<button id="pages-unfold" title="Unfold every folded area and block of this page" hidden>unfold all</button>'
+    + '<button id="pages-refresh" title="Re-read emu.yaml">↻</button>';
   pageEls.bar.querySelectorAll('[data-item]').forEach(el => {
     el.onclick = () => {
       const item = page.toolbar.find(i => i.id === el.dataset.item);
@@ -312,6 +334,8 @@ function renderPageBar(page) {
     };
   });
   document.getElementById('pages-refresh').onclick = loadPages;
+  document.getElementById('pages-unfold').onclick = () => unfoldAll(page);
+  renderUnfoldAll(page);
   pageEls.bar.querySelectorAll('[data-auto]').forEach(b => { b.onclick = () => switchAuto(page, b.dataset.auto); });
 }
 
@@ -375,7 +399,7 @@ async function runItem(page, item, key, url, body, { frame = null, ask = null, q
   pageState.running.add(key);
   renderRunning(page);
   try {
-    const post = (b) => api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) });
+    const post = (b) => api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...b, asker: ASKER }) });
     let r = await post(body);
     let j = await r.json();
     if (r.status === 428 && j.needsConfirm) {
@@ -435,21 +459,28 @@ function finishRun(page, item, key, run, quiet) {
 
 // Runs started anywhere (this tab, another tab, `emu run`) show up here too.
 function onPageRun(msg) {
+  if (msg.event === 'ask' || msg.event === 'ask-done') { onRunAsk(msg); return; } // a run started here asks
   const page = pageState.pages.find(p => p.id === msg.page);
   if (!page) return;
   const key = `${msg.page}.${msg.item}`;
   if (msg.event === 'output') {
-    pageState.live[key] = ((pageState.live[key] || '') + (msg.chunk || '')).slice(-LIVE_LIMIT);
+    const chunk = msg.chunk || '';
+    pageState.live[key] = ((pageState.live[key] || '') + chunk).slice(-LIVE_LIMIT);
+    pageState.liveTotal[key] = (pageState.liveTotal[key] || 0) + chunk.length;
     if (currentPage() === page) renderOutputs(page);
     return;
   }
   if (msg.event === 'started') {
     pageState.running.add(key);
     pageState.live[key] = '';
+    pageState.liveTotal[key] = 0;
+    pageState.liveSince[key] = Date.now();
     pageState.viewing[page.id] = null; // follow it
   } else if (msg.event === 'finished') {
     pageState.running.delete(key);
     delete pageState.live[key];
+    delete pageState.liveTotal[key];
+    delete pageState.liveSince[key];
     remember(page.id, msg.run);
     if (msg.run?.state) pageState.toggles[key] = msg.run.state;
     if (msg.auto && !msg.run?.ok) toast(`⚡ ${msg.item} (on change): ${msg.run?.error || 'failed'}`);
@@ -479,6 +510,7 @@ function onPageWatch(msg) {
 // ---- blocks ------------------------------------------------------------------
 
 function renderPageBody(page) {
+  pruneFrameRefreshed(page);
   const areas = { left: [], main: [], bottom: [] };
   for (const b of page.blocks) areas[b.area]?.push(b);
   const body = pageEls.body;
@@ -486,7 +518,6 @@ function renderPageBody(page) {
     ? ['left', 'main', 'bottom'].map(a => `<div class="ext-area ${a}" data-area="${a}">`
       + (areas[a].length ? areaFoldHtml(a, areas[a]) : '') + '</div>').join('')
     : '<div class="ext-empty">This page has no blocks — results show up in the Logs tab.</div>';
-  applyAreas(page);
   body.querySelectorAll('[data-fold-area]').forEach(b => { b.onclick = () => foldArea(page, b.dataset.foldArea); });
   body.querySelectorAll('[data-unfold-area]').forEach(b => { b.onclick = () => unfoldArea(page, b.dataset.unfoldArea); });
   for (const [area, blocks] of Object.entries(areas)) {
@@ -499,23 +530,33 @@ function renderPageBody(page) {
       else if (b.kind === 'html') initHtml(page, b, el);
       else if (b.kind === 'form') initForm(page, b, el);
       else if (b.kind === 'output') initOutput(page, b, el);
+      addBlockFold(page, b, el);
     }
   }
+  applyFolds(page);
   addResizers(page, areas);
   renderOutputs(page);
 }
 
-// ---- folded areas --------------------------------------------------------------
+// ---- folding -------------------------------------------------------------------
 // Each area with blocks folds (the chevron in its first block's head) to a
 // strip of its blocks' titles, and the others take its room; a click on the
-// strip unfolds it in place. Kept per page. The last unfolded area doesn't
-// fold. A folded area's blocks keep the pick and checks: those lists are
-// still fetched, the rest when it unfolds.
+// strip unfolds it in place. The last unfolded area doesn't fold. A block
+// folds to its head (the caret before its name) and the others in its area
+// take its room. The page bar's "unfold all" unfolds every area and block of
+// the page. Kept per page. What's folded isn't fetched until it unfolds —
+// except the lists that hold the pick and the checks — and an output folded
+// to its head keeps only the head up to date.
 
 // [fold, unfold] chevrons: toward where the area goes, and back.
 const FOLD_ICONS = { left: ['‹', '›'], main: ['⌃', '⌄'], bottom: ['⌄', '⌃'] };
 
 function areaFolded(page, area) { return (pageState.folded[page.id] || []).includes(area); }
+
+function blockFolded(page, block) { return (pageState.foldedBlocks[page.id] || []).includes(block.id); }
+
+// In a folded area, or folded to its head.
+function outOfSight(page, block) { return areaFolded(page, block.area) || blockFolded(page, block); }
 
 function areasWithBlocks(page) { return ['left', 'main', 'bottom'].filter(a => page.blocks.some(b => b.area === a)); }
 
@@ -526,9 +567,19 @@ function areaFoldHtml(area, blocks) {
     + `<span class="fold-icon">${FOLD_ICONS[area][1]}</span><span class="fold-titles">${escapeHtml(titles)}</span></button>`;
 }
 
+// The caret before a block's name: folds it to its head, and back.
+function addBlockFold(page, block, el) {
+  const head = el.querySelector('.blk-head');
+  if (!head) return;
+  head.insertAdjacentHTML('afterbegin', '<button class="blk-fold" data-fold-block></button>');
+  head.firstElementChild.onclick = () => (blockFolded(page, block) ? unfoldBlock(page, block) : foldBlock(page, block));
+}
+
 // The grid follows what's folded: the left area folds to an upright strip,
 // main and bottom to a bar — or, both folded, the right column to a strip.
-function applyAreas(page) {
+// When main or bottom has only folded blocks, it takes their heads' height
+// and the other one the rest.
+function applyFolds(page) {
   const body = pageEls.body;
   const used = areasWithBlocks(page);
   const folded = (a) => used.includes(a) && areaFolded(page, a);
@@ -547,14 +598,34 @@ function applyAreas(page) {
   body.classList.toggle('fold-right', rightFolded);
   body.classList.toggle('fold-main', folded('main') && !rightFolded);
   body.classList.toggle('fold-bottom', folded('bottom') && !rightFolded);
+  const both = right.length === 2 && !folded('main') && !folded('bottom');
+  const heads = (a) => page.blocks.every(b => b.area !== a || blockFolded(page, b));
+  body.classList.toggle('heads-bottom', both && heads('bottom'));
+  body.classList.toggle('heads-main', both && heads('main') && !heads('bottom'));
   const unfolded = used.filter(a => !folded(a));
   body.querySelectorAll('[data-fold-area]').forEach(b => { b.hidden = unfolded.length < 2; });
+  for (const b of page.blocks) {
+    const el = blockEl(b);
+    const caret = el?.querySelector('[data-fold-block]');
+    if (!caret) continue;
+    const f = blockFolded(page, b);
+    el.classList.toggle('folded', f);
+    caret.textContent = f ? '▸' : '▾';
+    caret.title = f ? 'Unfold' : 'Fold to its head';
+  }
+  renderUnfoldAll(page);
+}
+
+// The page bar's "unfold all": there while an area or a block of the page is folded.
+function renderUnfoldAll(page) {
+  const btn = document.getElementById('pages-unfold');
+  if (btn) btn.hidden = !areasWithBlocks(page).some(a => areaFolded(page, a)) && !page.blocks.some(b => blockFolded(page, b));
 }
 
 function foldArea(page, area) {
   pageState.folded[page.id] = [...new Set([...(pageState.folded[page.id] || []), area])];
   savePagePrefs();
-  applyAreas(page);
+  applyFolds(page);
 }
 
 function unfoldArea(page, area) {
@@ -562,9 +633,35 @@ function unfoldArea(page, area) {
   if (folded.length) pageState.folded[page.id] = folded;
   else delete pageState.folded[page.id];
   savePagePrefs();
-  applyAreas(page);
-  // What it skipped while folded.
-  loadBlocks(page, page.blocks.filter(b => b.area === area && pageState.stale.has(blockKey(page, b))));
+  unfolded(page, page.blocks.filter(b => b.area === area));
+}
+
+function foldBlock(page, block) {
+  pageState.foldedBlocks[page.id] = [...new Set([...(pageState.foldedBlocks[page.id] || []), block.id])];
+  savePagePrefs();
+  applyFolds(page);
+}
+
+function unfoldBlock(page, block) {
+  const folded = (pageState.foldedBlocks[page.id] || []).filter(id => id !== block.id);
+  if (folded.length) pageState.foldedBlocks[page.id] = folded;
+  else delete pageState.foldedBlocks[page.id];
+  savePagePrefs();
+  unfolded(page, [block]);
+}
+
+function unfoldAll(page) {
+  delete pageState.folded[page.id];
+  delete pageState.foldedBlocks[page.id];
+  savePagePrefs();
+  unfolded(page, page.blocks);
+}
+
+// [blocks] may be in sight again: what they skipped while folded.
+function unfolded(page, blocks) {
+  applyFolds(page);
+  loadBlocks(page, blocks.filter(b => pageState.stale.has(blockKey(page, b))));
+  if (blocks.some(b => b.kind === 'output')) renderOutputs(page);
 }
 
 // ---- panel sizes ---------------------------------------------------------------
@@ -619,7 +716,10 @@ function addResizer(page, host, axis) {
 function blockEl(block) { return pageEls.body.querySelector(`[data-block="${CSS.escape(block.id)}"]`); }
 
 function renderOutputs(page) {
-  for (const b of page.blocks) if (b.kind === 'output') { const el = blockEl(b); if (el) renderOutput(page, el); }
+  for (const b of page.blocks) {
+    const el = b.kind === 'output' && blockEl(b);
+    if (el) renderOutput(page, el, { head: outOfSight(page, b) });
+  }
 }
 
 // Fetch list rows / diff patches. A block that reads {{selected.*}} waits for
@@ -630,8 +730,8 @@ function loadBlocks(page, blocks) {
   const waiting = list && blocks.includes(list) ? blocks.filter(b => b !== list && usesSelection(b)) : [];
   for (const b of blocks) {
     if (b.kind === 'output' || b.kind === 'form' || waiting.includes(b)) continue;
-    // A folded area is fetched when it unfolds — but the lists that hold the pick and the checks always are.
-    if (areaFolded(page, b.area) && b.id !== page.selection && !b.check) { pageState.stale.add(blockKey(page, b)); continue; }
+    // A folded block is fetched when it unfolds — but the lists that hold the pick and the checks always are.
+    if (outOfSight(page, b) && b.id !== page.selection && !b.check) { pageState.stale.add(blockKey(page, b)); continue; }
     pageState.stale.delete(blockKey(page, b));
     loadBlock(page, b, b === list ? waiting : []);
   }
@@ -716,14 +816,14 @@ function initList(page, block, el) {
     if (cell && !cell.title && cell.scrollWidth > cell.clientWidth) cell.title = cell.textContent;
   });
   if (block.id !== page.selection) return;
-  // The selection list takes the keys once clicked: ↑/↓ pick, / goes to the
-  // filter, and ↓ or Enter there comes back.
+  // The selection list takes the keys once clicked: ↑/↓ (PageUp/PageDown,
+  // Home/End) pick, / goes to the filter, and ↓ or Enter there comes back.
   rowsEl.tabIndex = 0;
   rowsEl.addEventListener('keydown', (e) => {
     if (e.altKey || e.metaKey || e.ctrlKey) return;
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    if (e.key in STEP_KEYS) {
       e.preventDefault();
-      stepSelection(page, block, e.key === 'ArrowDown' ? 1 : -1);
+      stepSelection(page, block, STEP_KEYS[e.key]);
     } else if (e.key === '/') {
       e.preventDefault();
       search.focus();
@@ -838,9 +938,18 @@ function sortHead(c, sort) {
 
 const TREE_SORT = '(tree)'; // the sort key of a tree's head: folder and row names
 
+// A row's path, split once: a draw asks for it to filter, to build the
+// tree, to sort and to name the row.
+const treePaths = new WeakMap(); // row → {cols, parts}
+
 function treePath(block, row) {
-  const parts = block.tree.columns.flatMap(c => cellText(row[c]).split('/')).filter(Boolean);
-  return parts.length ? parts : [rowKeyOf(block, row) ?? ''];
+  const cols = block.tree.columns.join('\u0000');
+  const known = treePaths.get(row);
+  if (known?.cols === cols) return known.parts;
+  const split = block.tree.columns.flatMap(c => cellText(row[c]).split('/')).filter(Boolean);
+  const parts = split.length ? split : [rowKeyOf(block, row) ?? ''];
+  treePaths.set(row, { cols, parts });
+  return parts;
 }
 
 // The folder keys ('prod/tpl/home') above [row].
@@ -895,13 +1004,18 @@ function treeItems(page, block, root, { filtering, sort, format }) {
 
 function treeIndent(depth) { return 10 + depth * 16; }
 
-function toggleDir(page, block, d) {
+// [deep] (⌥/Alt-click): every folder below goes the same way.
+function toggleDir(page, block, d, { deep = false } = {}) {
   const key = blockKey(page, block);
   const opened = { ...pageState.tree[key] };
-  const initial = d.depth < block.tree.open;
-  const open = !(d.key in opened ? opened[d.key] : initial);
-  if (open === initial) delete opened[d.key];
-  else opened[d.key] = open;
+  const initial = (x) => x.depth < block.tree.open;
+  const open = !(d.key in opened ? opened[d.key] : initial(d));
+  const set = (x) => {
+    if (open === initial(x)) delete opened[x.key];
+    else opened[x.key] = open;
+    if (deep) for (const c of x.dirs.values()) set(c);
+  };
+  set(d);
   if (Object.keys(opened).length) pageState.tree[key] = opened;
   else delete pageState.tree[key];
   savePagePrefs();
@@ -945,7 +1059,8 @@ function renderListRows(page, block) {
   const checkedIn = (rs) => checked ? rs.filter(r => checked.has(rowKeyOf(block, r))).length : 0;
   const checkBox = (attr, rs) => `<input type="checkbox" ${attr}${rs.length && checkedIn(rs) === rs.length ? ' checked' : ''}`
     + `${checking || !rs.length ? ' disabled' : ''} />`;
-  const checkAll = checked ? `<th class="lst-check">${checkBox('data-check-all title="check all shown"', matched)}</th>` : '';
+  const checkAll = checked
+    ? `<th class="lst-check">${checkBox(`data-check-all title="${block.tree && !filter ? 'check all, folded ones too' : 'check all shown'}"`, matched)}</th>` : '';
   const treeHead = block.tree ? sortHead({ key: TREE_SORT, label: block.tree.columns.join(' / ') }, sort) : '';
   const buttons = () => actions.map(a => {
     const busy = pageState.running.has(`${page.id}.${block.id}.${a.id}`);
@@ -962,7 +1077,8 @@ function renderListRows(page, block) {
       + (actions.length ? `<td class="row-actions">${buttons()}</td>` : '')
       + '</tr>';
   };
-  const dirHtml = ({ dir: d, open }) => `<tr class="tree-dir${!open && pickedIn.has(d.key) ? ' has-sel' : ''}" data-dir="${escapeHtml(d.key)}">`
+  const dirHtml = ({ dir: d, open }) => `<tr class="tree-dir${!open && pickedIn.has(d.key) ? ' has-sel' : ''}" data-dir="${escapeHtml(d.key)}"`
+    + `${filter ? '' : ' title="⌥/Alt-click: every folder below too"'}>`
     + (checked ? `<td class="lst-check">${checkBox('data-check-dir', d.all)}</td>` : '')
     + `<td class="tree-name" colspan="${cols.length + 1}" style="padding-left: ${treeIndent(d.depth)}px">`
     + `<span class="tree-caret">${open ? '▾' : '▸'}</span>${escapeHtml(d.name)}<span class="tree-count">${d.all.length}</span></td>`
@@ -982,7 +1098,7 @@ function renderListRows(page, block) {
   }
   host.querySelectorAll('tr[data-dir]').forEach(tr => {
     const d = dirs.get(tr.dataset.dir);
-    if (!filter) tr.onclick = () => toggleDir(page, block, d); // a filter keeps every folder above a match open
+    if (!filter) tr.onclick = (e) => toggleDir(page, block, d, { deep: e.altKey }); // a filter keeps every folder above a match open
     const box = tr.querySelector('[data-check-dir]');
     if (!box) return;
     box.indeterminate = checkedIn(d.all) > 0 && checkedIn(d.all) < d.all.length;
@@ -1273,7 +1389,8 @@ function postFrameData(page, block) {
 }
 
 // Requests from frames. Only a frame of the page on screen gets anything; one
-// left over from a page the dashboard moved away from is told so.
+// left over from a page the dashboard moved away from is told so, and so is
+// one folded out of sight — which still gets its data (emu:ready).
 window.addEventListener('message', async (e) => {
   const msg = e.data;
   const frame = [...pageEls.body.querySelectorAll('iframe.ext-frame')].find(f => f.contentWindow === e.source);
@@ -1286,7 +1403,10 @@ window.addEventListener('message', async (e) => {
   const page = currentPage();
   const block = page && !pageEls.body.hidden
     && page.blocks.find(b => b.kind === 'html' && blockEl(b)?.querySelector('iframe') === frame);
-  if (!block) { reply({ ok: false, value: null, error: 'this view is not on screen' }); return; }
+  if (!block || (msg.type !== 'emu:ready' && outOfSight(page, block))) {
+    reply({ ok: false, value: null, error: 'this view is not on screen' });
+    return;
+  }
   // A held confirm waits for its view's run only (frameRun); anything else lets it go.
   if (msg.type !== 'emu:run' && msg.type !== 'emu:action') endHold();
   switch (msg.type) {
@@ -1370,6 +1490,7 @@ function frameSelect(page, key) {
 // none is named. Not while it loads, nor twice in a second (a view that
 // refreshes from onData would otherwise run its command in a loop).
 const frameRefreshed = {}; // 'page.block' → when a frame last had it fetched
+const FRAME_REFRESH_MS = 1000;
 function frameRefresh(page, block, id) {
   const target = id === undefined || id === null ? block : page.blocks.find(b => b.id === id);
   if (!target || target.kind === 'output' || target.kind === 'form') {
@@ -1377,12 +1498,22 @@ function frameRefresh(page, block, id) {
   }
   const key = blockKey(page, target);
   const now = Date.now();
-  if (pageState.data[key]?.loading || now - (frameRefreshed[key] || 0) < 1000) {
+  if (pageState.data[key]?.loading || now - (frameRefreshed[key] || 0) < FRAME_REFRESH_MS) {
     return { ok: false, busy: true, error: `${target.title || target.id} is already loading` };
   }
   frameRefreshed[key] = now;
   loadBlocks(page, [target]);
   return { ok: true };
+}
+
+// When [page] is drawn (shown, or drawn again): forget the refreshes of
+// blocks not on it, or no longer on it, and those too old to hold one back.
+function pruneFrameRefreshed(page) {
+  const now = Date.now();
+  const keep = new Set(page ? page.blocks.map(b => blockKey(page, b)) : []);
+  for (const [key, at] of Object.entries(frameRefreshed)) {
+    if (!keep.has(key) || now - at >= FRAME_REFRESH_MS) delete frameRefreshed[key];
+  }
 }
 
 // emu.run(id, {input, confirm}): the block's own action, or a toolbar action
@@ -1497,7 +1628,9 @@ function initOutput(page, block, el) {
   };
 }
 
-function renderOutput(page, el) {
+// [head]: the output is folded away — only its head (what runs, how long) is
+// drawn, the rest once it unfolds.
+function renderOutput(page, el, { head = false } = {}) {
   const busy = [...pageState.running].filter(k => k.startsWith(`${page.id}.`));
   const hist = pageState.history[page.id] || [];
   const viewing = pageState.viewing[page.id] ?? null;
@@ -1507,31 +1640,83 @@ function renderOutput(page, el) {
   renderHistory(el, hist, viewing, busy.length > 0);
   el.querySelector('[data-none]').hidden = !!(liveKey || run);
   pre.hidden = !(liveKey || run);
-  if (!liveKey && !run) { cmd.textContent = meta.textContent = ''; return; }
+  if (liveKey) startOutputTicker();
+  if (!liveKey && !run) { cmd.textContent = meta.textContent = ''; el.dataset.shown = ''; return; }
   // Something new starts at the top (a live run at its end); the same keeps its place, or its end.
-  const id = liveKey ? `live:${liveKey}` : `run:${page.id}.${run.item}@${run.at}`;
+  // A live run is told apart by when it started: one that ran again while
+  // this was folded is new, not more of the one drawn before.
+  const id = liveKey ? `live:${liveKey}@${pageState.liveSince[liveKey]}` : `run:${page.id}.${run.item}@${run.at}`;
   const prev = el.dataset.shown || '';
-  const same = prev === id || (!liveKey && prev === `live:${page.id}.${run.item}`);
-  const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 30;
-  let text;
   if (liveKey) {
     cmd.textContent = `running ${busy.map(k => k.slice(page.id.length + 1)).join(', ')}…`;
     cmd.title = '';
-    meta.textContent = '';
-    text = pageState.live[liveKey] || '';
-  } else {
-    const mark = run.ok ? '<span class="ok-mark">✓</span>' : '<span class="fail-mark">✗</span>';
-    const then = run.then ? ` · ${escapeHtml(run.then.action)}: ${escapeHtml(run.then.message || (run.then.ok ? 'ok' : 'failed'))}` : '';
-    cmd.textContent = `$ ${run.command}`;
-    cmd.title = run.command;
-    meta.innerHTML = `${mark} ${escapeHtml(run.error || 'exit 0')} · ${(run.ms / 1000).toFixed(1)}s · ${new Date(run.at).toLocaleTimeString()}${then}`;
-    text = run.output;
+    const since = pageState.liveSince[liveKey];
+    meta.textContent = since ? `${Math.round((Date.now() - since) / 1000)}s` : '';
+    if (head) return;
+    const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 30;
+    el.dataset.shown = id;
+    renderLive(pre, el, liveKey, prev === id);
+    if (prev !== id) pre.scrollTop = pre.scrollHeight;
+    else if (atEnd) pre.scrollTop = pre.scrollHeight;
+    return;
   }
-  const body = stripAnsi(text);
-  pre.innerHTML = body ? linkify(body) : `<span class="muted">${liveKey ? 'no output yet' : '(no output)'}</span>`;
+  if (prev === id) return; // drawn already: a finished run doesn't change
+  const mark = run.ok ? '<span class="ok-mark">✓</span>' : '<span class="fail-mark">✗</span>';
+  const then = run.then ? ` · ${escapeHtml(run.then.action)}: ${escapeHtml(run.then.message || (run.then.ok ? 'ok' : 'failed'))}` : '';
+  cmd.textContent = `$ ${run.command}`;
+  cmd.title = run.command;
+  meta.innerHTML = `${mark} ${escapeHtml(run.error || 'exit 0')} · ${(run.ms / 1000).toFixed(1)}s · ${new Date(run.at).toLocaleTimeString()}${then}`;
+  if (head) return;
+  const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 30;
   el.dataset.shown = id;
-  if (!same) pre.scrollTop = liveKey ? pre.scrollHeight : 0;
+  const body = stripAnsi(run.output);
+  pre.innerHTML = body ? linkify(body) : '<span class="muted">(no output)</span>';
+  el._live = null;
+  // The run that was just streaming here keeps its place (or its end); another starts at the top.
+  if (!prev.startsWith(`live:${page.id}.${run.item}@`)) pre.scrollTop = 0;
   else if (atEnd) pre.scrollTop = pre.scrollHeight;
+}
+
+// A run in flight: only what came since the last draw is added, so a chatty
+// command doesn't redraw its whole output for every piece. The buffer keeps
+// the last LIVE_LIMIT characters; once the page holds twice that, it's
+// redrawn from the buffer. An escape sequence cut at the end of a piece waits
+// for the rest.
+function renderLive(pre, el, key, same) {
+  const text = pageState.live[key] || '';
+  const total = pageState.liveTotal[key] || 0;
+  const drawn = el._live;
+  const fresh = drawn ? total - drawn.total : -1;
+  if (same && drawn && drawn.total > 0 && fresh >= 0 && fresh <= text.length && drawn.size + fresh <= 2 * LIVE_LIMIT) {
+    if (!fresh) return;
+    const piece = text.slice(text.length - fresh);
+    const keep = heldEscape(piece);
+    pre.insertAdjacentHTML('beforeend', linkify(stripAnsi(piece.slice(0, piece.length - keep))));
+    el._live = { total: total - keep, size: drawn.size + fresh - keep };
+    return;
+  }
+  const keep = heldEscape(text);
+  const body = stripAnsi(text.slice(0, text.length - keep));
+  pre.innerHTML = body ? linkify(body) : '<span class="muted">no output yet</span>';
+  el._live = { total: body ? total - keep : 0, size: text.length - keep };
+}
+
+// How many characters at the end of [text] are an escape sequence still coming.
+function heldEscape(text) {
+  const at = text.lastIndexOf('\x1b');
+  if (at < 0 || text.length - at > 32 || /^\x1b\[[0-9;?]*[ -\/]*[@-~]/.test(text.slice(at))) return 0;
+  return text.length - at;
+}
+
+// The elapsed time of a run in flight, once a second while one is on screen.
+let outputTicker = null;
+function startOutputTicker() {
+  if (outputTicker) return;
+  outputTicker = setInterval(() => {
+    const page = currentPage();
+    if (page && [...pageState.running].some(k => k.startsWith(`${page.id}.`))) renderOutputs(page);
+    else { clearInterval(outputTicker); outputTicker = null; }
+  }, 1000);
 }
 
 // The menu of recent runs, rebuilt only when they change — not for every
@@ -1558,7 +1743,7 @@ function renderHistory(el, hist, viewing, live) {
 // preview disables Run unless the action allows it.
 
 const dlg = Object.fromEntries(['from', 'title', 'msg', 'detail', 'fields', 'choices', 'action', 'action-title', 'action-msg',
-  'preview', 'command', 'cmd-box', 'cmd-line', 'cmd', 'then', 'block', 'wait', 'cancel', 'run']
+  'action-detail', 'preview', 'command', 'cmd-box', 'cmd-line', 'cmd', 'then', 'block', 'wait', 'cancel', 'run']
   .map(k => [k, document.getElementById(`confirm-${k}`)]));
 let dialogResolve = null;
 let dialogKeep = null; // openDialog's [keep]: what to hold on to if OK is pressed
@@ -1592,7 +1777,11 @@ function openDialog({ from = '', title, message = '', detail = '', fields = [], 
   }
   renderChoices(choices, danger);
   dlg.action.hidden = !action;
-  if (action) { dlg['action-title'].textContent = action.title; show(dlg['action-msg'], action.message); }
+  if (action) {
+    dlg['action-title'].textContent = action.title;
+    show(dlg['action-msg'], action.message);
+    show(dlg['action-detail'], action.detail);
+  }
   renderConfirmPreview(preview);
   dlg.command.hidden = !command;
   dlg.cmd.textContent = dlg['cmd-line'].textContent = command ? `$ ${command}` : '';
@@ -1661,7 +1850,10 @@ function closeDialog(answer) {
   dialogKeep = null;
   resolve(answer);
 }
-function hideDialog() { pageEls.confirm.hidden = pageEls.confirmDim.hidden = true; }
+function hideDialog() {
+  pageEls.confirm.hidden = pageEls.confirmDim.hidden = true;
+  setTimeout(nextRunAsk); // a question that waited for this dialog
+}
 dlg.run.onclick = () => closeDialog({
   ok: true,
   values: Object.fromEntries([...dlg.fields.querySelectorAll('input')].map(i => [i.dataset.name, i.value])),
@@ -1691,13 +1883,14 @@ function confirmRun(opts) {
 }
 
 // A run's dialog with the words of the view that asked for it: the view's
-// lead (under its "from" line), emu.yaml's follow with the command.
+// lead (under its "from" line), emu.yaml's follow with the command. Every word
+// of emu.yaml's moves under [action] whole — the view's can't stand in for it.
 function withAsk(opts, ask) {
   return {
     ...opts,
-    title: ask.title, message: ask.message, detail: ask.detail,
-    action: { title: opts.title, message: opts.message },
-    danger: opts.danger || ask.danger,
+    title: ask.title, message: ask.message || '', detail: ask.detail || '',
+    action: { title: opts.title, message: opts.message || '', detail: opts.detail || '' },
+    danger: !!(opts.danger || ask.danger),
   };
 }
 
@@ -1769,6 +1962,72 @@ function refusalText(answer) {
     : answer.blocked || answer.block ? 'requests from this view are blocked'
       : answer.hidden ? 'this view is not on screen'
         : 'cancelled';
+}
+
+// ---- asking while a command runs ----------------------------------------------
+// An `interactive:` action's command may ask (`::emu-ask` lines): the server
+// sends the question to the tab that started the run — this one — and the
+// answer goes back by its ask id. It is a dialog like the others: one at a
+// time (a question waits for an open dialog to close), text only, headed with
+// the page and action that ask, Cancel focused when it is danger. Cancel
+// answers false (confirm) or null; a question the server gave up on
+// (timed out, the command ended) closes unanswered.
+const runAsks = { queue: [], current: null };
+
+function onRunAsk(msg) {
+  if (msg.event === 'ask') {
+    runAsks.queue.push(msg);
+    nextRunAsk();
+  } else {
+    runAsks.queue = runAsks.queue.filter(m => m.askId !== msg.askId);
+    if (runAsks.current === msg.askId) closeDialog({ ok: false, gone: true });
+  }
+}
+
+// The dialog for a run's question: [msg] as the server sent it.
+function runAskOpts(msg) {
+  const q = msg.ask || {};
+  const opts = {
+    from: `“${clip(msg.from?.action ?? msg.item, 100)}” on page “${clip(msg.from?.page ?? msg.page, 100)}” (emu.yaml) asks while it runs:`,
+    title: clip(q.title, 200) || 'Confirm?', message: clip(q.message, 2000), detail: clip(q.detail, 20000),
+    danger: q.danger === true, button: clip(q.button, 40) || 'OK',
+  };
+  if (q.kind === 'prompt') {
+    opts.fields = (Array.isArray(q.fields) ? q.fields : []).slice(0, 12).filter(f => f && typeof f.name === 'string')
+      .map(f => ({ name: f.name, label: clip(f.label ?? f.name, 100), default: clip(f.default, 2000) }));
+  } else if (q.kind === 'choose') {
+    opts.choices = { options: frameOptions(q.options), multiple: q.multiple === true };
+  }
+  return opts;
+}
+
+// The dialog's answer as the command gets it.
+function runAskValue(kind, opts, answer) {
+  if (kind === 'confirm') return answer.ok === true;
+  if (!answer.ok) return null;
+  if (kind === 'prompt') return answer.values;
+  const picked = answer.picked.map(i => opts.choices.options[i].value);
+  return opts.choices.multiple ? picked : picked[0] ?? null;
+}
+
+async function nextRunAsk() {
+  if (runAsks.current || dialogOpen() || !runAsks.queue.length) return;
+  const msg = runAsks.queue.shift();
+  runAsks.current = msg.askId;
+  const opts = runAskOpts(msg);
+  const answer = await openDialog(opts);
+  runAsks.current = null;
+  if (!answer.gone) {
+    try {
+      await api(`/api/pages/${encodeURIComponent(msg.page)}/asks/${encodeURIComponent(msg.askId)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: runAskValue(msg.ask?.kind, opts, answer) }),
+      });
+    } catch (e) {
+      toast(`answer to “${opts.title}” failed: ${e}`);
+    }
+  }
+  nextRunAsk();
 }
 
 function stripAnsi(s) { return (s || '').replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, ''); }

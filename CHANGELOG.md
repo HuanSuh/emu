@@ -6,6 +6,48 @@
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-27
+
+### Added
+- 대시보드 페이지 선택 list 의 PageUp·PageDown(10행)·Home·End. 트리 폴더 ⌥/Alt-클릭은 그 아래 폴더까지 함께 펴고
+  접는다. 실행 중인 output 머리에 지난 초. `emu pages` 가 list 의 `tree`·`sort` 를 보여 준다.
+- 대시보드 페이지 블록 접기(#57). 블록 이름 앞의 꺾쇠(▾)로 그 블록만 머리만 남기고 접으면 같은 영역의 나머지가
+  자리를 나누고, 블록이 모두 접힌 main·bottom 은 머리 높이만 쓴다. output 은 접혀도 머리에 도는 명령과 걸린 시간을
+  보인다. 페이지 바의 `unfold all` 은 그 페이지에서 접힌 영역과 블록을 한 번에 편다. 접힌 블록은 펼 때 불러오고
+  (선택·체크를 가진 list 는 그대로), 접은 상태는 페이지별로 브라우저에 기억한다.
+- 커스텀 화면 인터페이스 3단계 — 실행 중에 묻기 (#49). action 설정 `interactive: true`(툴바·행·form·html 블록
+  액션): 명령이 stdout 에 한 줄 `::emu-ask {"id", "kind": "confirm|prompt|choose", title, message?, detail?,
+  danger?, button?, fields?, options?, multiple?}` 를 찍으면 emu 가 그 줄을 출력(실시간·최종·로그)에서 빼고
+  묻고, 답을 stdin 에 한 줄 `{"id", "value"}` 로 쓴다. 대시보드에서 시작한 실행은 그 탭에만(대시보드 창 규칙:
+  텍스트로만, 출처 = 페이지·액션 이름, 한 번에 한 창, danger 면 포커스 Cancel), `emu run` 은 터미널에서 묻는다.
+  답할 곳이 없거나(터미널 없음, 탭 닫힘) `askTimeout`(기본 120초) 안에 답이 없으면 `null`. `auto:` 와 함께 쓰면
+  설정 오류(스스로 도는 실행엔 답할 사람이 없음).
+  잘못된 JSON·모르는 kind·64 KB 넘는 줄은 `null` 로 답하고 출력에 경고. 답은 질문에 맞춰 거르고(bool, 그
+  질문의 칸·항목), 질문 글자는 길이를 자른다. 명령에 `EMU_ASK=1`(물을 수 있을 때, 아니면 `0`). 질문이 답을
+  기다리는 동안 실행 `timeout:` 은 멈추고, 기다린 시간은 실행 결과의 `waitedMs`. `interactive` 가 없으면 그런
+  줄은 그냥 출력이고 stdin 은 지금처럼 닫힌다. API: 실행 요청의 `asker`, `/api/stream?asker=<id>[&only=ask]`,
+  `POST /api/pages/<page>/asks/<askId>` `{value}`. 예제 `docs/examples/ask`.
+
+### Changed
+- 대시보드 페이지 output 의 실시간 출력 묶음은 최신 64KB 까지 — 0.1초에 그보다 많이 찍으면 끝부분을 온전한 줄부터
+  보내고, 건너뛴 글자 수를 그 앞에 한 줄로 적는다(끝난 실행의 출력은 전과 같다). output 블록은 실행 중 새로 온 부분만 덧붙이고, 끝난 실행은
+  다시 그리지 않는다.
+- 대시보드 페이지 list 에서 행을 고르면(마우스·키) 표를 다시 그리지 않고 강조만 옮긴다(트리에서 옛 선택이 접힌
+  폴더 안이면 다시 그림). 트리의 전체 체크는 접힌 폴더의 행까지 체크한다고 설명에 적고, Tab 으로 들어온 목록은
+  테두리를 보인다.
+- 서버가 `watch:` glob 을 한 번만 컴파일하고, 파일 변경 묶음마다 페이지 설정을 한 번만 읽는다.
+- 접힌 영역·블록 안의 커스텀 화면(html 블록)이 보내는 요청은 화면에 없는 것으로 답한다(`emu:ready` 로 데이터는
+  그대로 받는다).
+
+### Fixed
+- 대시보드 페이지 `auto:` 스위치를 끄면 기다리던 실행의 타이머만 취소되고 대기 상태가 남아, 다시 켠 뒤 다음
+  자동 실행의 로그에 끄기 전에 바뀐 경로가 섞이던 문제 — 끌 때 대기 상태와 바뀐 경로를 함께 비운다.
+- 실행 중 바뀐 파일로 한 번 더 도는 `auto:` 실행의 로그가 `(auto:  changed)` 로 비던 문제 — 실행 중 바뀐 경로도
+  적는다.
+- 합친 확인 창(`emu.run(id, {confirm})`)에서 emu.yaml 쪽 문구를 통째로 아래쪽 action 섹션에 둔다 — 화면 쪽
+  `detail` 이 emu.yaml 쪽 내용을 덮어쓸 수 없다.
+- `emu.refresh` 의 1초 반복 막기 기록을 페이지 전환·다시 그리기 때 정리한다(사라진 블록·다른 페이지 키가 남던 것).
+
 ## [0.15.0] - 2026-10-26
 
 ### Added
@@ -386,7 +428,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/HuanSuh/emu/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/HuanSuh/emu/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/HuanSuh/emu/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/HuanSuh/emu/compare/v0.12.0...v0.13.0

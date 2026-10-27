@@ -1,0 +1,19 @@
+# An action whose command asks while it runs (`interactive: true`, #49): it
+# prints `::emu-ask {…}` lines and reads the answers from stdin. From the
+# dashboard the tab that pressed it asks; from `emu run` the terminal does;
+# with no one to answer (a pipe, CI) every answer is null and the
+# tool stops on its own. Copy this folder's emu.yaml `pages:` and tool/ into a
+# Flutter project to try it with `emu up`.
+pages:
+  - id: templates
+    title: Templates
+    toolbar:
+      - action:
+          id: push
+          label: push templates
+          run: [./tool/push.sh]
+          interactive: true     # stdin stays open; ::emu-ask lines are asked, not printed
+          askTimeout: 300       # seconds one question waits for an answer (default 120)
+          timeout: 60           # the run's own limit — it stands still while a question waits
+    blocks:
+      - output: {}

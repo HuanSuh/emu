@@ -141,6 +141,10 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
   실행된다(`--yes` 없이 `--json` 이면 preview 결과만 받아 볼 수 있다). `emu pages` 는 세션이 없으면 `emu.yaml` 을 직접 읽으므로 설정 수정 직후 검증에 쓴다.
   `auto:` 가 켜진 액션은 감시 파일이 바뀌면 서버가 스스로 실행한다(`emu pages` 에 `runs on change of …: on`) —
   그 파일을 고친 뒤 같은 액션을 또 `emu run` 할 필요가 없다.
+  `interactive: true` 액션은 실행 중에 물을 수 있다(명령이 stdout 에 `::emu-ask {json}` 한 줄 → 답을 stdin 한 줄
+  `{"id", "value"}` 로 받음). `emu run` 이 터미널이면 거기서 묻고, 에이전트처럼 터미널이 아니면 모든 답이 `null`
+  (출력에 `⚠ emu-ask … answered null`) — 도구는 보통 묻지 못하면 멈춘다. 명령은 `EMU_ASK=1|0` 으로 물을 수
+  있는지 안다. 묻는 도구를 만들 때는 README 의 「실행 중에 묻기」와 `docs/examples/ask`.
 - `emu run <page>.<block>.<action> [--row <col>=<value>] [--input <field>=<value>]` — list 의 행 버튼,
   form·panel(입력 칸 없는 form) 의 버튼, html 블록 자신의 액션을 CLI로(`{{row.*}}`·`{{input.*}}` 를 채움).
   html 블록(커스텀 화면) 파일은 `window.emu` 로 대시보드와 주고받는다: `onData`·`run(id, {input, confirm})`·

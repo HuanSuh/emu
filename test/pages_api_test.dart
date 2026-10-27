@@ -42,6 +42,7 @@ pages:
       - action: { id: slow, run: [sleep, 5], timeout: 1 }
       - action: { id: missing, run: [./tool/nope.sh] }
       - action: { id: steps, run: [./tool/t.sh, steps], timeout: 20 }
+      - action: { id: big, run: [./tool/t.sh, big] }
       - action: { id: sync, run: [./tool/t.sh, log, sync], then: reload, auto: { watch: ["tpl/*.txt"], debounce: 30, on: true } }
       - action: { id: watcher, run: [./tool/t.sh, log, watcher], auto: { watch: ["tpl/*.txt"] } }
       - action: { id: self, run: [./tool/t.sh, self], timeout: 20, auto: { watch: ["own/**"], debounce: 30, on: true } }
@@ -60,6 +61,7 @@ case "$1" in
   rows) echo '[{"name": "home", "changes": 2}, {"name": "<b>x</b>", "changes": 0}]' ;;
   steps) echo one; while [ ! -f go ]; do sleep 0.05; done; echo two ;;
   log) echo "$2" >> runs.log ;;
+  big) head -c 300000 /dev/zero | tr '\\0' x ;;
   self) mkdir -p own; touch own/x.txt; echo touched; while [ ! -f go ]; do sleep 0.05; done; echo self >> runs.log ;;
   late) mkdir -p late; touch late/x.txt; echo late >> runs.log ;;
 esac
@@ -126,7 +128,7 @@ void main() {
     expect(page['id'], 'tools');
     expect([for (final i in page['toolbar'] as List) i['id']],
         ['local', 'hello', 'env', 'fail', 'reload', 'publish', 'deploy', 'rows', 'text', 'badpreview', 'softpreview', 'slow', 'missing', 'steps',
-         'sync', 'watcher', 'self', 'late']);
+         'big', 'sync', 'watcher', 'self', 'late']);
     expect((page['toolbar'] as List)[1]['command'], "./tool/t.sh hello 'two words'");
   });
 
@@ -168,10 +170,47 @@ void main() {
       expect(live.pending, lessThanOrEqualTo(20));
     }
     live.flush();
-    expect(sent, ['997,998,999,'.substring(2)]);
+    final all = [for (var i = 0; i < 1000; i++) '$i,'].join();
+    expect(sent, ['… ${all.length - 10} characters skipped while streaming …\n${all.substring(all.length - 10)}']);
     expect(live.pending, 0);
     live.flush();
     expect(sent, hasLength(1)); // nothing new, nothing sent
+  });
+
+  test('a cut batch goes on from a whole line, after its mark on a line of its own', () {
+    final sent = <String>[];
+    final live = LiveOutput(sent.add, limit: 20);
+    live.add('first part');
+    live.flush();
+    live.add('line 1\nline 2\nline 3\nline 4\n'); // 28: its last 20 begin within "line 2"
+    live.flush();
+    expect(sent, ['first part', '\n… 14 characters skipped while streaming …\nline 3\nline 4\n']);
+  });
+
+  test('a batch cut right after a line keeps the line it starts with', () {
+    final sent = <String>[];
+    final live = LiveOutput(sent.add, limit: 14);
+    live.add('line 1\nline 2\nline 3\n'); // 21: its last 14 begin at "line 2"
+    live.flush();
+    final held = LiveOutput(sent.add, limit: 7);
+    held.add('aaaaaa\nbbbbbb\ncccccc\n'); // 21, over twice the limit: held to "cccccc\n" already
+    held.flush();
+    expect(sent, [
+      '… 7 characters skipped while streaming …\nline 2\nline 3\n',
+      '… 14 characters skipped while streaming …\ncccccc\n',
+    ]);
+  });
+
+  test('a command that prints faster than dashboards need sends them the tail of each batch', () async {
+    final (_, j) = await run('big');
+    expect(j['ok'], isTrue);
+    expect('${j['output']}'.length, 256 * 1024); // the run keeps its last 256 KB, as before
+    final chunks = [for (final b in broadcasts) if (b['event'] == 'output') '${b['chunk']}'];
+    expect(chunks, isNotEmpty);
+    final mark = RegExp(r'^\n?… \d+ characters skipped while streaming …\n');
+    for (final c in chunks) {
+      expect(c.replaceFirst(mark, '').length, lessThanOrEqualTo(64 * 1024));
+    }
   });
 
   test('a string command runs with sh -c and sees the EMU_ variables', () async {
@@ -407,6 +446,40 @@ void main() {
       file.writeAsStringSync('c');
       api.filesChanged(['tpl/a.txt']);
       expect(api.autoIdle('tools.sync'), isTrue);
+    });
+
+    test('switching off drops a run that was waiting for the changes to rest', () async {
+      File('${root.path}/tpl/a.txt')
+        ..createSync(recursive: true)
+        ..writeAsStringSync('a');
+      api.filesChanged(['tpl/a.txt']);
+      expect(api.autoIdle('tools.sync'), isFalse);
+      await call('POST', '/api/pages/tools/auto/sync', {'on': false});
+      expect(api.autoIdle('tools.sync'), isTrue);
+      await Future<void>.delayed(const Duration(milliseconds: 150)); // past its debounce (30 ms)
+      expect(runs(), isEmpty);
+
+      // On again, the next change runs it for that change alone.
+      await call('POST', '/api/pages/tools/auto/sync', {'on': true});
+      File('${root.path}/tpl/b.txt').writeAsStringSync('b');
+      api.filesChanged(['tpl/b.txt']);
+      await settled('tools.sync');
+      expect(runs(), ['sync']);
+      expect(logs.map((l) => l.$1), contains('[ext] tools.sync ▸ ./tool/t.sh log sync   (auto: tpl/b.txt changed)'));
+    });
+
+    test('its log line names the first three changes by name, and how many more', () async {
+      final names = ['tpl/e.txt', 'tpl/b.txt', 'tpl/d.txt', 'tpl/a.txt', 'tpl/c.txt'];
+      for (final name in names) {
+        File('${root.path}/$name')
+          ..createSync(recursive: true)
+          ..writeAsStringSync(name);
+      }
+      api.filesChanged(names);
+      await settled('tools.sync');
+      expect(runs(), ['sync']);
+      expect(logs.map((l) => l.$1),
+          contains('[ext] tools.sync ▸ ./tool/t.sh log sync   (auto: tpl/a.txt, tpl/b.txt, tpl/c.txt +2 changed)'));
     });
 
     test('a file changed while it runs makes it run once more — no more, though it writes what it watches', () async {

@@ -10,6 +10,7 @@
 /// - `GET  /api/pages/<page>/blocks/<block>`        a list's rows, a diff's patch, an html block's data
 /// - `GET  /api/pages/<page>/frames/<block>`        an html block's file
 /// - `POST /api/pages/<page>/auto/<item>`           switch an `auto:` action on or off: `{"on": bool}`
+/// - `POST /api/pages/<page>/asks/<ask>`            answer what a running command asks: `{"value": …}`
 ///
 /// Runs take `{"confirmed": bool, "on": bool, "selected": {…}, "row": {…}, "input": {…},
 /// "checked": […] | {"<list>": […]}}` — checked rows as objects, or as their
@@ -19,6 +20,13 @@
 /// preview. GETs take `selected.<col>=…` and `seg=…`. Those values only fill the
 /// placeholders of commands from the config. A run's answer carries `data`
 /// too when its stdout is JSON, for an html block's `emu.run`.
+///
+/// A run may also carry `"asker"`: the dashboard tab or `emu run` that
+/// starts it, connected to `/api/stream?asker=<id>`. What an `interactive:`
+/// action asks while it runs (`page_ask.dart`) goes to that asker alone, as
+/// `{"type": "ext", "event": "ask", askId, page, item, from: {page, action},
+/// ask, timeoutMs}`, then `ask-done` once it is answered, timed out or the
+/// command ended. While a question waits, the run's `timeout:` doesn't run.
 ///
 /// An `auto:` action also runs from here when files it watches change
 /// ([filesChanged]), while switched on — the switch is kept per project.
@@ -33,11 +41,13 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:path/path.dart' as p;
 import 'package:shelf/shelf.dart';
 
 import 'models.dart';
+import 'page_ask.dart';
 import 'pages.dart';
 import 'project_config.dart';
 
@@ -66,6 +76,7 @@ class PageRun {
     this.elapsed = Duration.zero,
     this.timedOut = false,
     this.startError,
+    this.waited = Duration.zero,
   });
 
   final String page;
@@ -87,6 +98,10 @@ class PageRun {
   /// The command could not be started (missing program, not executable).
   final String? startError;
 
+  /// Of [elapsed], the time its questions waited for answers — not counted
+  /// against its timeout.
+  final Duration waited;
+
   /// The follow-up reload/restart (`then:`), if it ran.
   Map<String, dynamic>? then;
 
@@ -101,7 +116,7 @@ class PageRun {
   String? get error => startError != null
       ? 'could not start: $startError'
       : timedOut
-          ? 'timed out after ${elapsed.inSeconds}s'
+          ? 'timed out after ${(elapsed - waited).inSeconds}s'
           : exitCode != 0
               ? 'exit $exitCode'
               : null;
@@ -116,6 +131,7 @@ class PageRun {
         'error': ?error,
         'output': output,
         'ms': elapsed.inMilliseconds,
+        if (waited > Duration.zero) 'waitedMs': waited.inMilliseconds,
         'at': at.toIso8601String(),
         'then': ?then,
         'state': ?state,
@@ -205,6 +221,8 @@ class PagesApi {
     required this.broadcast,
     required this.log,
     this.autoStateFile,
+    this.askerHere,
+    this.sendToAsker,
   });
 
   final String projectRoot;
@@ -230,7 +248,17 @@ class PagesApi {
   /// Where the `auto:` switches are kept (`.emu/pages_auto.json`); null: in memory only.
   final File? autoStateFile;
 
+  /// Whether the asker of this id (`/api/stream?asker=`) is connected.
+  final bool Function(String asker)? askerHere;
+
+  /// Sends [message] to the asker of this id; false if it isn't connected.
+  final bool Function(String asker, Map<String, dynamic> message)? sendToAsker;
+
   final Set<String> _running = {};
+
+  /// Questions of running commands waiting for an answer, by ask id.
+  final Map<String, _PendingAsk> _asks = {};
+  final _random = Random.secure();
   final Map<String, PageRun> _last = {};
 
   /// 'page.item' → an `auto:` switch someone flipped (others are at `auto.on`).
@@ -270,6 +298,22 @@ class PagesApi {
     }
     final query = req.url.queryParameters;
     switch ((parts[3], parts.length)) {
+      case ('asks', 5):
+        if (req.method != 'POST') return _json({'ok': false, 'error': 'use POST'}, status: 405);
+        Object? value;
+        try {
+          value = (jsonDecode(await req.readAsString()) as Map)['value'];
+        } catch (_) {
+          return _json({'ok': false, 'error': 'say {"value": …}'}, status: 400);
+        }
+        // Looked up once the body is in: an answer that came first has taken it.
+        final pending = _asks[parts[4]];
+        if (pending == null || pending.page != page.id || pending.answered) {
+          return _json({'ok': false, 'error': 'no such question — answered, timed out, or its command ended'}, status: 404);
+        }
+        final checked = checkAnswer(pending.ask, value);
+        pending.finish(checked, null);
+        return _json({'ok': true, 'value': checked});
       case ('blocks', 5):
         final block = page.block(parts[4]);
         if (block == null || block is OutputBlock || block is FormBlock) {
@@ -313,6 +357,7 @@ class PagesApi {
           return _json({'ok': false, 'error': 'invalid request body'}, status: 400);
         }
         final confirmed = body['confirmed'] == true;
+        final asker = switch (body['asker']) { final String a when askerIdPattern.hasMatch(a) => a, _ => null };
         if (parts[3] != 'run') {
           final block = page.block(parts[4]);
           final action = switch (block) {
@@ -334,7 +379,7 @@ class PagesApi {
           final itemId = '${block!.id}.${action.id}';
           final checked = await _checked(page, action, '${page.id}.$itemId', body['checked'], vars);
           if (checked.$2 case final refusal?) return _json(refusal, status: 400);
-          return _run(page, action, itemId: itemId, vars: vars, checked: checked.$1!, confirmed: confirmed);
+          return _run(page, action, itemId: itemId, vars: vars, checked: checked.$1!, confirmed: confirmed, asker: asker);
         }
         final vars = placeholderValues(body: body);
         final item = page.item(parts[4]);
@@ -351,16 +396,16 @@ class PagesApi {
           checked = r.$1!;
         }
         return _run(page, item,
-            itemId: item.id, vars: vars, checked: checked, confirmed: confirmed, on: body['on'] as bool?);
+            itemId: item.id, vars: vars, checked: checked, confirmed: confirmed, on: body['on'] as bool?, asker: asker);
       default:
         return _json({'ok': false, 'error': 'not found'}, status: 404);
     }
   }
 
   /// Blocks to fetch again because these project-relative paths changed:
-  /// page id → block ids.
-  Map<String, Set<String>> watching(Iterable<String> paths) {
-    final config = load();
+  /// page id → block ids. [config]: the one just loaded, if the caller has it.
+  Map<String, Set<String>> watching(Iterable<String> paths, {PagesConfig? config}) {
+    config ??= load();
     final out = <String, Set<String>>{};
     for (final path in paths) {
       config.watching(path).forEach((page, blocks) => out.putIfAbsent(page, () => {}).addAll(blocks));
@@ -374,7 +419,8 @@ class PagesApi {
       Map<String, List<Map<String, String>>> checked = const {},
       required bool confirmed,
       bool? on,
-      String? auto}) async {
+      String? auto,
+      String? asker}) async {
     final key = '${page.id}.$itemId';
     final PageCommand declared;
     switch (item) {
@@ -425,9 +471,13 @@ class PagesApi {
       log('[ext] $key ▸ $display${auto == null ? '' : '   (auto: $auto changed)'}', LogLevel.system);
       final live = LiveOutput(
           (chunk) => broadcast({'type': 'ext', 'event': 'output', 'page': page.id, 'item': itemId, 'chunk': chunk}));
+      final interactive = item is PageAction && item.interactive;
       run = url != null
           ? await _openUrl(page.id, itemId, url)
-          : await execute(page.id, itemId, command, item.timeout, onOutput: live.add);
+          : await execute(page.id, itemId, command, item.timeout,
+              onOutput: live.add,
+              ask: interactive ? (q, ended) => _askUser(page, item, itemId, asker, q, ended) : null,
+              canAsk: interactive && asker != null && (askerHere?.call(asker) ?? false));
       live.flush(); // all of it before `finished`
       if (run.commandOk && item.then != Then.none) run.then = await followUp(item.then);
       if (item is PageToggle) run.state = await _state(page, item, vars);
@@ -477,16 +527,16 @@ class PagesApi {
     } on FileSystemException {
       // Kept for this session only.
     }
-    if (!on) _autoStates[key]?.timer?.cancel();
+    if (!on) _autoStates[key]?.drop(); // what was waiting doesn't run
     log('[ext] $key auto ${on ? 'on' : 'off'}', LogLevel.system);
     broadcast({'type': 'ext-auto', 'page': page.id, 'item': action.id, 'on': on});
   }
 
   /// Project files that changed (project-relative paths, as the server's
   /// watcher reports them): start the `auto:` actions switched on that watch
-  /// them.
-  void filesChanged(Iterable<String> paths) {
-    final config = load();
+  /// them. [config]: the one just loaded, if the caller has it.
+  void filesChanged(Iterable<String> paths, {PagesConfig? config}) {
+    config ??= load();
     for (final page in config.pages) {
       for (final action in page.toolbar.whereType<PageAction>()) {
         final auto = action.auto;
@@ -504,16 +554,19 @@ class PagesApi {
       final (start, end) = (st.lastStart, st.lastEnd);
       if (st.started case final started?) {
         // During a run: once more after it — unless this run is that once more.
-        if (!st.once && !at.isBefore(started)) st.again = true;
+        if (!st.once && !at.isBefore(started)) {
+          st.again = true;
+          st.note(path);
+        }
       } else if (start != null && end != null && !at.isAfter(end)) {
         // Reported after the last run, made before it ended: that run read it
         // (made before it began), or it is the run's own write, or it came
         // during the run — once more, unless the last run was the once more.
         if (at.isBefore(start) || st.lastWasOnce) continue;
-        st.changed.add(path);
+        st.note(path);
         st.pendingOnce = true;
       } else {
-        st.changed.add(path);
+        st.note(path);
         st.pending = true;
       }
     }
@@ -535,8 +588,7 @@ class PagesApi {
     final action = page?.item(itemId);
     // emu.yaml changed meanwhile, or it was switched off.
     if (page == null || action is! PageAction || action.auto == null || !autoOn(page, action)) {
-      st.pending = st.pendingOnce = false;
-      st.changed.clear();
+      st.drop();
       return;
     }
     if (_running.contains(key)) {
@@ -545,18 +597,13 @@ class PagesApi {
       return;
     }
     final once = st.pendingOnce && !st.pending;
-    st.pending = st.pendingOnce = false;
-    final changed = st.changed.toList()..sort();
-    st.changed.clear();
+    final because = st.because;
+    st.drop();
     st
       ..started = DateTime.now()
       ..once = once;
     try {
-      await _run(page, action,
-          itemId: action.id,
-          vars: const {},
-          confirmed: false,
-          auto: changed.length > 3 ? '${changed.take(3).join(', ')} +${changed.length - 3}' : changed.join(', '));
+      await _run(page, action, itemId: action.id, vars: const {}, confirmed: false, auto: because);
     } finally {
       st
         ..lastStart = st.started
@@ -808,8 +855,13 @@ class PagesApi {
 
   /// Run [command] in the project root, output captured, killed after
   /// [timeout]. [onOutput] gets stdout and stderr as they come. Never throws.
+  ///
+  /// With [ask] (an `interactive:` action) its stdin stays open and its ask
+  /// lines go to [ask], one question at a time, the answers back to stdin;
+  /// the timeout stands still while a question waits. `EMU_ASK` is `1` when
+  /// [canAsk] — someone may answer — and `0` otherwise.
   Future<PageRun> execute(String page, String item, PageCommand command, Duration timeout,
-      {void Function(String chunk)? onOutput}) async {
+      {void Function(String chunk)? onOutput, AskHandler? ask, bool canAsk = false}) async {
     var (exe, args) = command.invocation;
     // A project script (`./tool/x`, `tool/x`) resolves against the project
     // root, not against wherever the server was started.
@@ -818,30 +870,76 @@ class PagesApi {
     final clock = Stopwatch()..start();
     final Process proc;
     try {
-      proc = await Process.start(exe, args, workingDirectory: projectRoot, environment: environment());
+      proc = await Process.start(exe, args,
+          workingDirectory: projectRoot, environment: {...environment(), 'EMU_ASK': ask != null && canAsk ? '1' : '0'});
     } on ProcessException catch (e) {
       return PageRun(page: page, item: item, command: command.display, at: at, startError: e.message);
     }
-    unawaited(proc.stdin.close()); // EOF for anything that prompts
+    if (ask == null) {
+      unawaited(proc.stdin.close()); // EOF for anything that prompts
+    } else {
+      unawaited(proc.stdin.done.then((_) {}, onError: (_) {})); // it may stop reading: a broken pipe is no failure
+    }
     final all = _Tail(), out = _Tail();
-    const decoder = Utf8Decoder(allowMalformed: true);
-    final drained = Future.wait([
-      proc.stdout.transform(decoder).forEach((s) {
-        all.add(out.add(s));
-        onOutput?.call(s);
-      }),
-      proc.stderr.transform(decoder).forEach((s) {
-        all.add(s);
-        onOutput?.call(s);
-      }),
-    ]);
+    void note(String text) {
+      all.add(text);
+      onOutput?.call(text);
+    }
+
     var timedOut = false;
-    final code = await proc.exitCode.timeout(timeout, onTimeout: () async {
+    final killed = Completer<int>();
+    final deadline = _Deadline(timeout, () async {
       timedOut = true;
       await killTree(proc.pid);
-      return -1;
+      if (!killed.isCompleted) killed.complete(-1);
     });
+    final ended = Completer<void>();
+    var waited = Duration.zero;
+    var asking = Future<void>.value();
+    void onAsk(String? json) {
+      deadline.hold();
+      asking = asking.then((_) async {
+        final clock = Stopwatch()..start();
+        final q = json == null ? (ask: null, id: null, error: 'the line is over ${askLineLimit ~/ 1024} KB') : parseAsk(json);
+        var (value, why) = (null as Object?, q.error);
+        if (q.ask case final question?) (value: value, why: why) = await ask!(question, ended.future);
+        waited += clock.elapsed;
+        if (why != null) note('⚠ emu-ask${q.id == null ? '' : ' ${jsonEncode(q.id)}'}: $why — answered null\n');
+        if (ended.isCompleted) return;
+        try {
+          proc.stdin.writeln(answerLine(q.id, value));
+          await proc.stdin.flush();
+        } catch (_) {
+          // It closed its stdin: no one to tell.
+        }
+      }).catchError((_) {}).whenComplete(deadline.release);
+    }
+
+    final lines = ask == null ? null : AskLines(onAsk);
+    const decoder = Utf8Decoder(allowMalformed: true);
+    void stdoutText(String s) {
+      if (s.isEmpty) return;
+      all.add(out.add(s));
+      onOutput?.call(s);
+    }
+
+    final drained = Future.wait([
+      proc.stdout.transform(decoder).forEach((s) => stdoutText(lines == null ? s : lines.add(s))).then((_) {
+        if (lines != null) stdoutText(lines.close());
+      }),
+      proc.stderr.transform(decoder).forEach(note),
+    ]);
+    var code = await Future.any([proc.exitCode, killed.future]);
+    deadline.cancel();
+    if (timedOut) code = -1;
+    ended.complete();
     await drained.timeout(const Duration(seconds: 2), onTimeout: () => const []);
+    await asking.timeout(const Duration(seconds: 2), onTimeout: () {});
+    if (ask != null) {
+      try {
+        await proc.stdin.close();
+      } catch (_) {}
+    }
     return PageRun(
       page: page,
       item: item,
@@ -852,7 +950,55 @@ class PagesApi {
       stdout: out.text,
       elapsed: clock.elapsed,
       timedOut: timedOut,
+      waited: waited,
     );
+  }
+
+  // ---- asking (interactive:) -------------------------------------------------
+
+  /// Asks [ask] for [action]'s run: in the dashboard tab or terminal that
+  /// started it ([asker]), until answered, [PageAction.askTimeout], or the
+  /// command ends. [why]: why it went unanswered (null: someone answered).
+  Future<({Object? value, String? why})> _askUser(DashboardPage page, PageAction action, String itemId, String? asker,
+      Map<String, dynamic> ask, Future<void> ended) async {
+    final key = '${page.id}.$itemId';
+    final send = sendToAsker;
+    if (asker == null || send == null) {
+      log('[ext] $key asks “${ask['title']}” — no one to answer', LogLevel.warn);
+      return (value: null, why: 'no one to answer — run it from the dashboard, or with emu run on a terminal');
+    }
+    final askId = List.generate(16, (_) => _random.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
+    final pending = _asks[askId] = _PendingAsk(asker, page.id, ask);
+    final sent = send(asker, {
+      'type': 'ext',
+      'event': 'ask',
+      'askId': askId,
+      'page': page.id,
+      'item': itemId,
+      'from': {'page': page.title, 'action': action.label},
+      'ask': ask,
+      'timeoutMs': action.askTimeout.inMilliseconds,
+    });
+    if (!sent) {
+      _asks.remove(askId);
+      log('[ext] $key asks “${ask['title']}” — no one to answer', LogLevel.warn);
+      return (value: null, why: 'no one to answer — the dashboard tab or terminal that started it is gone');
+    }
+    log('[ext] $key asks “${ask['title']}”', LogLevel.system);
+    final timer = Timer(action.askTimeout, () => pending.finish(null, 'no answer in ${action.askTimeout.inSeconds}s'));
+    unawaited(ended.then((_) => pending.finish(null, null)));
+    final answer = await pending.done;
+    timer.cancel();
+    _asks.remove(askId);
+    send(asker, {'type': 'ext', 'event': 'ask-done', 'askId': askId, 'page': page.id, 'item': itemId});
+    return answer;
+  }
+
+  /// The asker of this id is gone (its socket closed): its questions are answered null.
+  void askerGone(String asker) {
+    for (final pending in _asks.values.where((a) => a.asker == asker).toList()) {
+      pending.finish(null, 'the dashboard tab or terminal that started it went away');
+    }
   }
 
   void _logResult(String key, PageRun run) {
@@ -890,6 +1036,70 @@ Future<void> killTree(int pid) async {
   }
 }
 
+/// What an asker id (`asker` of a run, `/api/stream?asker=`) may be.
+final askerIdPattern = RegExp(r'^[A-Za-z0-9_-]{1,100}$');
+
+/// Asks a running command's question; resolves to the answer, or null and why not.
+typedef AskHandler = Future<({Object? value, String? why})> Function(Map<String, dynamic> ask, Future<void> ended);
+
+class _PendingAsk {
+  _PendingAsk(this.asker, this.page, this.ask);
+
+  final String asker;
+  final String page;
+  final Map<String, dynamic> ask;
+  final _done = Completer<({Object? value, String? why})>();
+
+  Future<({Object? value, String? why})> get done => _done.future;
+
+  /// Answered, timed out or given up — a later answer is refused.
+  bool get answered => _done.isCompleted;
+
+  void finish(Object? value, String? why) {
+    if (!_done.isCompleted) _done.complete((value: value, why: why));
+  }
+}
+
+/// A run's timeout that stands still while it is [hold]ed — while a question
+/// waits for the person at the dashboard or terminal.
+class _Deadline {
+  _Deadline(this._left, this._onTimeout) {
+    _arm();
+  }
+
+  Duration _left;
+  final void Function() _onTimeout;
+  final _clock = Stopwatch();
+  Timer? _timer;
+  int _holds = 0;
+  bool _over = false;
+
+  void _arm() {
+    _clock
+      ..reset()
+      ..start();
+    _timer = Timer(_left, _onTimeout);
+  }
+
+  void hold() {
+    if (_over || _holds++ > 0) return;
+    _timer?.cancel();
+    _clock.stop();
+    _left -= _clock.elapsed;
+    if (_left.isNegative) _left = Duration.zero;
+  }
+
+  void release() {
+    if (_over || --_holds > 0) return;
+    _arm();
+  }
+
+  void cancel() {
+    _over = true;
+    _timer?.cancel();
+  }
+}
+
 /// Where an `auto:` action is: waiting out a burst of changes, running, and
 /// what its last run covered.
 class _AutoState {
@@ -899,7 +1109,29 @@ class _AutoState {
   /// last run reported after it ([pendingOnce]).
   bool pending = false;
   bool pendingOnce = false;
-  final Set<String> changed = {};
+
+  /// What changed, for the log line (up to [_noteLimit] paths kept).
+  final Set<String> _paths = {};
+  static const _noteLimit = 1000;
+
+  void note(String path) {
+    if (_paths.length < _noteLimit) _paths.add(path);
+  }
+
+  /// The first few changed paths, by name, and how many more.
+  String get because {
+    final paths = _paths.toList()..sort();
+    final first = paths.take(3).join(', ');
+    return paths.length > 3 ? '$first +${paths.length - 3}' : first;
+  }
+
+  /// Forget what was waiting, and its timer.
+  void drop() {
+    timer?.cancel();
+    timer = null;
+    pending = pendingOnce = false;
+    _paths.clear();
+  }
 
   /// The run in flight began; null while none is.
   DateTime? started;
@@ -915,16 +1147,24 @@ class _AutoState {
   bool lastWasOnce = false;
 }
 
+/// The most a batch of live output carries. A command that prints faster
+/// than this loses the head of the batch on the way to dashboards (the run's
+/// own output, at the end, still has its last [_outputLimit]).
+const _liveBatchLimit = 64 * 1024;
+
 /// A running command's output for dashboards, sent in batches: what came
-/// within [_outputEvery] goes as one chunk (its tail, if that's a lot). What
-/// waits for the next batch is held to the tail too, so a command that prints
-/// fast can't grow it unbounded.
+/// within [_outputEvery] goes as one chunk — its tail, from a whole line and
+/// after a mark on a line of its own, when it is over the limit
+/// ([_liveBatchLimit] unless given). What waits for the next batch is held to
+/// the tail too, so a command that prints fast can't grow it unbounded.
 class LiveOutput {
-  LiveOutput(this._send, {int limit = _outputLimit}) : _limit = limit, _tail = _Tail(limit);
+  LiveOutput(this._send, {int limit = _liveBatchLimit}) : _limit = limit, _tail = _Tail(limit);
 
   final void Function(String chunk) _send;
   final int _limit;
   _Tail _tail;
+  int _added = 0; // characters that came for the next batch, kept or not
+  bool _midLine = false; // the last batch sent ended within a line
   Timer? _timer;
 
   /// Characters held for the next batch: at most twice the limit.
@@ -932,16 +1172,27 @@ class LiveOutput {
 
   void add(String chunk) {
     _tail.add(chunk);
+    _added += chunk.length;
     _timer ??= Timer(_outputEvery, flush);
   }
 
   void flush() {
     _timer?.cancel();
     _timer = null;
-    final text = _tail.text;
+    var text = _tail.text;
     if (text.isEmpty) return;
+    var skipped = _added - text.length;
+    // Cut within a line: the tail starts at its next one.
+    final cut = skipped > 0 && !_tail.atLineStart ? text.indexOf('\n') : -1;
+    if (cut >= 0 && cut < text.length - 1) {
+      skipped += cut + 1;
+      text = text.substring(cut + 1);
+    }
     _tail = _Tail(_limit);
-    _send(text);
+    _added = 0;
+    final out = skipped > 0 ? '${_midLine ? '\n' : ''}… $skipped characters skipped while streaming …\n$text' : text;
+    _midLine = !out.endsWith('\n');
+    _send(out);
   }
 }
 
@@ -951,21 +1202,30 @@ class _Tail {
 
   final int _limit;
   final _buf = StringBuffer();
+  String _before = ''; // the last character dropped from the head
 
   int get length => _buf.length;
 
   String add(String chunk) {
     _buf.write(chunk);
     if (_buf.length > _limit * 2) {
-      final keep = _buf.toString().substring(_buf.length - _limit);
+      final all = _buf.toString();
+      _before = all[all.length - _limit - 1];
       _buf
         ..clear()
-        ..write(keep);
+        ..write(all.substring(all.length - _limit));
     }
     return chunk;
   }
 
   String get text => _buf.length > _limit ? _buf.toString().substring(_buf.length - _limit) : '$_buf';
+
+  /// [text] starts a line: nothing was cut before it, or what was ended one.
+  bool get atLineStart {
+    final all = '$_buf';
+    final before = all.length > _limit ? all[all.length - _limit - 1] : _before;
+    return before.isEmpty || before == '\n';
+  }
 }
 
 String _clip(String s) {

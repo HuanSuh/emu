@@ -885,16 +885,16 @@ pages:
 | `confirm` | Ask first: `true`, a message, or a map (below). The dialog always shows the exact command; `emu run` asks y/N on a terminal, `--yes` skips it |
 | `timeout` | Seconds before the command is killed (default 60) |
 | `auto` | Toolbar actions: also run on their own when project files change — `{watch: ["tpl/**"], debounce: 400, on: false}` (below) |
-| `blocks` | Panels in the page body, placed with `area: left \| main \| bottom` (defaults: list left, diff main, output bottom). Drag the left area's right edge or the bottom area's top edge to resize — kept per page in the browser; double-click an edge to reset. The chevron in an area's first block head folds it to a strip of its block titles — left upright, main and bottom as a bar — and the others take its room; a click on the strip unfolds it in place. A folded area's blocks are fetched when it unfolds, except the lists that hold the pick and the checks |
+| `blocks` | Panels in the page body, placed with `area: left \| main \| bottom` (defaults: list left, diff main, output bottom). Drag the left area's right edge or the bottom area's top edge to resize — kept per page in the browser; double-click an edge to reset. The chevron in an area's first block head folds it to a strip of its block titles — left upright, main and bottom as a bar — and the others take its room; a click on the strip unfolds it in place. The caret before a block's name folds just that block to its head — an output's head still shows what runs and for how long — and the others in its area take its room; main or bottom with only folded blocks is as tall as their heads. The page bar's `unfold all` unfolds every folded area and block of the page. What's folded is fetched when it unfolds, except the lists that hold the pick and the checks |
 
 | Block | Its command prints | It shows |
 |-------|--------------------|----------|
-| `list` | a JSON array of objects | A table: `columns` as `name` or `name:text\|chip\|count` (default: every field of the first row), a filter box, and a `rowActions` button on each row. The first list on a page holds its selection: picking a row fills `{{selected.<col>}}`. A long text value is cut with an ellipsis at its column's width — 32em, or `name:text:40em` (`em`, `ch`, `px`) — and shows whole on hover; `:start` cuts the front instead, for paths (`path:text:start` → `…/4.49.1/home.json`). The row buttons stay at the right edge when the table scrolls sideways. Click a column head to sort by it (ascending, descending, then the command's order; numbers as numbers, versions like `1.2.10` after `1.2.9`); `sort: minVer:desc` sets where it starts. In the selection list, ↑/↓ pick the row above or below — the blocks that follow the pick fetch once the keys rest — and `/` jumps to the filter (↓ or Enter comes back) |
+| `list` | a JSON array of objects | A table: `columns` as `name` or `name:text\|chip\|count` (default: every field of the first row), a filter box, and a `rowActions` button on each row. The first list on a page holds its selection: picking a row fills `{{selected.<col>}}`. A long text value is cut with an ellipsis at its column's width — 32em, or `name:text:40em` (`em`, `ch`, `px`) — and shows whole on hover; `:start` cuts the front instead, for paths (`path:text:start` → `…/4.49.1/home.json`). The row buttons stay at the right edge when the table scrolls sideways. Click a column head to sort by it (ascending, descending, then the command's order; numbers as numbers, versions like `1.2.10` after `1.2.9`); `sort: minVer:desc` sets where it starts. In the selection list, ↑/↓ pick the row above or below (PageUp/PageDown ten rows, Home/End the first and last) — the blocks that follow the pick fetch once the keys rest — and `/` jumps to the filter (↓ or Enter comes back) |
 | `diff` | a unified diff — anything else shows as numbered lines | The Changes tab view. `segments` adds a switch whose choice fills `{{seg}}`. As `{values: [prod, stage, dev], optional: true, hide: "{{selected.env}}"}`: nothing is picked at first and a click on the picked one turns it off (`{{seg}}` is then empty — show the file itself rather than a diff), and the segment equal to the picked row's `env` isn't offered |
 | `html` | anything — JSON goes over as a value | A project HTML file (`src:`) in a sandboxed frame, for what a table or a diff can't show: a value tree, an image preview. `run:` is optional; `actions:` lists the toolbar actions it may run (`- sync`) and actions of its own (`- action: {…}`), `inputs:` the `{{input.*}}` names it may pass |
 | `form` | — | Labeled fields (`fields: [{name, label, placeholder, default}]`) and `actions` buttons that read them as `{{input.<field>}}`. What's typed is kept per browser. `note:` adds a line of text under the title |
 | `panel` | — | A form with no fields: a title, an optional `note:` and a row of `actions` buttons — group buttons in an area instead of the toolbar. `{{input.*}}` in its buttons is a config error (a `form` with `fields` left out or `[]` is the same) |
-| `output` | — | The page's runs: one in flight shows its output as it comes, a finished one its command, exit code, time and output. Addresses (`https://…`) are links that open in a new tab — in the Logs tab too. The head's menu goes back to one of the last 10 runs (kept in this tab) |
+| `output` | — | The page's runs: one in flight shows its output as it comes, with the seconds it has been running, a finished one its command, exit code, time and output. A command that prints over 64 KB in a tenth of a second sends only the end of it, from a whole line, after a line counting what it skipped (a finished run's output is as before). Addresses (`https://…`) are links that open in a new tab — in the Logs tab too. The head's menu goes back to one of the last 10 runs (kept in this tab) |
 
 - Placeholders: `{{selected.<col>}}` — the picked row, anywhere except the list that makes
   the selection; `{{row.<col>}}` — a row button's own row; `{{seg}}` — a diff's segment;
@@ -978,13 +978,13 @@ pages:
 - **Folders.** `tree: path` (or `tree: [env, path]`) draws a list as folders: the values of those
   columns, each split at `/`, make a row's path — `prod / tpl / home / 4.48.0 / home_banner.txt`. Its
   last part names the row; the parts before it are folders, with a row count, that a click opens or
-  closes. Rows keep their columns, buttons, pick and checks; a folder's checkbox checks every row
-  below it, and a closed folder holding the picked row is marked. Folders start closed —
-  `tree: {columns: [env, path], open: 1}` opens the first level — and what you open is kept per
-  browser. A filter also matches the path and shows the matching rows with every folder above them
-  open. The tree's head sorts folders and rows by name; another column's head sorts the rows within
-  each folder. Without `columns:`, the path columns aren't repeated as columns. `emu block` prints
-  the rows flat, the path columns first.
+  closes (⌥/Alt-click: every folder below too). Rows keep their columns, buttons, pick and checks;
+  a folder's checkbox checks every row below it, and a closed folder holding the picked row is
+  marked. Folders start closed — `tree: {columns: [env, path], open: 1}` opens the first level —
+  and what you open is kept per browser. A filter also matches the path and shows the matching
+  rows with every folder above them open. The tree's head sorts folders and rows by name; another
+  column's head sorts the rows within each folder. Without `columns:`, the path columns aren't
+  repeated as columns. `emu block` prints the rows flat, the path columns first.
 - **Run on save.** An action with `auto:` also runs when a project file it watches changes — save
   a template and it syncs and reloads with no click:
 
@@ -1094,7 +1094,8 @@ pages:
   - Dialogs are drawn by the dashboard, outside the frame, headed with who asks
     (`"Deploy" (emu.yaml · tool/emu/deploy.html) asks:`), and every text in them is shown as text,
     never as HTML. One dialog at a time: a request while one is open answers `busy`
-    (`false`/`null`). Only a frame of the page on screen gets answers.
+    (`false`/`null`). Only a frame on screen gets answers: on the page shown, and not folded away
+    (a folded one still gets its data).
   - `emu.confirm` is the view's own question; it doesn't stand in for `confirm:`. Such an
     action asks in the dashboard's own dialog with the exact command, also when a frame runs it —
     a frame can't send `confirmed`. Not twice, though:
@@ -1113,10 +1114,57 @@ pages:
   - Without the helper: data arrives as `{type: "emu:data", …}`, `{type: "emu:ready"}` asks for it
     again, and `{type: "emu:action", id}` runs an action with no answer — as before.
 
+- **Asking while it runs** — an action with `interactive: true` (toolbar, row, form or html
+  block action) keeps its command's stdin open, and the command may ask what it can't decide
+  alone: it prints one stdout line `::emu-ask {json}` and reads one line back.
+
+  ```yaml
+      - action:
+          id: push
+          run: [./tool/push.sh]
+          interactive: true     # ::emu-ask lines are asked, not printed
+          askTimeout: 300       # seconds one question waits (default 120)
+  ```
+
+  ```sh
+  printf '::emu-ask %s\n' '{"id":"force","kind":"confirm","title":"Overwrite 2 files?","detail":"a.tpl\nb.tpl","danger":true}'
+  read -r answer        # {"id":"force","value":true}
+  ```
+
+  | `kind` | also takes | `value` of the answer |
+  |--------|-----------|-----------------------|
+  | `confirm` | `title, message, detail, danger, button` | `true` / `false` |
+  | `prompt` | `fields: [{name, label, default}]` | `{name: text, …}` or `null` |
+  | `choose` | `options: [{value, label} \| value], multiple` | the value (`multiple`: an array) or `null` |
+
+  - emu takes the line out of the output (live, final and the log) and asks **where the run
+    started**: the dashboard tab that pressed it — no other tab — or the terminal of `emu run`.
+    The dialog is the dashboard's own, as for custom views: text only, headed with the page and
+    action that ask, one at a time (a question waits for an open dialog), Cancel focused when
+    `danger`. Cancel answers `false` (confirm) or `null`.
+  - The answer is `null` when no one can answer — `emu run` without a terminal (a pipe, CI),
+    the tab closed — or no answer came in `askTimeout`; a line emu can't read (not
+    JSON, an unknown `kind`, over 64 KB) is answered `null` too, with a `⚠ emu-ask` note in the
+    output. `interactive: true` with `auto:` is a config error: a run that starts on its own has
+    no one to answer. `EMU_ASK=1` tells the command someone may answer (`0` otherwise), so a tool can stop
+    up front rather than ask into the void. Write tools as "can't ask → stop", the way they work
+    without emu.
+  - The run's `timeout:` stands still while a question waits: what counts is the command's own
+    time (`waitedMs` in the run says how long it waited).
+  - Answers are checked against the question — a confirm's bool, a prompt's own fields, a
+    choose's own options — and the question's text is cut to size (title 200, message 2000,
+    detail 20000 characters). A question can't do anything the action's command couldn't:
+    it is the command from `emu.yaml` asking, and it asks only who started it.
+  - Without `interactive: true` such a line is plain output and stdin is closed, so a stray line
+    never opens a dialog. Print the line with `printf '%s\n'`, not `echo` (sh's echo turns
+    `\n` in the JSON into a line break). Full example:
+    [`docs/examples/ask`](docs/examples/ask).
+
 - A toggle's `state` command prints `{"on": true|false, "detail"?: "…"}` — its last line is
   enough, so the tool may log first. `on`/`off` flip it, and the state is read again afterwards.
 - Commands run in the project root with `EMU_PROJECT`, `EMU_PORT` and, once known,
-  `EMU_DEVICE`, `EMU_PLATFORM` and `EMU_APP_ID` — as the device hooks do. Stdin is closed.
+  `EMU_DEVICE`, `EMU_PLATFORM` and `EMU_APP_ID` — as the device hooks do. Stdin is closed
+  (but for `interactive: true`).
   An item never runs twice at once.
 - The server runs only commands written in the config: a request names a page and an item,
   never a command. `emu.yaml` is read again on every request, so edits apply without a
@@ -1138,6 +1186,7 @@ emu run links.link.open --input url=myapp://home   # a form button with what's t
 emu run deploy.view.plan --input env=stage         # an html block's own action, with its inputs:
 emu run tpl.deploy.stage --checked home,card --yes  # {{checked.*}}: rows of the check: true list, by key
 emu run tpl.picks.check --row name=home            # check.toggle runs as the row action "check"
+emu run templates.push                             # interactive: asks here on a terminal; piped, every answer is null
 emu block templates.items          # what a list shows, as a table
 emu block templates.changes --select name=home_banner --seg prod   # a diff, as if that row were picked
 ```

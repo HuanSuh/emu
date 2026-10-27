@@ -807,16 +807,16 @@ pages:
 | `confirm` | 먼저 묻는다: `true`, 문자열, 또는 맵(아래). 확인 창은 실행할 명령을 늘 그대로 보여 준다. `emu run` 은 터미널에서 y/N 을 묻고, `--yes` 면 건너뛴다 |
 | `timeout` | 이 초가 지나면 명령을 끊는다(기본 60) |
 | `auto` | 툴바 액션: 프로젝트 파일이 바뀌면 스스로도 실행 — `{watch: ["tpl/**"], debounce: 400, on: false}`(아래) |
-| `blocks` | 페이지 본문의 패널. `area: left \| main \| bottom` 으로 배치(기본: list 왼쪽, diff 가운데, output 아래). 왼쪽 영역의 오른쪽 경계, 아래 영역의 위쪽 경계를 끌어 크기 조정 — 페이지마다 브라우저에 기억, 더블클릭하면 기본 크기. 영역 첫 블록 머리의 꺾쇠로 그 영역을 블록 제목이 적힌 띠로 접으면(left 는 세로, main·bottom 은 가로) 나머지가 자리를 나누고, 띠를 누르면 그 자리에서 펼쳐진다. 접힌 영역의 블록은 펼 때 불러온다 — 선택·체크를 가진 list 는 그대로 불러온다 |
+| `blocks` | 페이지 본문의 패널. `area: left \| main \| bottom` 으로 배치(기본: list 왼쪽, diff 가운데, output 아래). 왼쪽 영역의 오른쪽 경계, 아래 영역의 위쪽 경계를 끌어 크기 조정 — 페이지마다 브라우저에 기억, 더블클릭하면 기본 크기. 영역 첫 블록 머리의 꺾쇠로 그 영역을 블록 제목이 적힌 띠로 접으면(left 는 세로, main·bottom 은 가로) 나머지가 자리를 나누고, 띠를 누르면 그 자리에서 펼쳐진다. 블록 이름 앞의 꺾쇠(▾)는 그 블록만 머리만 남기고 접는다 — output 은 머리에 도는 명령과 걸린 시간을 계속 보인다. 같은 영역의 나머지가 자리를 나누고, 블록이 모두 접힌 main·bottom 은 머리 높이만 쓴다. 페이지 바의 `unfold all` 은 그 페이지에서 접힌 영역과 블록을 모두 편다. 접힌 것은 펼 때 불러온다 — 선택·체크를 가진 list 는 그대로 불러온다 |
 
 | 블록 | 명령이 출력하는 것 | 보여 주는 것 |
 |------|--------------------|--------------|
-| `list` | 객체의 JSON 배열 | 표. `columns` 는 `name` 또는 `name:text\|chip\|count`(기본: 첫 행의 모든 필드), 필터 입력, 행마다 `rowActions` 버튼. 페이지의 첫 list 가 선택을 가진다: 행을 고르면 `{{selected.<col>}}` 이 채워진다. 긴 text 값은 칸 너비 — 기본 32em, `name:text:40em`(`em`·`ch`·`px`) — 에서 `…` 로 줄이고 마우스를 올리면 전체를 보인다. `:start` 는 앞을 줄인다(경로용, `path:text:start` → `…/4.49.1/home.json`). 행 버튼 열은 표가 가로로 넘쳐도 오른쪽에 붙어 있다. 칸 머리를 누르면 그 칸으로 정렬(오름차순 → 내림차순 → 명령이 낸 순서, 숫자는 숫자로, `1.2.10` 같은 버전은 `1.2.9` 뒤로)하고, `sort: minVer:desc` 로 처음 순서를 정한다. 선택을 만드는 list 에서는 ↑·↓ 로 위아래 행을 고르고(따라오는 블록은 키를 멈춘 뒤 한 번만 불러온다), `/` 로 필터에 간다(↓ 나 Enter 로 돌아옴) |
+| `list` | 객체의 JSON 배열 | 표. `columns` 는 `name` 또는 `name:text\|chip\|count`(기본: 첫 행의 모든 필드), 필터 입력, 행마다 `rowActions` 버튼. 페이지의 첫 list 가 선택을 가진다: 행을 고르면 `{{selected.<col>}}` 이 채워진다. 긴 text 값은 칸 너비 — 기본 32em, `name:text:40em`(`em`·`ch`·`px`) — 에서 `…` 로 줄이고 마우스를 올리면 전체를 보인다. `:start` 는 앞을 줄인다(경로용, `path:text:start` → `…/4.49.1/home.json`). 행 버튼 열은 표가 가로로 넘쳐도 오른쪽에 붙어 있다. 칸 머리를 누르면 그 칸으로 정렬(오름차순 → 내림차순 → 명령이 낸 순서, 숫자는 숫자로, `1.2.10` 같은 버전은 `1.2.9` 뒤로)하고, `sort: minVer:desc` 로 처음 순서를 정한다. 선택을 만드는 list 에서는 ↑·↓ 로 위아래 행을 고르고(PageUp·PageDown 은 10행, Home·End 는 처음과 끝. 따라오는 블록은 키를 멈춘 뒤 한 번만 불러온다), `/` 로 필터에 간다(↓ 나 Enter 로 돌아옴) |
 | `diff` | unified diff — 아니면 줄 번호 붙은 텍스트로 | Changes 탭과 같은 보기. `segments` 를 주면 고른 값이 `{{seg}}` 를 채우는 전환 버튼. `{values: [prod, stage, dev], optional: true, hide: "{{selected.env}}"}` 로 주면 처음엔 아무것도 고르지 않고 고른 버튼을 다시 누르면 꺼지며(`{{seg}}` 는 빈 값 — diff 대신 파일 자체를 보일 때), 고른 행의 `env` 와 같은 세그먼트는 보이지 않는다 |
 | `html` | 무엇이든 — JSON 은 값으로 전달 | 프로젝트 HTML 파일(`src:`)을 sandbox frame 에 띄운다. 표나 diff로 보이기 어려운 것(값 트리, 이미지 미리보기)용. `run:` 은 생략 가능, `actions:` 는 frame 이 실행할 수 있는 툴바 액션(`- sync`)과 이 블록만의 액션(`- action: {…}`), `inputs:` 는 frame 이 넘길 수 있는 `{{input.*}}` 이름 |
 | `form` | — | 라벨 붙은 입력 칸(`fields: [{name, label, placeholder, default}]`)과 그 값을 `{{input.<field>}}` 로 읽는 `actions` 버튼. 입력한 값은 브라우저별로 기억. `note:` 는 제목 아래 설명 한 줄 |
 | `panel` | — | 입력 칸 없는 form: 제목, 선택 `note:`, `actions` 버튼 줄 — 버튼을 툴바 대신 영역 안에 묶는다. 그 버튼에서 `{{input.*}}` 는 설정 오류(`fields` 를 빼거나 `[]` 로 둔 `form` 도 같다) |
-| `output` | — | 이 페이지의 실행 — 도는 중이면 출력이 오는 대로 쌓이고, 끝나면 명령·종료 코드·시간·출력. 주소(`https://…`)는 새 탭으로 여는 링크(Logs 탭도). 머리 메뉴로 최근 10개 실행을 다시 본다(이 탭에만 둔다) |
+| `output` | — | 이 페이지의 실행 — 도는 중이면 출력이 오는 대로 쌓이고(머리에 지난 초), 끝나면 명령·종료 코드·시간·출력. 0.1초에 64KB 넘게 찍는 명령은 그 끝부분만 온전한 줄부터 보내고, 건너뛴 글자 수를 한 줄로 적는다(끝난 실행의 출력은 전과 같다). 주소(`https://…`)는 새 탭으로 여는 링크(Logs 탭도). 머리 메뉴로 최근 10개 실행을 다시 본다(이 탭에만 둔다) |
 
 - 치환: `{{selected.<col>}}` — 고른 행, 선택을 만드는 list 를 뺀 어디서나. `{{row.<col>}}` — 행 버튼의
   그 행. `{{seg}}` — diff 의 세그먼트. `{{input.<field>}}` — form 의 입력 칸(그 form 의 버튼에서), 또는 html 블록이 자기 액션에 넘기는 값(`inputs:` 에 적은 이름만). `[program, arg, …]` 명령에서만 되고, 값은 자기 인자 안에만
@@ -890,7 +890,7 @@ pages:
   실패하면 멈춘다(`confirm: true` 면 한 번만 묻는다).
 - **폴더 보기.** list 에 `tree: path`(또는 `tree: [env, path]`)를 주면 폴더로 그린다. 그 열 값들을 차례로 이어
   `/` 로 나눈 것이 행의 경로다 — `prod / tpl / home / 4.48.0 / home_banner.txt`. 마지막 조각이 행 이름, 그 앞은
-  폴더이고, 폴더는 아래 행 수를 보이며 누르면 접고 편다. 행은 칸·행 버튼·선택·체크가 평평한 표와 같고, 폴더
+  폴더이고, 폴더는 아래 행 수를 보이며 누르면 접고 편다(⌥/Alt-클릭은 그 아래 폴더까지 함께). 행은 칸·행 버튼·선택·체크가 평평한 표와 같고, 폴더
   체크박스는 그 아래 행을 한 번에 체크한다. 고른 행이 든 폴더를 접으면 폴더에 표시가 남는다. 처음에는 모두
   접힘 — `tree: {columns: [env, path], open: 1}` 은 첫 단계를 펼친다 — 이고, 펼친 폴더는 브라우저별로 기억한다.
   필터는 경로에도 맞추고, 맞는 행과 그 위 폴더를 펼쳐 보인다. 트리 머리는 폴더·행을 이름으로, 다른 칸 머리는
@@ -999,7 +999,7 @@ pages:
   - 확인·입력 창은 대시보드가 frame **바깥에** 그리고, 머리에 출처를 붙인다
     (`"Deploy" (emu.yaml · tool/emu/deploy.html) asks:`). 창의 글자는 HTML 로 해석하지 않고 텍스트로만
     보인다. 한 번에 한 창 — 창이 열려 있을 때 온 요청은 `busy`(`false`/`null`)로 답한다. 지금 보이는
-    페이지의 frame 만 답을 받는다.
+    페이지의, 접히지 않은 frame 만 답을 받는다(접힌 frame 도 데이터는 받는다).
   - `emu.confirm` 은 화면 자신의 질문일 뿐, `confirm:` 을 대신하지 않는다. 그런 액션은 frame 이
     실행해도 대시보드 자체 확인 창(실제 명령 줄 포함)을 거친다 — frame 은 `confirmed` 를 보낼 수 없다.
     다만 두 번 묻지는 않는다:
@@ -1017,10 +1017,51 @@ pages:
   - 도우미 없이도 지금처럼 된다: 데이터는 `{type: "emu:data", …}` 로 오고, `{type: "emu:ready"}` 로 다시
     받으며, `{type: "emu:action", id}` 는 답 없이 액션을 실행한다.
 
+- **실행 중에 묻기** — `interactive: true` 인 액션(툴바·행·form·html 블록 액션)은 명령의 stdin 을 열어
+  두고, 명령이 혼자 정할 수 없는 것을 물을 수 있다: stdout 에 한 줄 `::emu-ask {json}` 을 찍고 한 줄을
+  읽는다.
+
+  ```yaml
+      - action:
+          id: push
+          run: [./tool/push.sh]
+          interactive: true     # ::emu-ask 줄은 출력이 아니라 질문
+          askTimeout: 300       # 질문 하나가 답을 기다리는 초(기본 120)
+  ```
+
+  ```sh
+  printf '::emu-ask %s\n' '{"id":"force","kind":"confirm","title":"남이 바꾼 파일 2개를 덮어쓸까요?","detail":"a.tpl\nb.tpl","danger":true}'
+  read -r answer        # {"id":"force","value":true}
+  ```
+
+  | `kind` | 더 받는 것 | 답의 `value` |
+  |--------|-----------|--------------|
+  | `confirm` | `title, message, detail, danger, button` | `true` / `false` |
+  | `prompt` | `fields: [{name, label, default}]` | `{name: 글자, …}` 또는 `null` |
+  | `choose` | `options: [{value, label} \| 값], multiple` | 고른 값(`multiple` 이면 배열) 또는 `null` |
+
+  - emu 는 그 줄을 출력(실시간 출력·최종 출력·로그)에서 빼고 **실행을 시작한 곳**에서 묻는다: 버튼을 누른
+    대시보드 탭(다른 탭엔 안 뜸), 또는 `emu run` 의 터미널. 창은 커스텀 화면과 같은 대시보드 창 규칙을
+    따른다: 텍스트로만, 머리에 묻는 페이지·액션 이름, 한 번에 한 창(열린 창이 닫힐 때까지 기다림),
+    `danger` 면 포커스는 Cancel. Cancel 은 `false`(confirm) 또는 `null`.
+  - 답할 곳이 없으면 — 터미널 없는 `emu run`(파이프, CI), 탭을 닫음 — 또는 `askTimeout`
+    안에 답이 없으면 `null`. 읽을 수 없는 줄(JSON 이 아님, 모르는 `kind`, 64 KB 초과)도 `null` 로 답하고
+    출력에 `⚠ emu-ask` 경고를 남긴다. `interactive: true` 와 `auto:` 를 함께 쓰면 설정 오류다 — 스스로 도는
+    실행엔 답할 사람이 없다. `EMU_ASK=1` 이면 답할 사람이 있다(아니면 `0`) — 도구는 묻기 전에
+    멈출 수 있다. 「묻지 못하면 멈춘다」로 짜면 emu 없이 돌 때와 같다.
+  - 질문이 답을 기다리는 동안 실행 `timeout:` 은 멈춘다: 명령이 스스로 쓴 시간만 센다(기다린 시간은 실행
+    결과의 `waitedMs`).
+  - 답은 질문에 맞춰 거른다 — confirm 은 bool, prompt 는 그 질문의 칸만, choose 는 그 질문의 항목만 — 질문
+    글자는 길이를 자른다(title 200, message 2000, detail 20000 자). 질문은 명령 실행 권한을 늘리지 않는다:
+    `emu.yaml` 에 적힌 명령이 묻는 것이고, 시작한 곳에만 묻는다.
+  - `interactive: true` 가 없으면 그런 줄은 그냥 출력이고 stdin 은 닫힌다 — 우연히 찍힌 줄로 창이 뜨지
+    않는다. 줄은 `echo` 대신 `printf '%s\n'` 로 찍는다(sh 의 echo 는 JSON 안의 `\n` 을 줄바꿈으로 바꾼다).
+    전체 예제는 [`docs/examples/ask`](docs/examples/ask).
+
 - 토글의 `state` 명령은 `{"on": true|false, "detail"?: "…"}` 을 출력한다(마지막 줄이면 되므로 앞에
   로그를 찍어도 된다). `on`/`off` 로 바꾸고, 바꾼 뒤 상태를 다시 읽는다.
 - 명령은 프로젝트 루트에서 `EMU_PROJECT`, `EMU_PORT`, 그리고 정해지면 `EMU_DEVICE`, `EMU_PLATFORM`,
-  `EMU_APP_ID` 와 함께 실행된다(기기 hook과 같다). stdin 은 닫힌다. 같은 항목은 동시에 두 번 돌지 않는다.
+  `EMU_APP_ID` 와 함께 실행된다(기기 hook과 같다). stdin 은 닫힌다(`interactive: true` 는 빼고). 같은 항목은 동시에 두 번 돌지 않는다.
 - 서버는 설정에 적힌 명령만 실행한다. 요청은 페이지와 항목 id만 보내고 명령은 보내지 않는다.
   `emu.yaml` 은 요청마다 다시 읽으므로 고치면 재시작 없이 반영된다(파일이 바뀌면 열린 대시보드가
   새로 고치고, ↻ 로도 다시 읽는다).
@@ -1040,6 +1081,7 @@ emu run links.link.open --input url=myapp://home   # 입력값과 함께 form �
 emu run deploy.view.plan --input env=stage         # html 블록 자신의 액션, inputs: 의 값과 함께
 emu run tpl.deploy.stage --checked home,card --yes  # {{checked.*}}: check: true list 의 행을 key 로
 emu run tpl.picks.check --row name=home            # check.toggle 은 행 버튼 "check" 로 실행
+emu run templates.push                             # interactive: 터미널이면 여기서 묻고, 파이프면 답은 모두 null
 emu block templates.items          # list 가 보여 주는 것을 표로
 emu block templates.changes --select name=home_banner --seg prod   # 그 행을 고른 것처럼 diff
 ```
