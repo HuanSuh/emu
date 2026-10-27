@@ -77,8 +77,16 @@ class LogStore {
   final File? _persistFile;
   IOSink? _sink;
 
+  /// May hold up to [_slack] entries past [capacity] so trimming happens in
+  /// batches instead of shifting the whole list on every line; [_visible]
+  /// hides that overflow, so readers still see at most [capacity] entries.
   final List<LogEntry> _buffer = [];
   int _seq = 0;
+
+  int get _slack => capacity ~/ 10 + 1;
+
+  Iterable<LogEntry> get _visible =>
+      _buffer.length > capacity ? _buffer.skip(_buffer.length - capacity) : _buffer;
 
   final _controller = StreamController<LogEntry>.broadcast();
 
@@ -103,7 +111,7 @@ class LogStore {
       source: source,
     );
     _buffer.add(entry);
-    if (_buffer.length > capacity) {
+    if (_buffer.length > capacity + _slack) {
       _buffer.removeRange(0, _buffer.length - capacity);
     }
     _sink?.write(entry.toJsonl());
@@ -131,7 +139,7 @@ class LogStore {
     if (grep != null && grep.isNotEmpty) {
       re = RegExp(grep, caseSensitive: false);
     }
-    var result = _buffer.where((e) {
+    var result = _visible.where((e) {
       if (sinceSeq != null && e.seq <= sinceSeq) return false;
       if (since != null && e.timestamp.isBefore(since)) return false;
       if (level != null && e.level.rank < level.rank) return false;
