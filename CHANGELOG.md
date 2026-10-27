@@ -6,6 +6,11 @@
 
 ## [Unreleased]
 
+### Fixed
+- hot reload/restart 를 기다리는 동안 flutter 프로세스가 죽으면 상태가 다시 `running` 으로 덮여 `/api/status`·대시보드·에이전트가
+  죽은 앱을 실행 중으로 보던 문제. 이제 프로세스가 죽었으면 `failed`/`stopped` 가 그대로 남고, 이미 죽은 앱에 reload 를 보내도
+  `running` 이 되지 않는다. 프로세스가 살아 있는데 reload 가 오류로 끝나면 `running` 은 유지하되 `lastReloadAt` 은 갱신하지 않는다.
+
 ## [0.17.2] - 2026-10-27
 
 ### Fixed
