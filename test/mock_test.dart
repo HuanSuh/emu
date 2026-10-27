@@ -249,6 +249,60 @@ mocks:
       expect((await send('GET', '/v1/items')).$2, 'changed');
     });
 
+    test('the config is read once, and again only when emu.yaml, emu.local.yaml or a scenario file changes', () async {
+      // Settled files: written well before now, so their mtimes can be trusted.
+      final old = DateTime.now().subtract(const Duration(minutes: 1));
+      void settle() {
+        for (final f in [root.path, '${root.path}/mocks', ...root.listSync(recursive: true).map((e) => e.path)]) {
+          if (FileSystemEntity.isFileSync(f)) File(f).setLastModifiedSync(old);
+        }
+      }
+
+      settle();
+      final first = server.load();
+      server.active = 'empty';
+      await Future.wait([for (var i = 0; i < 5; i++) send('GET', '/v1/items')]);
+      expect(server.load(), same(first)); // not re-read per request
+
+      File('${root.path}/emu.local.yaml').writeAsStringSync('mocks:\n  hosts: [127.0.0.1, local.test]\n');
+      expect(server.load().hosts, ['127.0.0.1', 'local.test']);
+      settle();
+      final second = server.load();
+      expect(server.load(), same(second));
+
+      File('${root.path}/mocks/filed.json').writeAsStringSync('[{"match": {"path": "/v2"}, "respond": {"body": "filed"}}]');
+      server.active = 'filed';
+      expect((await send('GET', '/v2')).$2, 'filed');
+      settle();
+      final third = server.load();
+      expect(server.load(), same(third));
+
+      // An edit that keeps the size and (on a coarse clock) the mtime still shows.
+      File('${root.path}/mocks/filed.json').writeAsStringSync('[{"match": {"path": "/v2"}, "respond": {"body": "FILED"}}]');
+      expect((await send('GET', '/v2')).$2, 'FILED');
+      File('${root.path}/mocks/filed.json').deleteSync();
+      expect(server.load().scenarios.containsKey('filed'), isFalse);
+    });
+
+    test('a request that fails on the way out does not leave its connection to the real server open', () async {
+      final real = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => real.close(force: true));
+      real.listen((req) => req.response.close());
+      // A header value the client side won't send (not ASCII): it fails after
+      // the connection to the real server is already open.
+      final app = await Socket.connect(InternetAddress.loopbackIPv4, port + 1);
+      addTearDown(app.destroy);
+      final answer = StringBuffer();
+      app.listen((d) => answer.write(latin1.decode(d)));
+      app.add(latin1.encode('GET /v1/x HTTP/1.1\r\nHost: 127.0.0.1:${real.port}\r\nx-name: caf\u00e9\r\n\r\n'));
+      for (var i = 0; i < 50 && (hits.isEmpty || real.connectionsInfo().total > 0); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      expect(answer.toString(), startsWith('HTTP/1.1 502'));
+      expect(hits.single.error, contains('Invalid HTTP header field value'));
+      expect(real.connectionsInfo().total, 0);
+    });
+
     test('a host not in mocks.hosts is refused, not proxied', () async {
       final client = HttpClient();
       addTearDown(client.close);
