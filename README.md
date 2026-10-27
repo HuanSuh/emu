@@ -1024,6 +1024,9 @@ pages:
 - `watch: ["templates/**"]` on a list or diff fetches it again when a matching project file
   changes — git-ignored work folders included. The picked row, the segment and a clicked sort
   are remembered per browser.
+- While a block is fetched again — a watched file changed, a run ended, its page is back on
+  screen — it keeps showing what it had and is drawn again only if the answer differs. It shows
+  as loading (dimmed) only when fetched for the first time or for a new pick or segment.
 - Instead of `run:`, an action may have `openUrl: "myapp://item?id={{row.id}}"`: it opens the
   link on the device the way `emu open-url` does (argv only, the device-shell quoting, then
   waits for the app to settle) and refreshes the screen panel. A deep-link page needs no

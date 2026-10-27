@@ -148,7 +148,9 @@ $ emu ls
   서명·notarization 이 필요 없다. `emu app uninstall`, `emu app open`.
 - Finder 로 뜬 앱의 PATH 는 최소라 flutter·adb·xcrun 을 못 찾는다 → 설치 때 셸의 `PATH` 와 emu 경로를
   `Contents/Resources/app.json` 에 적고, 앱이 띄우는 허브(그리고 허브가 실행하는 `emu up`)가 이 PATH 를 물려받는다.
-- 앱 소스 해시를 `Info.plist` 에 적어 두고, `emu update` 는 앱이 설치돼 있고 해시가 바뀌었으면 다시 빌드한다.
+- 앱 소스 해시를 `Info.plist`(`CFBundleVersion`)와 `app.json` 에 적어 두고, `emu update`(`emu app install --if-changed`)는
+  앱이 설치돼 있고 해시가 바뀌었거나 앱이 실행하는 emu 바이너리 경로가 바뀌었으면(플러그인 업데이트는 새 캐시 폴더에
+  빌드) 다시 빌드한다.
 
 ### 창
 - 열면 `~/.emu/hub.json` 으로 허브를 찾고, 없으면 `emu hub --no-open` 으로 띄운 뒤 그 주소를 WKWebView 로 연다.
