@@ -697,7 +697,9 @@ emu report --mine                               # 내가 보낸 리포트와 상
 
 `emu up` 이 `http://127.0.0.1:4577` 에 대시보드를 띄운다:
 
-- 실시간 로그 스트림 — **정규식 검색**, **레벨 필터**(debug/info/warn/error), 매치 하이라이트, copy, clear.
+- 실시간 로그 스트림 — **정규식 검색**, **레벨 필터**(드롭다운: all/debug/info/warn/error), 매치 하이라이트, copy, clear.
+  검색창이 툴바의 남는 폭을 차지하고, 로그 옵션(`autoscroll`·`bulk`·`fold`·`expand all`/`collapse all`·`clear`·`copy`)은
+  카운트 옆 `⋯` 메뉴에 모았다(체크 항목은 메뉴 안에서 토글, 방향키로 이동, Esc·바깥 클릭으로 닫힘).
   `autoscroll` 은 바닥에 있을 때만 새 줄을 따라간다. `bulk`(기본 켬)는 함께 들어온 줄을 한 프레임에 한 번에
   그려, 수천 줄이 한꺼번에 와도 한 줄씩 기어가지 않고 바로 붙는다(끄면 오는 대로 한 줄씩). `fold` 는 시간(보이는
   초)·레벨·소스(`app`·`stderr`·`system`·`ext`)가 같은 연속된 줄을 첫 줄 + `▸ N lines` 로 접는다 — 눌러 그

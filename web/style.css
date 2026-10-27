@@ -69,15 +69,34 @@ button:disabled { opacity: .5; cursor: default; pointer-events: none; }
 
 .toolbar { background: var(--bg); }
 #search {
-  flex: 0 1 360px; background: var(--bg-alt); color: var(--fg);
+  flex: 1 1 0; min-width: 60px; background: var(--bg-alt); color: var(--fg);
   border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 12px;
 }
 #search:focus { outline: none; border-color: var(--accent); }
 
 .chk { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; }
-.levels { display: flex; gap: 4px; }
-.lvl { padding: 4px 8px; font-size: 11px; }
-.lvl.active { border-color: var(--accent); color: #fff; }
+/* Search takes what's left of the Logs toolbar; these keep their width. */
+#log-tools { gap: 8px; }
+#log-tools .chk, #log-level, .more, #log-tools .count { flex: none; }
+#log-tools .count { min-width: 24px; }
+.more { padding: 3px 9px; font-size: 14px; line-height: 1; }
+.more[aria-expanded="true"] { border-color: var(--accent); color: #fff; }
+/* A button's menu (the hub's row menu, here for the Logs options): fixed, placed
+   under its button by app.js and kept on screen. */
+.menu-pop {
+  position: fixed; z-index: 20; min-width: 170px; padding: 4px; background: var(--bg-alt);
+  border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 24px #0008;
+  display: flex; flex-direction: column;
+}
+.menu-pop[hidden], .menu-pop [hidden] { display: none; }
+.menu-pop button {
+  text-align: left; padding: 6px 10px 6px 26px; border-radius: 6px; background: none; border: 0;
+  position: relative; white-space: nowrap;
+}
+.menu-pop button:hover, .menu-pop button:focus-visible { background: #30363d; outline: none; }
+.menu-pop button:active { transform: none; }
+.menu-pop [aria-checked="true"]::before { content: "✓"; position: absolute; left: 9px; color: var(--accent); }
+.menu-pop hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
 .grow { flex: 1; }
 .count { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 40px; text-align: right; }
 
@@ -185,7 +204,7 @@ button:disabled { opacity: .5; cursor: default; pointer-events: none; }
 .tool-group[hidden] { display: none; }
 /* `.toolbar { display: flex }` outranks the UA's [hidden] rule (dashboard pages hide it). */
 .toolbar[hidden] { display: none; }
-#diff-scope, #diff-base, #mock-active {
+#diff-scope, #diff-base, #mock-active, #log-level {
   background: var(--bg-alt); color: var(--fg); border: 1px solid var(--border);
   border-radius: 6px; padding: 5px 8px; font-size: 12px;
 }

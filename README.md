@@ -751,8 +751,11 @@ emu report --mine                               # your reports and their status 
 
 `emu up` serves a dashboard at `http://127.0.0.1:4577`:
 
-- Live log stream — **regex search**, **level filter** (debug/info/warn/error),
-  match highlighting, copy, clear. `autoscroll` follows new lines while you are at the bottom.
+- Live log stream — **regex search**, **level filter** (a dropdown: all/debug/info/warn/error),
+  match highlighting, copy, clear. The search box takes the toolbar's free width; the log options
+  — `autoscroll`, `bulk`, `fold`, `expand all` / `collapse all`, `clear`, `copy` — sit in the `⋯`
+  menu next to the count (checks toggle in place; arrow keys move, Esc or a click outside closes it).
+  `autoscroll` follows new lines while you are at the bottom.
   `bulk` (on by default) draws the lines that arrive together once per frame, so a burst of
   thousands of lines lands at once instead of crawling in line by line; off draws each line as it
   comes. `fold` folds consecutive lines with the same second (as shown), level and source

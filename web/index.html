@@ -40,20 +40,23 @@
         <div class="tool-group" id="log-tools">
           <input id="search" type="text" placeholder="search logs (regex)…" autocomplete="off" />
           <label class="chk"><input type="checkbox" id="regex" /> regex</label>
-          <div class="levels">
-            <button class="lvl active" data-level="all">all</button>
-            <button class="lvl" data-level="debug">debug</button>
-            <button class="lvl" data-level="info">info</button>
-            <button class="lvl" data-level="warn">warn</button>
-            <button class="lvl" data-level="error">error</button>
+          <select id="log-level" title="Show lines of this level" aria-label="Level">
+            <option value="all">all</option>
+            <option value="debug">debug</option>
+            <option value="info">info</option>
+            <option value="warn">warn</option>
+            <option value="error">error</option>
+          </select>
+          <button id="log-more" class="more" title="Log options" aria-label="Log options" aria-haspopup="menu" aria-expanded="false" aria-controls="log-menu">⋯</button>
+          <div class="menu-pop" id="log-menu" role="menu" aria-label="Log options" hidden>
+            <button role="menuitemcheckbox" id="autoscroll" aria-checked="true" title="Follow new lines while at the bottom">autoscroll</button>
+            <button role="menuitemcheckbox" id="log-bulk" aria-checked="true" title="Draw lines that arrive together once per frame, not one by one">bulk</button>
+            <button role="menuitemcheckbox" id="log-fold" aria-checked="false" title="Fold consecutive lines with the same second, level and source into one">fold</button>
+            <button role="menuitem" id="log-fold-all" title="Unfold or fold every run of lines" hidden>expand all</button>
+            <hr role="separator" />
+            <button role="menuitem" id="btn-clear" title="Clear log view">clear</button>
+            <button role="menuitem" id="btn-copy" title="Copy visible logs">copy</button>
           </div>
-          <span class="grow"></span>
-          <label class="chk"><input type="checkbox" id="autoscroll" checked /> autoscroll</label>
-          <label class="chk" title="Draw lines that arrive together once per frame, not one by one"><input type="checkbox" id="log-bulk" checked /> bulk</label>
-          <label class="chk" title="Fold consecutive lines with the same second, level and source into one"><input type="checkbox" id="log-fold" /> fold</label>
-          <button id="log-fold-all" title="Unfold or fold every run of lines" hidden>expand all</button>
-          <button id="btn-clear" title="Clear log view">clear</button>
-          <button id="btn-copy" title="Copy visible logs">copy</button>
           <span class="count" id="count">0</span>
         </div>
         <div class="tool-group" id="diff-tools" hidden>

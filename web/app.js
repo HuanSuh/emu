@@ -29,6 +29,9 @@ const els = {
   bulk: document.getElementById('log-bulk'),
   fold: document.getElementById('log-fold'),
   foldAll: document.getElementById('log-fold-all'),
+  level: document.getElementById('log-level'),
+  more: document.getElementById('log-more'),
+  menu: document.getElementById('log-menu'),
   statePill: document.getElementById('state-pill'),
   deviceName: document.getElementById('device-name'),
   devtools: document.getElementById('devtools'),
@@ -707,6 +710,7 @@ function renderPatch(patch) {
 let debugTab = 'logs';
 function showTab(name) {
   debugTab = name;
+  closeLogMenu();
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.getElementById('log').hidden = name !== 'logs';
   document.getElementById('log-tools').hidden = name !== 'logs';
@@ -797,12 +801,14 @@ document.getElementById('btn-shot').onclick = async () => {
 };
 
 document.getElementById('btn-clear').onclick = () => {
+  closeLogMenu(true);
   state.entries = [];
   pending = [];
   render();
   api('/api/logs/clear', { method: 'POST' });
 };
 document.getElementById('btn-copy').onclick = () => {
+  closeLogMenu(true);
   flush(); // lines still waiting for their frame
   const text = state.entries.filter(matches).map(e => e.text).join('\n');
   navigator.clipboard.writeText(text).then(() => toast('copied'));
@@ -814,7 +820,13 @@ els.search.addEventListener('input', () => {
   render();
 });
 els.regex.addEventListener('change', () => { state.regex = els.regex.checked; state._re = null; render(); });
-els.autoscroll.addEventListener('change', () => { state.autoscroll = els.autoscroll.checked; });
+// The menu's checks are menuitemcheckbox buttons: aria-checked is their state.
+const isMenuChecked = (el) => el.getAttribute('aria-checked') === 'true';
+const setMenuChecked = (el, on) => el.setAttribute('aria-checked', String(on));
+els.autoscroll.addEventListener('click', () => {
+  state.autoscroll = !state.autoscroll;
+  setMenuChecked(els.autoscroll, state.autoscroll);
+});
 
 // bulk and fold, kept per browser.
 const LOG_PREFS_KEY = 'emu.logPrefs';
@@ -823,44 +835,99 @@ try {
   if (typeof p.bulk === 'boolean') state.bulk = p.bulk;
   if (typeof p.fold === 'boolean') state.fold = p.fold;
 } catch (_) {}
-els.bulk.checked = state.bulk;
-els.fold.checked = state.fold;
+setMenuChecked(els.bulk, state.bulk);
+setMenuChecked(els.fold, state.fold);
 els.foldAll.hidden = !state.fold;
 function saveLogPrefs() {
   try { localStorage.setItem(LOG_PREFS_KEY, JSON.stringify({ bulk: state.bulk, fold: state.fold })); } catch (_) {}
 }
-els.bulk.addEventListener('change', () => {
-  state.bulk = els.bulk.checked;
+els.bulk.addEventListener('click', () => {
+  state.bulk = !isMenuChecked(els.bulk);
+  setMenuChecked(els.bulk, state.bulk);
   saveLogPrefs();
   if (!state.bulk) flush();
 });
-els.fold.addEventListener('change', () => {
-  state.fold = els.fold.checked;
+els.fold.addEventListener('click', () => {
+  state.fold = !isMenuChecked(els.fold);
+  setMenuChecked(els.fold, state.fold);
   saveLogPrefs();
   flush();
   render();
+  if (logMenuOpen()) placeLogMenu(); // expand all came or went
 });
-els.foldAll.onclick = () => setAllFolds(!state.foldOpenAll);
+els.foldAll.onclick = () => { closeLogMenu(true); setAllFolds(!state.foldOpenAll); };
 els.log.addEventListener('click', (ev) => {
   const badge = ev.target.closest('.fold');
   const run = badge && folds.get(Number(badge.parentElement.dataset.g));
   if (run) toggleRun(run, !run.open);
 });
 
-document.querySelectorAll('.lvl').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.lvl').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    state.level = btn.dataset.level;
-    render();
-  });
+els.level.value = state.level; // not one the browser restored on reload
+els.level.addEventListener('change', () => {
+  state.level = els.level.value;
+  render();
 });
+
+// ---- log options menu ----------------------------------------------------------
+// The ⋯ button's menu, like the hub's row menu: under the button, kept on
+// screen, closed by a click outside, Esc or Tab. Arrows move between items.
+
+const logMenuItems = () => [...els.menu.querySelectorAll('button')].filter(b => !b.hidden && !b.disabled);
+const logMenuOpen = () => !els.menu.hidden;
+for (const b of els.menu.querySelectorAll('button')) b.tabIndex = -1;
+
+// Right edges lined up with the button's, flipped above it when there's no room below.
+function placeLogMenu() {
+  const r = els.more.getBoundingClientRect();
+  const w = els.menu.offsetWidth, h = els.menu.offsetHeight;
+  els.menu.style.left = `${Math.max(8, Math.min(r.right - w, innerWidth - w - 8))}px`;
+  els.menu.style.top = r.bottom + h + 8 > innerHeight ? `${Math.max(8, r.top - h - 4)}px` : `${r.bottom + 4}px`;
+}
+
+function openLogMenu(focus = 0) {
+  els.menu.hidden = false;
+  placeLogMenu();
+  els.more.setAttribute('aria-expanded', 'true');
+  logMenuItems().at(focus)?.focus();
+}
+
+function closeLogMenu(refocus = false) {
+  if (!logMenuOpen()) return;
+  els.menu.hidden = true;
+  els.more.setAttribute('aria-expanded', 'false');
+  if (refocus) els.more.focus();
+}
+
+els.more.addEventListener('click', () => logMenuOpen() ? closeLogMenu() : openLogMenu());
+els.more.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    openLogMenu(e.key === 'ArrowDown' ? 0 : -1);
+  }
+});
+els.menu.addEventListener('keydown', (e) => {
+  const items = logMenuItems();
+  const i = items.indexOf(document.activeElement);
+  let next = null;
+  if (e.key === 'ArrowDown') next = items[(i + 1) % items.length];
+  else if (e.key === 'ArrowUp') next = items[(i - 1 + items.length) % items.length];
+  else if (e.key === 'Home') next = items[0];
+  else if (e.key === 'End') next = items.at(-1);
+  else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeLogMenu(true); return; }
+  else if (e.key === 'Tab') { closeLogMenu(true); return; }
+  if (next) { e.preventDefault(); next.focus(); }
+});
+document.addEventListener('mousedown', (e) => {
+  if (logMenuOpen() && !els.menu.contains(e.target) && !els.more.contains(e.target)) closeLogMenu();
+});
+addEventListener('resize', () => closeLogMenu());
 
 // Keyboard: r = reload, R = restart, s = fold or unfold the screen panel (when not typing in a field).
 document.addEventListener('keydown', (e) => {
   if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return; // don't hijack typing in any field
   if (e.metaKey || e.ctrlKey || e.altKey) return; // a browser shortcut (⌘R reloads the page, not the app)
   if (dialogOpen()) return; // a dialog is up (pages.js)
+  if (logMenuOpen()) return; // keys go to the Logs menu
   if (e.key === 'r') action('reload', 'hot reload');
   else if (e.key === 'R') action('restart', 'hot restart');
   else if (e.key === 's') setScreenOpen(!screenOpen());
