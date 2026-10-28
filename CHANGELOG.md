@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.17.3] - 2026-10-28
+
 ### Fixed
 - `emu update` 가 잠금 파일을 만들고 pid 를 쓰기 전에 죽으면 빈 `~/.emu/update.lock` 이 남아, 손으로 지우기 전까지 `emu update`
   와 허브 Update 버튼이 늘 "another emu update is running" 으로 거절되던 문제. 이제 빈 잠금 파일이라도 몇 초 넘게 지났으면 남은
@@ -19,7 +21,6 @@
 - 로그가 보관 상한(기본 5만 줄)에 찬 뒤로는 줄이 들어올 때마다 버퍼 전체를 한 칸씩 옮겨, 로그가 많은 앱에서 세션이 느려지던
   문제. 이제 넘친 줄을 모아서 한 번에 버린다(보이는 줄 수·`--since` 커서는 그대로). 변경 diff 를 뜨다 실패했을 때 임시 폴더
   정리까지 실패하면 원래 오류 대신 정리 오류가 보이던 것도 고쳐, 이제 원래 오류가 그대로 보인다.
-
 - hot reload/restart 를 기다리는 동안 flutter 프로세스가 죽으면 상태가 다시 `running` 으로 덮여 `/api/status`·대시보드·에이전트가
   죽은 앱을 실행 중으로 보던 문제. 이제 프로세스가 죽었으면 `failed`/`stopped` 가 그대로 남고, 이미 죽은 앱에 reload 를 보내도
   `running` 이 되지 않는다. 프로세스가 살아 있는데 reload 가 오류로 끝나면 `running` 은 유지하되 `lastReloadAt` 은 갱신하지 않는다.
@@ -500,7 +501,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.17.2...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.17.3...HEAD
+[0.17.3]: https://github.com/HuanSuh/emu/compare/v0.17.2...v0.17.3
 [0.17.2]: https://github.com/HuanSuh/emu/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/HuanSuh/emu/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/HuanSuh/emu/compare/v0.16.0...v0.17.0
