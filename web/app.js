@@ -112,7 +112,15 @@ function highlight(text) {
     re = state.regex ? new RegExp('(' + state.search + ')', 'ig')
                      : new RegExp('(' + escapeRe(state.search) + ')', 'ig');
   } catch (_) { return escapeHtml(text); }
-  return escapeHtml(text).replace(re, '<mark>$1</mark>');
+  // Matched in the raw text and escaped piece by piece, so a search never
+  // lands inside an entity (&amp; …). Empty matches mark nothing.
+  let out = '', at = 0;
+  for (const m of text.matchAll(re)) {
+    if (!m[0]) continue;
+    out += escapeHtml(text.slice(at, m.index)) + `<mark>${escapeHtml(m[0])}</mark>`;
+    at = m.index + m[0].length;
+  }
+  return out + escapeHtml(text.slice(at));
 }
 
 // http(s) addresses in [text] as links that open in a new tab; the rest goes

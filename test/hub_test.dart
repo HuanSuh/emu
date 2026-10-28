@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:emu/src/hub.dart';
 import 'package:emu/src/registry.dart';
+import 'package:emu/src/server.dart' show contentTypeFor;
 import 'package:http/http.dart' as http;
 import 'package:test/test.dart';
 
@@ -13,11 +14,13 @@ void main() {
   late List<String> fakeCalls;
   late List<List<String>> ran;
   late String base;
+  late List<int> exits;
 
   setUp(() async {
     tmp = Directory.systemTemp.createTempSync('emu_hub_');
     fakeCalls = [];
     ran = [];
+    exits = [];
     fakeSession = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     fakeSession.listen((req) async {
       fakeCalls.add('${req.method} ${req.uri.path} token=${req.headers.value('x-emu-token')}');
@@ -47,6 +50,7 @@ void main() {
       },
       latestVersion: () async => '99.0.0',
       fetchChangelog: () async => '## [Unreleased]\n\n## [99.0.0] - 2030-01-01\n- big\n\n## [0.0.1] - 2020-01-01\n- old\n',
+      exitProcess: exits.add,
     );
     await hub.start(port: 0);
     base = 'http://127.0.0.1:${hub.port}';
@@ -138,6 +142,71 @@ void main() {
     expect((first['sessions'] as List).single['name'], 'my_app');
   });
 
+  group('guard, over every route', () {
+    final routes = _hubRoutes();
+
+    test('the route list is read from the code', () {
+      expect(routes.length, greaterThan(10));
+      expect(routes, containsAll(['/api/status', '/api/sessions', '/api/shutdown', '/api/projects/start', '/api/stream']));
+    });
+
+    test('only GET /api/status goes without the token; Host and Origin are checked first', () async {
+      for (final path in routes) {
+        for (final method in ['GET', 'POST']) {
+          final open = path == '/api/status' && method == 'GET';
+          final where = '$method $path';
+          expect((await _call(hub.port, method, path)).status, open ? 200 : 401, reason: where);
+          expect((await _call(hub.port, method, path, headers: {'X-Emu-Token': 'x' * 64})).status, open ? 200 : 401,
+              reason: where);
+          expect((await _call(hub.port, method, path, host: 'evil.test:${hub.port}', headers: auth())).status, 403,
+              reason: where);
+          for (final origin in ['http://evil.test', 'http://127.0.0.1:1', 'null']) {
+            expect((await _call(hub.port, method, path, headers: {...auth(), 'Origin': origin})).status, 403,
+                reason: '$where from $origin');
+          }
+        }
+      }
+      expect(fakeCalls, isEmpty);
+      expect(ran, isEmpty);
+      expect(exits, isEmpty);
+    });
+
+    test('static files: the allow list only, without the token, behind the Host check', () async {
+      final hubSource = File('lib/src/hub.dart').readAsStringSync();
+      final allowed = {
+        for (final m in RegExp(r"'(/[a-z.-]*)': '([^']+)'").allMatches(hubSource)) m.group(1)!: m.group(2)!,
+      };
+      expect(allowed.keys, containsAll(['/', '/hub.js', '/hub.css']));
+      for (final MapEntry(key: path, value: rel) in allowed.entries) {
+        final r = await _call(hub.port, 'GET', path);
+        expect(r.status, 200, reason: path);
+        expect(r.type, contentTypeFor(rel).split(';').first, reason: path);
+        expect(r.body.contains(hub.token), path == '/', reason: path);
+        expect((await _call(hub.port, 'GET', path, host: 'evil.test')).status, 403, reason: path);
+      }
+      for (final path in ['/index.html', '/app.js', '/hub/index.html', '/hub/hub.js', '/style.css', '/nope']) {
+        expect((await _call(hub.port, 'GET', path)).status, 404, reason: path);
+      }
+    });
+
+    test('an unknown route is a JSON 404 once the token is in', () async {
+      final r = await _call(hub.port, 'GET', '/api/nope', headers: auth());
+      expect(r.status, 404);
+      expect(r.type, 'application/json');
+    });
+
+    test('shutdown closes the hub, then exits', () async {
+      // The close may cut the answer off; the CLI doesn't wait for it.
+      await _call(hub.port, 'POST', '/api/shutdown', headers: auth()).then((r) => expect(r.status, 200),
+          onError: (Object e) => expect(e, isA<HttpException>()));
+      for (var i = 0; i < 100 && exits.isEmpty; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      expect(exits, [0]);
+      expect(File('${tmp.path}/hub.json').existsSync(), isFalse);
+    });
+  });
+
   group('hubFrameAncestors', () {
     test('the running hub origin may frame a dashboard', () async {
       expect(frameAncestorsFor(HubInfo(port: 4576, pid: pid)), 'http://127.0.0.1:4576 http://localhost:4576');
@@ -161,4 +230,35 @@ void main() {
     expect(changelogBetween(log, '0.1.0', '0.3.0'), '## [0.3.0] - x\n- c\n\n## [0.2.0] - x\n- b');
     expect(changelogBetween(log, '0.2.0', '0.2.0'), '');
   });
+}
+
+/// Every `/api/` route the hub answers, read from its dispatch code, with a
+/// concrete path for the session actions.
+List<String> _hubRoutes() {
+  final hub = File('lib/src/hub.dart').readAsStringSync();
+  final report = File('lib/src/report_api.dart').readAsStringSync();
+  final actions = RegExp(r'/\(([a-z|]+)\)\$').firstMatch(hub)!.group(1)!.split('|');
+  return {
+    for (final m in RegExp(r"path == '(/api/[^']+)'").allMatches(hub)) m.group(1)!,
+    for (final a in actions) '/api/sessions/0123456789ab/$a',
+    for (final m in RegExp(r"path == '(/api/report[^']*)'").allMatches(report)) m.group(1)!,
+    '/api/nope',
+  }.toList()
+    ..sort();
+}
+
+/// One request with full control of the headers, `Host` included.
+Future<({int status, String? type, String body})> _call(int port, String method, String path,
+    {String? host, Map<String, String> headers = const {}}) async {
+  final client = HttpClient();
+  try {
+    final req = await client.openUrl(method, Uri.parse('http://127.0.0.1:$port$path'));
+    if (host != null) req.headers.set(HttpHeaders.hostHeader, host);
+    headers.forEach(req.headers.set);
+    final res = await req.close();
+    final body = utf8.decode(await res.expand((b) => b).toList(), allowMalformed: true);
+    return (status: res.statusCode, type: res.headers.contentType?.mimeType, body: body);
+  } finally {
+    client.close(force: true);
+  }
 }

@@ -6,6 +6,28 @@
 
 ## [Unreleased]
 
+## [0.17.3] - 2026-10-28
+
+### Fixed
+- `emu update` 가 잠금 파일을 만들고 pid 를 쓰기 전에 죽으면 빈 `~/.emu/update.lock` 이 남아, 손으로 지우기 전까지 `emu update`
+  와 허브 Update 버튼이 늘 "another emu update is running" 으로 거절되던 문제. 이제 빈 잠금 파일이라도 몇 초 넘게 지났으면 남은
+  것으로 보고 지운 뒤 잡는다.
+- 개발 모드(`EMU_WEB_DIR` 또는 소스의 `web/`)에서 대시보드 정적 파일 경로가 web 디렉터리 밖을 가리키면 디스크에서 읽지 않는다.
+- `emu down` 때 서버 정리 중 한 단계가 실패하면(`.emu/` 에 쓸 수 없어 `server.json` 을 못 지우는 등) 나머지 정리를 건너뛰고
+  서버 프로세스가 끝나지 않던 문제. 이제 단계마다 따로 정리해 세션 목록·기기 점유·`flutter` 프로세스·포트를 모두 놓고 종료한다.
+- mock 서버가 요청마다 emu.yaml·emu.local.yaml·시나리오 파일을 다시 읽어, 앱이 시작할 때 API 를 한꺼번에 부르면 응답이
+  밀리던 문제. 이제 설정을 기억해 두고 그 파일들이 바뀌었을 때만 다시 읽는다(고치면 다음 요청부터 바로 적용되는 건 그대로).
+  실제 서버로 넘기던 요청이 중간에 실패하면(앱이 보낸 헤더를 보낼 수 없을 때 등) 실제 서버로 연 연결이 열린 채 남던 것도 이제 닫는다.
+- 로그가 보관 상한(기본 5만 줄)에 찬 뒤로는 줄이 들어올 때마다 버퍼 전체를 한 칸씩 옮겨, 로그가 많은 앱에서 세션이 느려지던
+  문제. 이제 넘친 줄을 모아서 한 번에 버린다(보이는 줄 수·`--since` 커서는 그대로). 변경 diff 를 뜨다 실패했을 때 임시 폴더
+  정리까지 실패하면 원래 오류 대신 정리 오류가 보이던 것도 고쳐, 이제 원래 오류가 그대로 보인다.
+- hot reload/restart 를 기다리는 동안 flutter 프로세스가 죽으면 상태가 다시 `running` 으로 덮여 `/api/status`·대시보드·에이전트가
+  죽은 앱을 실행 중으로 보던 문제. 이제 프로세스가 죽었으면 `failed`/`stopped` 가 그대로 남고, 이미 죽은 앱에 reload 를 보내도
+  `running` 이 되지 않는다. 프로세스가 살아 있는데 reload 가 오류로 끝나면 `running` 은 유지하되 `lastReloadAt` 은 갱신하지 않는다.
+- 대시보드 Logs 검색 강조가 HTML 엔터티를 깨뜨리던 문제. `&`·`<` 가 든 줄에서 `amp`·`lt` 를 찾거나 regex 로 `;` 등을 찾으면
+  `&<mark>amp</mark>;` 처럼 엔터티 안쪽이 강조돼 화면에 깨진 글자가 보였다. 이제 원문에서 찾은 구간만 강조하고, 빈 일치는
+  강조하지 않는다.
+
 ## [0.17.2] - 2026-10-27
 
 ### Fixed
@@ -479,7 +501,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.17.2...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.17.3...HEAD
+[0.17.3]: https://github.com/HuanSuh/emu/compare/v0.17.2...v0.17.3
 [0.17.2]: https://github.com/HuanSuh/emu/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/HuanSuh/emu/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/HuanSuh/emu/compare/v0.16.0...v0.17.0

@@ -212,6 +212,17 @@ void main() {
       await git(['cat-file', '-e', own]);
     });
 
+    test('a failed temp cleanup does not hide the capture error', () async {
+      // The temp dir is never created: seeding the index fails, and so does
+      // the cleanup — the caller must still see the seeding error.
+      final parent = _MissingTempParent(Directory.systemTemp.path);
+      final err = await IOOverrides.runZoned(
+        () => diff.captureTree().then<Object?>((_) => null, onError: (Object e) => e),
+        getSystemTempDirectory: () => parent,
+      );
+      expect(err, isA<FileSystemException>().having((e) => e.message, 'message', contains('copy')));
+    });
+
     test('head on an unborn branch diffs against the empty tree', () async {
       final fresh = Directory.systemTemp.createTempSync('emu-diff-unborn-');
       addTearDown(() => fresh.deleteSync(recursive: true));
@@ -227,4 +238,19 @@ void main() {
       expect(await GitDiff(plain.path).isRepo(), isFalse);
     });
   });
+}
+
+/// A temp parent whose `createTempSync` hands out a directory that doesn't exist.
+class _MissingTempParent implements Directory {
+  _MissingTempParent(this.path);
+
+  @override
+  final String path;
+
+  @override
+  Directory createTempSync([String? prefix]) =>
+      Directory('$path/emu-missing-$pid-${DateTime.now().microsecondsSinceEpoch}');
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
