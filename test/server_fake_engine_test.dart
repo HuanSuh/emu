@@ -113,19 +113,19 @@ class FakeEngine implements AppEngine {
   }
 }
 
+/// One keep-alive client per test, and waits that look at the server in
+/// process: a new connection per call or poll churns through ephemeral
+/// ports, which other test files bind (port 0) and expect free once closed.
+late HttpClient _client;
+
 Future<({int status, Map<String, dynamic> body})> _call(EmuServer server, String method, String path,
     {String? body}) async {
-  final client = HttpClient();
-  try {
-    final req = await client.openUrl(method, Uri.parse('http://127.0.0.1:${server.port}$path'));
-    req.headers.set('X-Emu-Token', server.token);
-    if (body != null) req.write(body);
-    final res = await req.close();
-    final text = utf8.decode(await res.expand((b) => b).toList());
-    return (status: res.statusCode, body: jsonDecode(text) as Map<String, dynamic>);
-  } finally {
-    client.close(force: true);
-  }
+  final req = await _client.openUrl(method, Uri.parse('http://127.0.0.1:${server.port}$path'));
+  req.headers.set('X-Emu-Token', server.token);
+  if (body != null) req.write(body);
+  final res = await req.close();
+  final text = utf8.decode(await res.expand((b) => b).toList());
+  return (status: res.statusCode, body: jsonDecode(text) as Map<String, dynamic>);
 }
 
 Future<void> _until(FutureOr<bool> Function() done, {Duration timeout = const Duration(seconds: 5)}) async {
@@ -146,6 +146,7 @@ void main() {
   EmuServer? server;
 
   setUp(() {
+    _client = HttpClient();
     tmp = Directory.systemTemp.createTempSync('emu_server_fake_');
     project = Directory('${tmp.path}/app')..createSync();
     File('${project.path}/pubspec.yaml').writeAsStringSync('name: app\n');
@@ -155,6 +156,7 @@ void main() {
   tearDown(() async {
     await server?.dispose();
     server = null;
+    _client.close(force: true);
     tmp.deleteSync(recursive: true);
   });
 

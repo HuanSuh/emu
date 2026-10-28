@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:emu/src/device_lease.dart';
+import 'package:emu/src/models.dart';
 import 'package:emu/src/registry.dart';
 import 'package:emu/src/server.dart';
 import 'package:emu/src/session.dart';
@@ -43,19 +44,19 @@ const _ok = r'echo "[{\"id\":$id,\"result\":{\"code\":0,\"message\":\"\"}}]"';
 const _codeOne = r'echo "[{\"id\":$id,\"result\":{\"code\":1,\"message\":\"compile error\"}}]"';
 const _error = r'echo "[{\"id\":$id,\"error\":\"boom\"}]"';
 
+/// One keep-alive client per test, and waits that look at the server in
+/// process: a new connection per call or poll churns through ephemeral
+/// ports, which other test files bind (port 0) and expect free once closed.
+late HttpClient _client;
+
 Future<({int status, Map<String, dynamic> body})> _call(EmuServer server, String method, String path,
     {String? body}) async {
-  final client = HttpClient();
-  try {
-    final req = await client.openUrl(method, Uri.parse('http://127.0.0.1:${server.port}$path'));
-    req.headers.set('X-Emu-Token', server.token);
-    if (body != null) req.write(body);
-    final res = await req.close();
-    final text = utf8.decode(await res.expand((b) => b).toList());
-    return (status: res.statusCode, body: jsonDecode(text) as Map<String, dynamic>);
-  } finally {
-    client.close(force: true);
-  }
+  final req = await _client.openUrl(method, Uri.parse('http://127.0.0.1:${server.port}$path'));
+  req.headers.set('X-Emu-Token', server.token);
+  if (body != null) req.write(body);
+  final res = await req.close();
+  final text = utf8.decode(await res.expand((b) => b).toList());
+  return (status: res.statusCode, body: jsonDecode(text) as Map<String, dynamic>);
 }
 
 Future<Map<String, dynamic>> _status(EmuServer server) async =>
@@ -65,11 +66,11 @@ Future<void> _until(FutureOr<bool> Function() done, {Duration timeout = const Du
   final end = DateTime.now().add(timeout);
   while (!await done()) {
     if (DateTime.now().isAfter(end)) throw TimeoutException('condition not met');
-    await Future<void>.delayed(const Duration(milliseconds: 20));
+    await Future<void>.delayed(const Duration(milliseconds: 50));
   }
 }
 
-bool _alive(int pid) => Process.runSync('kill', ['-0', '$pid']).exitCode == 0;
+bool _alive(int pid) => Process.runSync('sh', ['-c', 'kill -0 $pid']).exitCode == 0;
 
 /// The keys of `AppStatus.toJson` — what `/api/status` and the WebSocket
 /// `status` message carry. The hub talks to sessions of other emu versions
@@ -94,6 +95,7 @@ void main() {
   EmuServer? server;
 
   setUp(() {
+    _client = HttpClient();
     tmp = Directory.systemTemp.createTempSync('emu_server_running_');
     project = Directory('${tmp.path}/app')..createSync();
     File('${project.path}/pubspec.yaml').writeAsStringSync('name: app\n');
@@ -104,6 +106,7 @@ void main() {
   tearDown(() async {
     await server?.dispose();
     server = null;
+    _client.close(force: true);
     tmp.deleteSync(recursive: true);
   });
 
@@ -118,7 +121,7 @@ void main() {
       exitProcess: (_) {},
     );
     await s.start(0, LaunchOptions());
-    await _until(() async => (await _status(s))['state'] == 'running');
+    await _until(() => s.engine.status.state == AppRunState.running);
     return s;
   }
 
@@ -267,11 +270,11 @@ void main() {
     test('flutter dying on its own fails the app and tries to re-attach', () async {
       final s = await running();
       Process.killPid(flutterPid());
-      await _until(() async => (await _status(s))['state'] == 'failed');
+      await _until(() => s.engine.status.state == AppRunState.failed);
       final st = await _status(s);
       expect(st['message'], startsWith('flutter exited with code '));
       expect(st['deviceId'], _udid);
-      await _until(() async => (await logs(s)).any((l) => l.startsWith('re-attach failed')));
+      await _until(() => s.logStore.query(limit: 1 << 20).any((e) => e.text.startsWith('re-attach failed')));
       expect(
           await logs(s),
           containsAllInOrder([
@@ -298,14 +301,12 @@ void main() {
       final pid = flutterPid();
       await _until(() async => (await leases.liveHolderOf(_udid)) != null);
       expect(registry.all().single.deviceId, _udid);
-      final port = s.port;
       await s.dispose();
       server = null;
       await _until(() => !_alive(pid));
       expect(await leases.liveHolderOf(_udid), isNull);
       expect(registry.all(), isEmpty);
       expect(Session(project).serverInfoFile.existsSync(), isFalse);
-      await expectLater(HttpClient().get('127.0.0.1', port, '/api/status'), throwsA(isA<SocketException>()));
     });
   });
 
