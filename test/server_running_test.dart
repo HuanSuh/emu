@@ -15,15 +15,21 @@ import 'package:test/test.dart';
 const _udid = '00000000-0000-0000-0000-00000000E5E5';
 const _vm = 'ws://127.0.0.1:1/x=/ws';
 
-/// A stand-in `flutter run --machine`: writes its pid to `flutter.pid`,
-/// announces app `a1` on [_udid] with a VM Service, answers `devtools.serve`
-/// with an error, `app.restart` with [onRestart] (a shell snippet, `$id`
-/// is the request id) and quits on `app.stop`. Builtins only: a child
-/// process (sed) cut off by a kill would write `Broken pipe` to stderr.
-String _fakeFlutter(Directory dir, String onRestart) {
+/// A stand-in `flutter run --machine`, run in the project dir: writes its
+/// pid to `../flutter.pid`, announces app `a1` on [_udid] with a VM Service,
+/// answers `devtools.serve` with an error, `app.restart` with the shell
+/// snippet in `../on_restart` (`$id` is the request id) and quits on
+/// `app.stop`.
+///
+/// Builtins only, and written once per file: a child process (sed) cut off
+/// by a kill writes `Broken pipe` to stderr, and a process started from this
+/// test process — `Process.runSync` most of all — briefly holds the other
+/// test files' listening sockets (fork until exec), so their checks that a
+/// port is free the moment it closes fail.
+Future<String> _fakeFlutter(Directory dir) async {
   final f = File('${dir.path}/flutter');
   f.writeAsStringSync('''#!/bin/sh
-echo \$\$ > "${dir.path}/flutter.pid"
+echo \$\$ > ../flutter.pid
 echo '[{"event":"app.start","params":{"appId":"a1","deviceId":"$_udid"}}]'
 echo '[{"event":"app.debugPort","params":{"appId":"a1","port":1,"wsUri":"$_vm"}}]'
 echo '[{"event":"app.started","params":{"appId":"a1"}}]'
@@ -31,12 +37,12 @@ while IFS= read -r line; do
   id=\${line#*'"id":'}; id=\${id%%[!0-9]*}
   case "\$line" in
     *devtools.serve*) echo "[{\\"id\\":\$id,\\"error\\":\\"no devtools\\"}]" ;;
-    *app.restart*) $onRestart ;;
+    *app.restart*) . ../on_restart ;;
     *app.stop*) exit 0 ;;
   esac
 done
 ''');
-  Process.runSync('chmod', ['+x', f.path]);
+  await Process.run('chmod', ['+x', f.path]);
   return f.path;
 }
 
@@ -70,7 +76,8 @@ Future<void> _until(FutureOr<bool> Function() done, {Duration timeout = const Du
   }
 }
 
-bool _alive(int pid) => Process.runSync('sh', ['-c', 'kill -0 $pid']).exitCode == 0;
+/// A signal, not a `kill -0` process (see [_fakeFlutter]).
+bool _alive(int pid) => Process.killPid(pid, ProcessSignal.sigcont);
 
 /// The keys of `AppStatus.toJson` — what `/api/status` and the WebSocket
 /// `status` message carry. The hub talks to sessions of other emu versions
@@ -88,11 +95,20 @@ const _statusKeys = [
 ];
 
 void main() {
+  late Directory bin;
+  late String flutter;
   late Directory tmp;
   late Directory project;
   late SessionRegistry registry;
   late DeviceLeases leases;
   EmuServer? server;
+
+  setUpAll(() async {
+    bin = Directory.systemTemp.createTempSync('emu_server_running_bin_');
+    flutter = await _fakeFlutter(bin);
+  });
+
+  tearDownAll(() => bin.deleteSync(recursive: true));
 
   setUp(() {
     _client = HttpClient();
@@ -112,12 +128,13 @@ void main() {
 
   /// A server whose `flutter run` is the fake one, once the app is running.
   Future<EmuServer> running({String onRestart = _ok}) async {
+    File('${tmp.path}/on_restart').writeAsStringSync('$onRestart\n');
     final s = server = EmuServer(
       session: Session(project),
       leases: leases,
       registry: registry,
       recent: RecentProjects(file: File('${tmp.path}/projects.json')),
-      flutterExecutable: _fakeFlutter(tmp, onRestart),
+      flutterExecutable: flutter,
       exitProcess: (_) {},
     );
     await s.start(0, LaunchOptions());
@@ -299,12 +316,12 @@ void main() {
     test('dispose stops flutter and releases the lease, registry and server info', () async {
       final s = await running();
       final pid = flutterPid();
-      await _until(() async => (await leases.liveHolderOf(_udid)) != null);
+      await _until(() => leases.holderOf(_udid) != null);
       expect(registry.all().single.deviceId, _udid);
       await s.dispose();
       server = null;
       await _until(() => !_alive(pid));
-      expect(await leases.liveHolderOf(_udid), isNull);
+      expect(leases.holderOf(_udid), isNull);
       expect(registry.all(), isEmpty);
       expect(Session(project).serverInfoFile.existsSync(), isFalse);
     });
