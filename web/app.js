@@ -366,7 +366,8 @@ function connect() {
   };
   let replayed = false; // this socket's first line seen
   ws.onmessage = (ev) => {
-    const msg = JSON.parse(ev.data);
+    const msg = streamMessage(ev.data);
+    if (!msg) return;
     if (msg.type === 'log') {
       if (!replayed) { replayed = true; replayStart(msg.entry.seq); }
       receive(msg.entry);
@@ -380,6 +381,17 @@ function connect() {
     else if (msg.type === 'mock') loadMocks();       // scenario switched or saved (here, another tab or the CLI)
     else if (msg.type === 'mock-hit') onMockHit(msg.hit); // the app made a request through emu
   };
+}
+
+// One line off /api/stream, or null when it isn't JSON: that one is skipped
+// (and said in the console) instead of throwing out of onmessage.
+function streamMessage(data) {
+  try {
+    return JSON.parse(data);
+  } catch (e) {
+    console.warn(`emu: skipped a stream message that isn't JSON (${e.message}): ${String(data).slice(0, 200)}`);
+    return null;
+  }
 }
 
 // ---- actions ----------------------------------------------------------------
