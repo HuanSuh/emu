@@ -6,6 +6,11 @@
 
 ## [Unreleased]
 
+### Fixed
+- 앱이 끝나거나(`emu stop`, 앱 종료, `flutter` 프로세스 사망) 뒤에도 status 에 옛 VM Service·DevTools 주소가 남아, `tap`·`probe`·`eval`
+  등이 죽은 주소에 연결하다 연결 오류를 내고 대시보드 DevTools 링크도 죽은 주소를 가리키던 문제. 이제 그 주소들을 비워 `tap` 등은
+  "app is not running" (409) 으로 답하고 대시보드에 DevTools 링크가 남지 않는다. 기기·앱 id 는 그대로 남아 `emu attach` 는 전과 같다.
+
 ## [0.17.3] - 2026-10-28
 
 ### Fixed
