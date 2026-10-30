@@ -149,9 +149,22 @@ void main() {
 
     test('portIsFree sees a bound port', () async {
       final s = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-      expect(await portIsFree(s.port), isFalse);
+      final port = s.port; // reading it after close can throw
+      expect(await portIsFree(port), isFalse);
       await s.close();
-      expect(await portIsFree(s.port), isTrue);
+      expect(await _freeSoon(port), isTrue);
     });
   });
+}
+
+/// Whether [portIsFree] sees [port] free within [within]. A process that
+/// another test file starts holds this process's listening sockets from fork
+/// until exec, so a port just closed can still be bound for a moment.
+Future<bool> _freeSoon(int port, {Duration within = const Duration(seconds: 3)}) async {
+  final end = DateTime.now().add(within);
+  while (!await portIsFree(port)) {
+    if (DateTime.now().isAfter(end)) return false;
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+  }
+  return true;
 }
