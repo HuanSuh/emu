@@ -179,4 +179,82 @@ ${RegExp(r'^const (FOCUS_ATTRS|FOCUSABLE) = .*$', multiLine: true).allMatches(pa
       });
     },
   );
+
+  test(
+    'the toolbar is drawn again only when what it shows changes',
+    skip: _node ? false : 'node is not installed',
+    () async {
+      final r = await _js(
+        '''
+const document = { activeElement: null, getElementById: () => ({}) };
+const swaps = [];
+const pageEls = { bar: {
+  set innerHTML(v) { swaps.push(v); },
+  querySelectorAll: () => [], contains: () => false,
+} };
+const pageState = { running: new Set(), toggles: {}, auto: {} };
+const itemKey = (page, item) => `\${page.id}.\${item.id}`;
+const usesSelection = (x) => (x.uses || []).some(u => u.startsWith('selected.'));
+let selected = null;
+const selectedRow = () => selected;
+const blockedByChecks = () => false;
+let unfolds = 0;
+const renderUnfoldAll = () => { unfolds++; };
+const loadPages = () => {};
+${_fn(app, 'escapeHtml')}
+${['renderPageBar', 'autoSwitchHtml', 'focusKeyIn', 'refocusIn', 'focusablesIn'].map((n) => _fn(pages, n)).join('\n')}
+${RegExp(r'^(let barDrawn|const (FOCUS_ATTRS|FOCUSABLE)) = .*$', multiLine: true).allMatches(pages).map((m) => m[0]).join('\n')}
+''',
+        '''
+      const mk = () => ({ id: 'p', title: 'P', toolbar: [
+        { id: 'build', label: 'Build', command: 'make' },
+        { id: 'send', label: 'Send', command: 'send {{selected.id}}', uses: ['selected.id'] },
+        { id: 'dark', kind: 'toggle', label: 'Dark', on: 'x', off: 'y' },
+        { id: 'gen', label: 'Gen', command: 'gen', auto: { watch: ['lib/'] } },
+      ] });
+      const page = mk();
+      const steps = {};
+      const step = (name, fn) => { const n = swaps.length; fn(); steps[name] = swaps.length - n; };
+      step('first', () => renderPageBar(page));
+      const idle = swaps.at(-1);
+      step('same', () => { renderPageBar(page); renderPageBar(page); });
+      step('busy', () => { pageState.running.add('p.build'); renderPageBar(page); });
+      const busy = swaps.at(-1);
+      step('stillBusy', () => renderPageBar(page));
+      step('done', () => { pageState.running.delete('p.build'); renderPageBar(page); });
+      const back = swaps.at(-1) === idle;
+      step('otherRun', () => { pageState.running.add('p.list.del'); renderPageBar(page); }); // a row button: not on the bar
+      step('picked', () => { selected = { id: 1 }; renderPageBar(page); });
+      step('toggle', () => { pageState.toggles['p.dark'] = { ok: true, on: true }; renderPageBar(page); });
+      step('auto', () => { pageState.auto['p.gen'] = true; renderPageBar(page); });
+      step('reloaded', () => renderPageBar(mk())); // emu.yaml read again: new page, handlers must be bound to it
+      return {
+        steps, back, unfolds,
+        busyShows: busy.includes('ext-action busy') && busy.includes('Build …'),
+        idleNot: !idle.includes('busy'),
+        sendOff: /data-item="send"[^>]* disabled/.test(idle),
+      };
+    ''',
+      );
+      expect(r, {
+        'steps': {
+          'first': 1,
+          'same': 0,
+          'busy': 1,
+          'stillBusy': 0,
+          'done': 1,
+          'otherRun': 0,
+          'picked': 1,
+          'toggle': 1,
+          'auto': 1,
+          'reloaded': 1,
+        },
+        'back': true,
+        'unfolds': 11,
+        'busyShows': true,
+        'idleNot': true,
+        'sendOff': true,
+      });
+    },
+  );
 }

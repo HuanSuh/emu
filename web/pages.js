@@ -299,9 +299,15 @@ async function runBulk(page, block, a) {
 
 // ---- toolbar -----------------------------------------------------------------
 
+// What the bar was last drawn as, and for which page. Every run on the page
+// (a row button, a form) comes through here (renderRunning), and most leave
+// the bar as it was: drawing it again would drop the focus and hover of its
+// buttons for nothing.
+let barDrawn = null;
+
 function renderPageBar(page) {
   const hasSelection = !!selectedRow(page);
-  pageEls.bar.innerHTML = `<span class="title">${escapeHtml(page.title)}</span>` + page.toolbar.map(item => {
+  const html = `<span class="title">${escapeHtml(page.title)}</span>` + page.toolbar.map(item => {
     const key = itemKey(page, item);
     const busy = pageState.running.has(key);
     const blocked = (usesSelection(item) && !hasSelection) || blockedByChecks(page, item);
@@ -322,6 +328,13 @@ function renderPageBar(page) {
   }).join('') + '<span class="grow"></span>'
     + '<button id="pages-unfold" title="Unfold every folded area and block of this page" hidden>unfold all</button>'
     + '<button id="pages-refresh" title="Re-read emu.yaml">↻</button>';
+  if (barDrawn?.page === page && barDrawn.html === html) {
+    renderUnfoldAll(page);
+    return;
+  }
+  const focus = focusKeyIn(pageEls.bar, document.activeElement);
+  pageEls.bar.innerHTML = html;
+  barDrawn = { page, html };
   pageEls.bar.querySelectorAll('[data-item]').forEach(el => {
     el.onclick = () => {
       const item = page.toolbar.find(i => i.id === el.dataset.item);
@@ -338,6 +351,7 @@ function renderPageBar(page) {
   document.getElementById('pages-unfold').onclick = () => unfoldAll(page);
   renderUnfoldAll(page);
   pageEls.bar.querySelectorAll('[data-auto]').forEach(b => { b.onclick = () => switchAuto(page, b.dataset.auto); });
+  refocusIn(pageEls.bar, focus);
 }
 
 // ---- auto: -------------------------------------------------------------------
