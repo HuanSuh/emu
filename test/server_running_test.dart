@@ -17,9 +17,9 @@ const _vm = 'ws://127.0.0.1:1/x=/ws';
 
 /// A stand-in `flutter run --machine`, run in the project dir: writes its
 /// pid to `../flutter.pid`, announces app `a1` on [_udid] with a VM Service,
-/// answers `devtools.serve` with an error, `app.restart` with the shell
-/// snippet in `../on_restart` (`$id` is the request id) and quits on
-/// `app.stop`.
+/// answers `devtools.serve` and `app.restart` with the shell snippets in
+/// `../on_devtools` and `../on_restart` (`$id` is the request id) and quits
+/// on `app.stop`.
 ///
 /// Builtins only, and written once per file: a child process (sed) cut off
 /// by a kill writes `Broken pipe` to stderr, and a process started from this
@@ -36,7 +36,7 @@ echo '[{"event":"app.started","params":{"appId":"a1"}}]'
 while IFS= read -r line; do
   id=\${line#*'"id":'}; id=\${id%%[!0-9]*}
   case "\$line" in
-    *devtools.serve*) echo "[{\\"id\\":\$id,\\"error\\":\\"no devtools\\"}]" ;;
+    *devtools.serve*) . ../on_devtools ;;
     *app.restart*) . ../on_restart ;;
     *app.stop*) exit 0 ;;
   esac
@@ -49,6 +49,11 @@ done
 const _ok = r'echo "[{\"id\":$id,\"result\":{\"code\":0,\"message\":\"\"}}]"';
 const _codeOne = r'echo "[{\"id\":$id,\"result\":{\"code\":1,\"message\":\"compile error\"}}]"';
 const _error = r'echo "[{\"id\":$id,\"error\":\"boom\"}]"';
+const _noDevTools = r'echo "[{\"id\":$id,\"error\":\"no devtools\"}]"';
+const _devTools = r'echo "[{\"id\":$id,\"result\":{\"host\":\"127.0.0.1\",\"port\":9}}]"';
+
+/// The `devToolsUri` [_devTools] makes: DevTools pointed at [_vm].
+final _devToolsUri = 'http://127.0.0.1:9/?uri=${Uri.encodeQueryComponent(_vm)}';
 
 /// One keep-alive client per test, and waits that look at the server in
 /// process: a new connection per call or poll churns through ephemeral
@@ -127,8 +132,9 @@ void main() {
   });
 
   /// A server whose `flutter run` is the fake one, once the app is running.
-  Future<EmuServer> running({String onRestart = _ok}) async {
+  Future<EmuServer> running({String onRestart = _ok, String onDevTools = _noDevTools}) async {
     File('${tmp.path}/on_restart').writeAsStringSync('$onRestart\n');
+    File('${tmp.path}/on_devtools').writeAsStringSync('$onDevTools\n');
     final s = server = EmuServer(
       session: Session(project),
       leases: leases,
@@ -160,6 +166,32 @@ void main() {
 
   Future<List<String>> logs(EmuServer s) async =>
       [for (final e in (await _call(s, 'GET', '/api/logs')).body['logs'] as List) e['text'] as String];
+
+  /// A running app with a DevTools link, as the dashboard shows it.
+  Future<EmuServer> runningWithDevTools({String onRestart = _ok}) async {
+    final s = await running(onRestart: onRestart, onDevTools: _devTools);
+    await _until(() => s.engine.status.devToolsUri != null);
+    expect((await _status(s))['devToolsUri'], _devToolsUri);
+    return s;
+  }
+
+  /// The app is gone: no VM Service or DevTools link, but the device and app
+  /// id stay (re-attach reads them), and VM Service routes say so with a 409.
+  Future<void> expectGone(EmuServer s) async {
+    final st = await _status(s);
+    expect(st.keys, unorderedEquals(_statusKeys));
+    expect(st['vmServiceUri'], isNull);
+    expect(st['devToolsUri'], isNull);
+    expect(st['deviceId'], _udid);
+    expect(st['appId'], 'a1');
+    expect(st['startedAt'], isA<String>());
+    final tap = await _call(s, 'POST', '/api/tap?x=1&y=2');
+    expect(tap.status, 409);
+    expect(tap.body, {'ok': false, 'error': 'app is not running (no VM service)'});
+    final probe = await _call(s, 'POST', '/api/probe', body: '{}');
+    expect(probe.status, 409);
+    expect(probe.body, {'error': 'app is not running (no VM service)'});
+  }
 
   group('running app', () {
     test('/api/status after app.start: state, device, VM Service', () async {
@@ -270,11 +302,12 @@ void main() {
     });
 
     test('/api/stop stops the app and the process, without re-attaching', () async {
-      final s = await running();
+      final s = await runningWithDevTools();
       final pid = flutterPid();
       final r = await _call(s, 'POST', '/api/stop');
       expect(r.body, {'ok': true, 'message': 'stopped'});
       expect((await _status(s))['state'], 'stopped');
+      await expectGone(s);
       await _until(() => !_alive(pid));
       // Give a would-be auto re-attach the time to show up.
       await Future<void>.delayed(const Duration(milliseconds: 300));
@@ -285,12 +318,13 @@ void main() {
     });
 
     test('flutter dying on its own fails the app and tries to re-attach', () async {
-      final s = await running();
+      final s = await runningWithDevTools();
       Process.killPid(flutterPid());
       await _until(() => s.engine.status.state == AppRunState.failed);
       final st = await _status(s);
       expect(st['message'], startsWith('flutter exited with code '));
-      expect(st['deviceId'], _udid);
+      await expectGone(s);
+      // The re-attach got past the device (it read deviceId) to the build outputs.
       await _until(() => s.logStore.query(limit: 1 << 20).any((e) => e.text.startsWith('re-attach failed')));
       expect(
           await logs(s),
@@ -298,6 +332,16 @@ void main() {
             'flutter lost the connection to the app — trying to re-attach',
             're-attach failed: cannot tell the app id from the build outputs',
           ]));
+    });
+
+    test('app.stop from the daemon drops the VM Service while flutter is still up', () async {
+      final s = await runningWithDevTools(onRestart: '''
+echo '[{"event":"app.stop","params":{"appId":"a1"}}]'
+$_ok''');
+      await _call(s, 'POST', '/api/reload');
+      expect((await _status(s))['state'], 'stopped');
+      expect(_alive(flutterPid()), isTrue);
+      await expectGone(s);
     });
 
     test('/api/attach while flutter is connected is refused', () async {
@@ -309,6 +353,7 @@ void main() {
     test('/api/attach after flutter died stops at the build outputs', () async {
       final s = await running();
       await _call(s, 'POST', '/api/stop');
+      expect((await _status(s))['vmServiceUri'], isNull);
       final r = await _call(s, 'POST', '/api/attach');
       expect(r.body, {'ok': false, 'message': 'cannot tell the app id from the build outputs', 'code': null});
     });

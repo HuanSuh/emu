@@ -232,9 +232,11 @@ class FlutterEngine implements AppEngine {
     }
     _pending.clear();
     if (!_stopping) {
+      // Device, app id and start time stay: re-attach reads them.
       _setStatus(_status.copyWith(
         state: code == 0 ? AppRunState.stopped : AppRunState.failed,
         message: code == 0 ? null : 'flutter exited with code $code',
+        clearVmService: true,
       ));
     }
   }
@@ -286,7 +288,7 @@ class FlutterEngine implements AppEngine {
           logStore.system(message);
         }
       case 'app.stop':
-        _setStatus(_status.copyWith(state: AppRunState.stopped));
+        _setStatus(_status.copyWith(state: AppRunState.stopped, clearVmService: true));
         logStore.system('app stopped');
       case 'daemon.logMessage':
         final level = e.params['level'] as String?;
@@ -312,6 +314,8 @@ class FlutterEngine implements AppEngine {
       final port = result['port'];
       if (host == null || port == null) return;
       final uri = 'http://$host:$port/?uri=${Uri.encodeQueryComponent(wsUri)}';
+      // The app may have stopped while DevTools was starting.
+      if (_status.vmServiceUri != wsUri) return;
       _setStatus(_status.copyWith(devToolsUri: uri));
       logStore.system('DevTools: $uri');
     } catch (_) {
@@ -410,10 +414,10 @@ class FlutterEngine implements AppEngine {
     _stopping = true;
     final proc = _process;
     if (proc == null) {
-      _setStatus(_status.copyWith(state: AppRunState.stopped));
+      _setStatus(_status.copyWith(state: AppRunState.stopped, clearVmService: true));
       return;
     }
-    _setStatus(_status.copyWith(state: AppRunState.stopped));
+    _setStatus(_status.copyWith(state: AppRunState.stopped, clearVmService: true));
     final appId = _status.appId;
     if (appId != null) {
       await _request('app.stop', {'appId': appId})

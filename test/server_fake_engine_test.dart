@@ -48,7 +48,7 @@ class FakeEngine implements AppEngine {
   /// `flutter` went away on its own with the app's last state [state].
   void lost({AppRunState state = AppRunState.failed}) {
     hasProcess = false;
-    emit(_status.copyWith(state: state));
+    emit(_status.copyWith(state: state, clearVmService: true));
   }
 
   @override
@@ -102,7 +102,7 @@ class FakeEngine implements AppEngine {
     calls.add('stop');
     stoppedDeliberately = true;
     hasProcess = false;
-    emit(_status.copyWith(state: AppRunState.stopped));
+    emit(_status.copyWith(state: AppRunState.stopped, clearVmService: true));
   }
 
   @override
@@ -326,6 +326,24 @@ void main() {
       final probe = await _call(s, 'POST', '/api/probe', body: '{}');
       expect(probe.status, 409);
       expect(probe.body, {'error': 'app is not running (no VM service)'});
+    });
+
+    test('the app gone: tap and probe are 409, attach still goes by the device', () async {
+      final s = await start();
+      engine.appRunning();
+      engine.lost();
+      await _until(() => logs(s).any((l) => l.startsWith('re-attach failed')));
+      expect(engine.status.deviceId, _udid);
+      expect(engine.status.appId, 'a1');
+      final tap = await _call(s, 'POST', '/api/tap?x=1&y=2');
+      expect(tap.status, 409);
+      expect(tap.body, {'ok': false, 'error': 'app is not running (no VM service)'});
+      final probe = await _call(s, 'POST', '/api/probe', body: '{}');
+      expect(probe.status, 409);
+      expect(probe.body, {'error': 'app is not running (no VM service)'});
+      // Not 'no device known for this session': the device outlived the VM Service.
+      expect((await _call(s, 'POST', '/api/attach')).body,
+          {'ok': false, 'message': 'cannot tell the app id from the build outputs', 'code': null});
     });
 
     test('bad tap arguments are checked only once there is a VM Service', () async {

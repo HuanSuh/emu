@@ -124,6 +124,9 @@ class AppStatus {
   /// Human-readable detail for the current state (e.g. a build error summary).
   final String? message;
 
+  /// A copy with the given fields replaced; a null argument keeps the field.
+  /// [clearVmService] drops [vmServiceUri] and [devToolsUri] instead — once
+  /// the `flutter` process is gone they point at nothing.
   AppStatus copyWith({
     AppRunState? state,
     String? deviceId,
@@ -134,14 +137,15 @@ class AppStatus {
     DateTime? startedAt,
     DateTime? lastReloadAt,
     String? message,
+    bool clearVmService = false,
   }) =>
       AppStatus(
         state: state ?? this.state,
         deviceId: deviceId ?? this.deviceId,
         deviceName: deviceName ?? this.deviceName,
         appId: appId ?? this.appId,
-        vmServiceUri: vmServiceUri ?? this.vmServiceUri,
-        devToolsUri: devToolsUri ?? this.devToolsUri,
+        vmServiceUri: clearVmService ? null : vmServiceUri ?? this.vmServiceUri,
+        devToolsUri: clearVmService ? null : devToolsUri ?? this.devToolsUri,
         startedAt: startedAt ?? this.startedAt,
         lastReloadAt: lastReloadAt ?? this.lastReloadAt,
         message: message ?? this.message,
