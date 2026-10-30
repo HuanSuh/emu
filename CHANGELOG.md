@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.17.4] - 2026-10-30
+
 ### Fixed
 - 앱이 끝나거나(`emu stop`, 앱 종료, `flutter` 프로세스 사망) 뒤에도 status 에 옛 VM Service·DevTools 주소가 남아, `tap`·`probe`·`eval`
   등이 죽은 주소에 연결하다 연결 오류를 내고 대시보드 DevTools 링크도 죽은 주소를 가리키던 문제. 이제 그 주소들을 비워 `tap` 등은
@@ -514,7 +516,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.17.3...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.17.4...HEAD
+[0.17.4]: https://github.com/HuanSuh/emu/compare/v0.17.3...v0.17.4
 [0.17.3]: https://github.com/HuanSuh/emu/compare/v0.17.2...v0.17.3
 [0.17.2]: https://github.com/HuanSuh/emu/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/HuanSuh/emu/compare/v0.17.0...v0.17.1
