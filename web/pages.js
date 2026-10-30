@@ -299,9 +299,15 @@ async function runBulk(page, block, a) {
 
 // ---- toolbar -----------------------------------------------------------------
 
+// What the bar was last drawn as, and for which page. Every run on the page
+// (a row button, a form) comes through here (renderRunning), and most leave
+// the bar as it was: drawing it again would drop the focus and hover of its
+// buttons for nothing.
+let barDrawn = null;
+
 function renderPageBar(page) {
   const hasSelection = !!selectedRow(page);
-  pageEls.bar.innerHTML = `<span class="title">${escapeHtml(page.title)}</span>` + page.toolbar.map(item => {
+  const html = `<span class="title">${escapeHtml(page.title)}</span>` + page.toolbar.map(item => {
     const key = itemKey(page, item);
     const busy = pageState.running.has(key);
     const blocked = (usesSelection(item) && !hasSelection) || blockedByChecks(page, item);
@@ -322,6 +328,13 @@ function renderPageBar(page) {
   }).join('') + '<span class="grow"></span>'
     + '<button id="pages-unfold" title="Unfold every folded area and block of this page" hidden>unfold all</button>'
     + '<button id="pages-refresh" title="Re-read emu.yaml">↻</button>';
+  if (barDrawn?.page === page && barDrawn.html === html) {
+    renderUnfoldAll(page);
+    return;
+  }
+  const focus = focusKeyIn(pageEls.bar, document.activeElement);
+  pageEls.bar.innerHTML = html;
+  barDrawn = { page, html };
   pageEls.bar.querySelectorAll('[data-item]').forEach(el => {
     el.onclick = () => {
       const item = page.toolbar.find(i => i.id === el.dataset.item);
@@ -338,6 +351,7 @@ function renderPageBar(page) {
   document.getElementById('pages-unfold').onclick = () => unfoldAll(page);
   renderUnfoldAll(page);
   pageEls.bar.querySelectorAll('[data-auto]').forEach(b => { b.onclick = () => switchAuto(page, b.dataset.auto); });
+  refocusIn(pageEls.bar, focus);
 }
 
 // ---- auto: -------------------------------------------------------------------
@@ -1054,6 +1068,48 @@ function toggleDir(page, block, d, { deep = false } = {}) {
   renderListRows(page, block);
 }
 
+// Drawing a part of the page again (innerHTML) drops the keyboard focus that
+// was on one of its controls. focusKeyIn says where it was in words that
+// outlive the redraw — the row or folder (by key) and the control (by what it
+// does, or else its place there) — and refocusIn puts it back, if that
+// control is still there. Focus outside [scope] is none of its business.
+const FOCUS_ATTRS = ['data-action', 'data-bulk', 'data-check', 'data-check-dir', 'data-check-all', 'data-sort', 'data-item', 'data-auto'];
+const FOCUSABLE = 'a[href], button, input, select, textarea, [tabindex]';
+
+function focusKeyIn(scope, el) {
+  if (!el || el === scope || !scope.contains(el)) return null;
+  const tr = el.closest('tr[data-row], tr[data-dir]');
+  const box = tr && scope.contains(tr) ? tr : null;
+  const attr = FOCUS_ATTRS.find(a => el.hasAttribute(a));
+  return {
+    row: box?.getAttribute('data-row') ?? null,
+    dir: box?.getAttribute('data-dir') ?? null,
+    attr: attr ?? null,
+    value: attr ? el.getAttribute(attr) : null,
+    index: attr ? -1 : focusablesIn(scope, box).indexOf(el),
+  };
+}
+
+function refocusIn(scope, key) {
+  if (!key) return;
+  let box = null;
+  if (key.row !== null || key.dir !== null) {
+    const [a, v] = key.row !== null ? ['data-row', key.row] : ['data-dir', key.dir];
+    box = [...scope.querySelectorAll(`tr[${a}]`)].find(tr => tr.getAttribute(a) === v);
+    if (!box) return; // its row is gone
+  }
+  const el = key.attr
+    ? focusablesIn(scope, box, `[${key.attr}]`).find(e => e.getAttribute(key.attr) === key.value)
+    : focusablesIn(scope, box)[key.index];
+  el?.focus({ preventScroll: true });
+}
+
+// The controls ([sel]) of a row ([box]), or those of [scope] outside any row.
+function focusablesIn(scope, box, sel = FOCUSABLE) {
+  const all = [...(box ?? scope).querySelectorAll(sel)];
+  return box ? all : all.filter(e => !e.closest('tr[data-row], tr[data-dir]'));
+}
+
 function renderListRows(page, block) {
   const el = blockEl(block);
   if (!el || currentPage() !== page) return;
@@ -1061,12 +1117,14 @@ function renderListRows(page, block) {
   const entry = pageState.data[key];
   const host = el.querySelector('[data-rows]');
   const rows = entry?.result?.ok ? entry.result.rows : null;
+  const focus = focusKeyIn(host, document.activeElement);
   el.classList.toggle('loading', dimmed(entry));
   renderChecksHead(page, block, el);
   if (!rows) {
     listShown[key] = [];
     host.innerHTML = blockNote(page, block, entry);
     el.querySelector('[data-count]').textContent = '';
+    refocusIn(host, focus);
     return;
   }
   const cols = listColumns(block, rows);
@@ -1153,6 +1211,7 @@ function renderListRows(page, block) {
       };
     });
   });
+  refocusIn(host, focus);
 }
 
 // A row button: busy while its action runs (on any row), off while it needs
@@ -1191,6 +1250,7 @@ function renderChecksHead(page, block, el) {
   const host = el.querySelector('[data-checks]');
   if (!host) return;
   const n = checkedRows(page, block).length;
+  const focus = focusKeyIn(host, document.activeElement);
   host.innerHTML = `<span class="muted">${n} checked</span>` + block.rowActions.filter(a => a.bulk).map(a => {
     const progress = pageState.bulk[`${page.id}.${block.id}.${a.id}`];
     return `<button class="${a.confirm ? 'warnish' : ''}${progress ? ' busy' : ''}" data-bulk="${escapeHtml(a.id)}"`
@@ -1200,6 +1260,7 @@ function renderChecksHead(page, block, el) {
   host.querySelectorAll('[data-bulk]').forEach(btn => {
     btn.onclick = () => runBulk(page, block, block.rowActions.find(a => a.id === btn.dataset.bulk));
   });
+  refocusIn(host, focus);
 }
 
 // diff: the unified diff its command prints, drawn like the Changes tab;
