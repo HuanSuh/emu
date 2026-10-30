@@ -22,7 +22,44 @@ class ActionResult {
   Map<String, dynamic> toJson() => {'ok': ok, 'message': message, 'code': code};
 }
 
-class FlutterEngine {
+/// What the server drives the app through — the surface of [FlutterEngine]
+/// it uses, so tests can hand it a stand-in (`EmuServer(engineFactory:)`).
+abstract interface class AppEngine {
+  AppStatus get status;
+  Stream<AppStatus> get statusStream;
+
+  /// True while a `flutter` process is live (running, starting or attaching).
+  bool get hasProcess;
+
+  /// Whether the last stop was asked for ([stop]/cold restart) rather than
+  /// the `flutter` process dying on its own.
+  bool get stoppedDeliberately;
+
+  /// Args of the last `flutter run` (what [FlutterEngine.buildAttachArgs] starts from).
+  List<String> get lastRunArgs;
+
+  /// Report a launch that failed before `flutter run` could start.
+  void markFailed(String message);
+
+  /// Start the app. Throws [StateError] if already running.
+  Future<void> start(List<String> runArgs, {String? deviceName, bool attaching = false});
+
+  /// Re-connect to the still-running app with `flutter attach`.
+  Future<void> attach(List<String> attachArgs, {String? deviceName});
+
+  Future<ActionResult> hotReload();
+  Future<ActionResult> hotRestart();
+
+  /// Full stop + relaunch.
+  Future<ActionResult> coldRestart();
+
+  /// Stop the app and the underlying process.
+  Future<void> stop();
+
+  Future<void> dispose();
+}
+
+class FlutterEngine implements AppEngine {
   FlutterEngine({
     required this.projectRoot,
     required this.logStore,
@@ -46,18 +83,22 @@ class FlutterEngine {
   List<String> _lastRunArgs = const [];
 
   AppStatus _status = AppStatus(state: AppRunState.stopped);
+  @override
   AppStatus get status => _status;
 
   final _statusController = StreamController<AppStatus>.broadcast();
+  @override
   Stream<AppStatus> get statusStream => _statusController.stream;
 
   bool get isRunning => _process != null && _status.state == AppRunState.running;
 
   /// True while a `flutter` process is live (running, starting or attaching).
+  @override
   bool get hasProcess => _process != null;
 
   /// Whether the last stop was asked for ([stop]/cold restart) rather than
   /// the `flutter` process dying on its own.
+  @override
   bool get stoppedDeliberately => _stopping;
 
   void _setStatus(AppStatus next) {
@@ -68,6 +109,7 @@ class FlutterEngine {
   /// Report a launch that failed before `flutter run` could start (e.g. no
   /// free device), so `up` gets a `failed` verdict instead of waiting out its
   /// timeout on a status that never leaves `stopped`.
+  @override
   void markFailed(String message) {
     _setStatus(_status.copyWith(state: AppRunState.failed, message: message));
   }
@@ -134,15 +176,18 @@ class FlutterEngine {
   }
 
   /// Args of the last `flutter run` (what [buildAttachArgs] starts from).
+  @override
   List<String> get lastRunArgs => _lastRunArgs;
 
   /// Re-connect to the still-running app with `flutter attach` (see
   /// [buildAttachArgs]), after the `flutter run` process was lost. A later
   /// cold restart still relaunches with the original run args.
+  @override
   Future<void> attach(List<String> attachArgs, {String? deviceName}) =>
       start(attachArgs, deviceName: deviceName, attaching: true);
 
   /// Start the app. Throws [StateError] if already running.
+  @override
   Future<void> start(List<String> runArgs, {String? deviceName, bool attaching = false}) async {
     if (_process != null) {
       throw StateError('engine already running');
@@ -187,9 +232,11 @@ class FlutterEngine {
     }
     _pending.clear();
     if (!_stopping) {
+      // Device, app id and start time stay: re-attach reads them.
       _setStatus(_status.copyWith(
         state: code == 0 ? AppRunState.stopped : AppRunState.failed,
         message: code == 0 ? null : 'flutter exited with code $code',
+        clearVmService: true,
       ));
     }
   }
@@ -241,7 +288,7 @@ class FlutterEngine {
           logStore.system(message);
         }
       case 'app.stop':
-        _setStatus(_status.copyWith(state: AppRunState.stopped));
+        _setStatus(_status.copyWith(state: AppRunState.stopped, clearVmService: true));
         logStore.system('app stopped');
       case 'daemon.logMessage':
         final level = e.params['level'] as String?;
@@ -267,6 +314,8 @@ class FlutterEngine {
       final port = result['port'];
       if (host == null || port == null) return;
       final uri = 'http://$host:$port/?uri=${Uri.encodeQueryComponent(wsUri)}';
+      // The app may have stopped while DevTools was starting.
+      if (_status.vmServiceUri != wsUri) return;
       _setStatus(_status.copyWith(devToolsUri: uri));
       logStore.system('DevTools: $uri');
     } catch (_) {
@@ -336,11 +385,14 @@ class FlutterEngine {
     return ActionResult(ok: ok, message: message, code: code);
   }
 
+  @override
   Future<ActionResult> hotReload() => _restart(fullRestart: false);
 
+  @override
   Future<ActionResult> hotRestart() => _restart(fullRestart: true);
 
   /// Full stop + relaunch (picks up native/pubspec changes a hot restart can't).
+  @override
   Future<ActionResult> coldRestart() async {
     logStore.system('cold restart requested');
     final args = List<String>.from(_lastRunArgs);
@@ -357,14 +409,15 @@ class FlutterEngine {
   }
 
   /// Stop the app and the underlying process.
+  @override
   Future<void> stop() async {
     _stopping = true;
     final proc = _process;
     if (proc == null) {
-      _setStatus(_status.copyWith(state: AppRunState.stopped));
+      _setStatus(_status.copyWith(state: AppRunState.stopped, clearVmService: true));
       return;
     }
-    _setStatus(_status.copyWith(state: AppRunState.stopped));
+    _setStatus(_status.copyWith(state: AppRunState.stopped, clearVmService: true));
     final appId = _status.appId;
     if (appId != null) {
       await _request('app.stop', {'appId': appId})
@@ -378,6 +431,7 @@ class FlutterEngine {
     _process = null;
   }
 
+  @override
   Future<void> dispose() async {
     await stop();
     await _statusController.close();

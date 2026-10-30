@@ -1,4 +1,4 @@
-/// The local server: the single owner of the [FlutterEngine]. It exposes a
+/// The local server: the single owner of the [AppEngine] ([FlutterEngine]). It exposes a
 /// REST + WebSocket API consumed by both the CLI and the web dashboard, and
 /// serves the dashboard's static assets.
 library;
@@ -125,11 +125,13 @@ class EmuServer {
     RecentProjects? recent,
     this.flutterExecutable = 'flutter',
     void Function(int code)? exitProcess,
+    AppEngine Function(String projectRoot, LogStore logStore)? engineFactory,
   })  : leases = leases ?? DeviceLeases(),
         registry = registry ?? SessionRegistry(),
         recent = recent ?? RecentProjects(),
         devices = DeviceManager(flutterExecutable: flutterExecutable),
-        _exit = exitProcess ?? exit;
+        _exit = exitProcess ?? exit,
+        _engineFactory = engineFactory;
 
   final Session session;
 
@@ -138,6 +140,10 @@ class EmuServer {
 
   /// What `/api/shutdown` ends the process with — a seam for tests.
   final void Function(int) _exit;
+
+  /// Builds [engine] in [start]; null is a [FlutterEngine] on
+  /// [flutterExecutable] — a seam for tests.
+  final AppEngine Function(String projectRoot, LogStore logStore)? _engineFactory;
 
   /// Machine-wide device ownership, so two sessions never drive one device.
   final DeviceLeases leases;
@@ -187,7 +193,7 @@ class EmuServer {
   StreamSubscription<AppStatus>? _setupWatch;
 
   late final LogStore logStore;
-  late final FlutterEngine engine;
+  late final AppEngine engine;
 
   /// The dashboard's Changes tab / `emu diff`. Snapshots the working tree on
   /// every launch and reload so "what did that reload apply" is answerable.
@@ -264,7 +270,8 @@ class EmuServer {
   Future<void> start(int requestedPort, LaunchOptions opts) async {
     session.ensureState();
     logStore = LogStore(persistFile: session.logFile..writeAsStringSync(''));
-    engine = FlutterEngine(projectRoot: session.projectRoot.path, logStore: logStore, flutterExecutable: flutterExecutable);
+    engine = _engineFactory?.call(session.projectRoot.path, logStore) ??
+        FlutterEngine(projectRoot: session.projectRoot.path, logStore: logStore, flutterExecutable: flutterExecutable);
 
     // Fan out engine activity to connected dashboards.
     logStore.stream.listen((e) => _broadcast({'type': 'log', 'entry': e.toJson()}));

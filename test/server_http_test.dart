@@ -216,8 +216,7 @@ pages:
       Process.runSync('chmod', ['a-w', Session(project).stateDir.path]);
       await server.dispose();
       expect(registry.all(), isEmpty, reason: 'registry entry left behind');
-      await expectLater(_call(port, 'GET', '/api/status'), throwsA(isA<SocketException>()),
-          reason: 'HTTP server still listening');
+      expect(await _refusedSoon(port), isTrue, reason: 'HTTP server still listening');
     });
 
     test('a failed dispose still ends the process on /api/shutdown', () async {
@@ -244,6 +243,27 @@ Future<void> _until(bool Function() done, {Duration timeout = const Duration(sec
   final end = DateTime.now().add(timeout);
   while (!done()) {
     if (DateTime.now().isAfter(end)) throw TimeoutException('condition not met');
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+  }
+}
+
+/// Whether connections to [port] are refused within [within]. A process
+/// that another test file starts holds this process's listening sockets from
+/// fork until exec, so a port just closed can still take a connection for a
+/// moment — and then drop it unanswered.
+Future<bool> _refusedSoon(int port, {Duration within = const Duration(seconds: 3)}) async {
+  final end = DateTime.now().add(within);
+  while (true) {
+    try {
+      await _call(port, 'GET', '/api/status').timeout(const Duration(milliseconds: 500));
+    } on SocketException {
+      return true;
+    } on HttpException {
+      // Taken, then dropped: the socket was still held.
+    } on TimeoutException {
+      // Taken and not answered: the socket is still held.
+    }
+    if (DateTime.now().isAfter(end)) return false;
     await Future<void>.delayed(const Duration(milliseconds: 20));
   }
 }
