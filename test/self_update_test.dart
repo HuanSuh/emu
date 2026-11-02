@@ -237,6 +237,67 @@ void main() {
       expect(Link('$bin/emu').targetSync(), '$oldDir/emu');
     });
 
+    test('characterization: an old version-folder link is a plugin install, any marketplace name', () {
+      final dir = '$plugins/cache/some-market/emu/1.2.3';
+      Directory(dir).createSync(recursive: true);
+      expect(updater('$dir/emu').kind, InstallKind.plugin);
+      expect(updater('$oldDir/emu').kind, InstallKind.plugin);
+    });
+
+    test('characterization: a checkout inside the plugin cache is a git install', () {
+      Directory('$oldDir/.git').createSync();
+      File('$oldDir/pubspec.yaml').writeAsStringSync('name: emu\n');
+      expect(updater('$oldDir/emu').kind, InstallKind.git);
+    });
+
+    test('characterization: a plugin folder with a pubspec but no .git stays a plugin install', () {
+      File('$oldDir/pubspec.yaml').writeAsStringSync('name: emu\n');
+      expect(updater('$oldDir/emu').kind, InstallKind.plugin);
+    });
+
+    test('characterization: up to date, nothing runs and PATH stays', () async {
+      final r = await updater('$oldDir/emu', path: bin, current: '0.2.0').apply('0.2.0');
+      expect(r.updated, isFalse);
+      expect(r.binary, '$oldDir/emu');
+      expect(cmds.calls, isEmpty);
+      expect(Link('$bin/emu').targetSync(), '$oldDir/emu');
+    });
+
+    test('characterization: ~/.local/bin is moved even when it is not on PATH', () async {
+      pluginUpdates();
+      final tools = '${tmp.path}/tools';
+      Directory(tools).createSync();
+      File('$tools/claude').writeAsStringSync('');
+      final r = await updater('$oldDir/emu', path: tools).apply('0.2.0');
+      expect(r.linked, ['$bin/emu']);
+    });
+
+    test('characterization: a regular file named emu on PATH is left alone', () async {
+      pluginUpdates();
+      final other = '${tmp.path}/other';
+      Directory(other).createSync();
+      File('$other/emu').writeAsStringSync('mine');
+      final r = await updater('$oldDir/emu', path: '$other:$bin').apply('0.2.0');
+      expect(r.linked, ['$bin/emu']);
+      expect(File('$other/emu').readAsStringSync(), 'mine');
+    });
+
+    test('characterization: a dangling link that was never ours is left alone', () async {
+      pluginUpdates();
+      final other = '${tmp.path}/other';
+      Directory(other).createSync();
+      Link('$other/emu').createSync('${tmp.path}/gone/emu');
+      final r = await updater('$oldDir/emu', path: '$other:$bin').apply('0.2.0');
+      expect(r.linked, ['$bin/emu']);
+      expect(Link('$other/emu').targetSync(), '${tmp.path}/gone/emu');
+    });
+
+    test('characterization: a failed update releases the lock', () async {
+      cmds.answers['claude plugin update'] = ProcessResult(0, 1, '', 'network down');
+      await expectLater(updater('$oldDir/emu', path: bin).apply('0.2.0'), throwsA(isA<UpdateError>()));
+      expect(File('$home/.emu/update.lock').existsSync(), isFalse);
+    });
+
     test('installPath: the user scope, highest version, of the folders that exist', () {
       String dir(String v) {
         final d = '$plugins/cache/emu/emu/$v';
@@ -285,6 +346,14 @@ void main() {
           throwsA(isA<UpdateError>().having((e) => e.message, 'message', contains('network down'))));
       expect(Link('$bin/emu').targetSync(), '$oldDir/emu');
     });
+  });
+
+  test('characterization: a loose binary is unknown and nothing runs', () async {
+    final u = updater('${tmp.path}/emu');
+    expect(u.kind, InstallKind.unknown);
+    await expectLater(u.check(), throwsA(isA<UpdateError>().having((e) => e.refused, 'refused', isTrue)));
+    await expectLater(u.apply('0.2.0'), throwsA(isA<UpdateError>().having((e) => e.refused, 'refused', isTrue)));
+    expect(cmds.calls, isEmpty);
   });
 
   test('a development build or a loose binary is refused', () async {
