@@ -58,7 +58,7 @@ if [ ! -e "$stable" ]; then
       *) continue ;;
     esac
     linked=$(basename "$(dirname "$target")")
-    if [ ! -e "$target" ] || newer "$plugin" "$linked"; then
+    if [ ! -e "$target" ] || newer "$plugin" "$linked" 2>/dev/null; then
       echo "emu $plugin 준비됨(현재 CLI 는 이전 버전 폴더를 가리킴). /emu-setup 을 실행하면 고정 위치로 옮기고 업데이트합니다."
     fi
     exit 0

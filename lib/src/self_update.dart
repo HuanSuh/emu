@@ -398,7 +398,7 @@ class SelfUpdater {
       throw UpdateError('cannot find the updated plugin folder in ${p.pluginsDir}/installed_plugins.json');
     }
     final current = kind == InstallKind.stable ? record?.dir : _dir.path;
-    if (current != null && _resolve(dir) == _resolve(current) && pluginReady == null) {
+    if (current != null && _resolve(dir) == _resolve(current) && ready == null) {
       throw UpdateError('the plugin is still at $dir after `claude plugin update` — '
           'the marketplace may not have v$latest yet; try again later.');
     }
@@ -432,10 +432,15 @@ class SelfUpdater {
       if (tmp.existsSync()) tmp.deleteSync();
       File(from).copySync(tmp.path); // keeps the mode
       tmp.renameSync(dst.path);
-      rec.write(_home);
     } on FileSystemException catch (e) {
       if (tmp.existsSync()) tmp.deleteSync();
       throw UpdateError('could not install ${dst.path}: ${e.message}');
+    }
+    try {
+      rec.write(_home);
+    } on FileSystemException catch (e) {
+      // The binary is in place and works; without a record it counts as the plugin's.
+      say('! could not write ${InstallRecord.fileIn(_home).path}: ${e.message}');
     }
     say('» installed ${dst.path} (v${rec.version})');
   }
