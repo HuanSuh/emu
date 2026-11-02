@@ -12,7 +12,10 @@
 - **스파이크 결과: `Flutter.Navigation` 만으로는 부족하다.** 이벤트는 있지만 선언형 Navigator
   (`go_router` 의 `go`/`push`)에서는 나가지 않고, pop 에서는 *닫힌* 라우트를 알려 준다(§3).
 - **그래서 라우트 감지는 두 층.** 앱 코드 변경 없는 층(`Flutter.Navigation` + 공개 API 스냅샷)과,
-  앱 한 줄을 추가하는 정확한 층(`Emu.Route` 이벤트)을 함께 둔다(§6).
+  앱이 `dart:developer` 로 직접 보내는 정확한 층(`Emu.Route` 이벤트)을 함께 둔다(§6).
+  `Emu.Route` 는 emu 패키지 의존 없이 쓰는 **이벤트 계약**으로 문서화한다(§6.4).
+- **이슈 리포터 피드백을 반영했다(§13).** `go_router` 앱, emu 패키지 의존 불가, 탭이 라우트가 아님,
+  실제 경로와 라우트 이름을 함께 원함. 그래서 앱이 보내는 층을 먼저 구현한다(§10).
 - **`emu routes` 보류 사유는 해소되지 않았다.** 타임라인은 전체 스택이 필요 없어 그 문제를 피해 갈
   뿐이다(§12).
 
@@ -107,6 +110,9 @@
   `delegate.dart:193`, `:320`). `RouteInformationProvider` 는 프레임워크 공개 API 다
   (`router.dart:1465`, `Router.maybeOf` `:507`).
 
+- **라우트가 아닌 탭**: 하단 탭을 `IndexedStack` 같은 화면 내부 상태로 바꾸는 앱도 있다(이슈 리포터의 앱).
+  이 경우 라우트 정보가 아예 바뀌지 않으므로 어떤 라우트 기반 방법으로도 잡을 수 없고, 앱이 알려 줘야 한다.
+
 즉 이슈의 "VM Service 로 읽는다"는 Navigator 1.0 앱에서는 대체로 되지만, `go_router` 앱에서는
 주요 전환 대부분을 놓친다.
 
@@ -145,7 +151,7 @@ final Map<String, dynamic>? data;  // kind 별 구조화 데이터
 |---|---|---|---|
 | (없음) | 기존 그대로 | 기존 그대로 | 없음 |
 | `request` | `mock` | `[mock] GET … → 200 …`(변경 없음) | `{hitId, method, url, status, mocked?, error?, ms, startSeq}` |
-| `route` | `route` | `[route] /home` | `{via, description?}` |
+| `route` | `route` | `[route] /user/42 · feed` | `{via, location?, name?, detail?, description?}` |
 | `action` | `action` | `[action] tap --text "Login"` | `{cmd, x?, y?, text?, key?, widgetType?}` |
 
 `route`·`action` 은 레벨을 `system` 으로 명시한다. `add` 에 맡기면 `inferLevel` 이 `/error` 같은 경로를
@@ -188,11 +194,11 @@ VM 이벤트의 기기 측 타임스탬프로 재정렬하지는 않는다. 기�
 
 | | (a) `Flutter.Navigation` | (b) `NavigatorObserver` | (c) 로그 줄 규약 | (d) private eval | (e) 공개 API eval 스냅샷 | (f) `Emu.Route` 이벤트 |
 |---|---|---|---|---|---|---|
-| 방식 | `Extension` 스트림 구독 | `emu_hook` observer 를 앱에 등록 | `[emu:route] /x` 줄 인식 | `_history` 등 접근 | `rootElement` 를 걸으며 `ModalRoute.of`·`isCurrent`, `Router.maybeOf` 읽기 | 앱이 `developer.postEvent('Emu.Route', …)` |
-| 앱 코드 변경 | 없음 | 있음(Navigator 마다) | 있음 | 없음 | 없음 | 있음(한 곳) |
+| 방식 | `Extension` 스트림 구독 | `emu_hook` observer 를 앱에 등록 | `[emu:route] /x` 줄 인식 | `_history` 등 접근 | `rootElement` 를 걸으며 `ModalRoute.of`·`isCurrent`, `Router.maybeOf` 읽기 | 앱이 `dart:developer` 의 `postEvent('Emu.Route', …)` 를 직접 호출 |
+| 앱 코드 변경 | 없음 | 있음(Navigator 마다, emu 패키지 의존) | 있음 | 없음 | 없음 | 있음(한 곳, emu 패키지 의존 없음) |
 | Navigator 1.0 | 시점 정확, 값은 pop 에서 부정확 | 정확 | 앱 구현 나름 | 정확 | 정확(추정) | 앱 구현 나름 |
-| go_router `go`/`push` | **놓침** | 잡음(이름은 패턴) | 잡음 | 잡음 | 호출될 때만 | 잡음(실제 URI) |
-| 탭 전환 | **놓침** | 놓칠 수 있음 | 잡음 | 호출될 때만 | 호출될 때만 | 잡음 |
+| go_router `go`/`push` | **놓침** | 잡음(이름은 패턴) | 잡음 | 잡음 | 호출될 때만 | 잡음(실제 경로 + 이름) |
+| 탭 전환(라우트 아닌 `IndexedStack` 포함) | **놓침** | 놓침 | 앱이 찍으면 잡음 | 놓침 | 놓침 | 앱이 보내면 잡음 |
 | 스택 전체 | 불가 | 앱 쪽 추적 시 가능 | 불가 | 가능 | 불가 | 불가 |
 | 비용 | 낮음(장기 연결 1개) | `emu_hook` 에 Flutter 의존 추가 | 낮음 | 높음(버전마다 깨짐) | 호출마다 트리 순회 | 낮음(장기 연결 1개) |
 | 버전 취약성 | 낮음(비공식 이벤트) | 낮음 | 없음 | **높음** | 낮음(공개 API) | 없음(emu 소유 계약) |
@@ -209,28 +215,28 @@ release 는 VM Service 가 없어 (c) 외에는 쓸 수 없다. emu 의 조작·
 실패할 때의 기록용 힌트로만 쓴다. pop 의 닫힌 라우트를 현재 화면으로 착각하지 않기 위해서다.
 스냅샷이 실패하면 `currentRoute` 는 null 이다. 같은 값이면 엔트리를 만들지 않는다.
 
-**2층 — 앱 한 줄: (f).** `go_router` 처럼 1층이 놓치는 앱을 위한 경로다. 전달 경로는 1층과 같은
-`Extension` 스트림이라 서버 쪽 구현이 거의 늘지 않는다. `Emu.Route` 를 받은 세션은 그 값만 쓰고
-1층 결과는 무시한다.
+**2층 — 앱이 직접 보냄: (f).** `go_router` 앱이나 라우트가 아닌 탭처럼 1층이 놓치는 경우를 위한
+경로다. 앱은 emu 패키지 없이 `dart:developer` 의 `postEvent` 로 §6.4 계약의 이벤트를 보낸다. 전달
+경로는 1층과 같은 `Extension` 스트림이라 서버 쪽 구현이 거의 늘지 않는다.
 
-```dart
-// emu_hook 에 추가 — dart:developer 만 쓰므로 Flutter 의존이 생기지 않는다
-router.routerDelegate.addListener(() {
-  EmuRoute.report(router.routeInformationProvider.value.uri.toString());
-});
-```
+**두 층의 관계.** 한 isolate 에서 `Emu.Route` 를 한 번이라도 받으면 그 뒤로는 앱이 보낸 값만
+`currentRoute` 로 쓰고, 1층은 그 isolate 동안 끈다. hot restart 로 isolate 가 바뀌면 다시 1층부터
+시작한다. 두 출처를 섞지 않는 이유는 1층의 pop 이벤트가 열림·닫힘을 구분하지 못해, 앱이 보낸 정확한
+값을 틀린 값으로 덮을 수 있기 때문이다. 그래서 `Navigator.push` 로 띄운 모달·바텀시트도 화면에
+남기고 싶다면 앱이 보내야 한다(§6.4 의 observer 예시).
 
 (b) 대신 (f) 를 고른 이유:
 
-- `emu_hook` 은 지금 순수 Dart 패키지다(`packages/emu_hook/pubspec.yaml` 에 Flutter 의존 없음).
-  `NavigatorObserver` 를 넣으면 Flutter 의존이 생긴다.
-- observer 는 Navigator 마다 등록해야 하고 탭 전환은 여전히 놓칠 수 있다.
-- `go_router` 의 이름은 패턴이지만 (f) 는 실제 URI 를 준다.
+- 앱이 emu 패키지에 의존하지 않아도 된다. 이슈 리포터의 앱은 외부 저장소 의존을 더할 수 없다(§13).
+- `NavigatorObserver` 를 `emu_hook` 에 넣으면 지금 순수 Dart 패키지인 `emu_hook` 에 Flutter 의존이 생긴다
+  (`packages/emu_hook/pubspec.yaml`).
+- observer 는 Navigator 마다 등록해야 하고, 라우트가 아닌 탭 전환은 원리상 못 잡는다.
+- `go_router` 의 페이지 이름은 패턴이지만 (f) 는 실제 경로와 이름을 함께 준다.
 
 **미검증 후보.** 평가식으로 `Router` 의 `routeInformationProvider` 에 리스너를 달아 앱 코드 없이 (f) 를
-재현할 수 있을지도 모른다. `binding.dart` 스코프에 `developer` import 가 있어 조건은 맞지만, 평가식
-클로저가 살아남는지, hot restart 뒤 다시 달 수 있는지는 실행해 봐야 안다. PR 0 에서 확인한다.
-된다면 2층의 대부분이 필요 없어진다.
+흉내 낼 수 있을지도 모른다. `binding.dart` 스코프에 `developer` import 가 있어 조건은 맞지만, 평가식
+클로저가 살아남는지, hot restart 뒤 다시 달 수 있는지는 실행해 봐야 안다. 된다 해도 라우트가 아닌 탭은
+못 잡으므로 (f) 를 대신하지 못한다. 우선순위를 낮춰 PR 0 에서 여유가 있으면 확인한다.
 
 ### 6.3 장기 VM Service 연결
 
@@ -245,6 +251,63 @@ router.routerDelegate.addListener(() {
 - **hot restart/cold**: `currentRoute` 를 null 로 비운다.
 - **공존**: 앱 하나에 VM 클라이언트 여럿이 스트림을 구독하는 것은 가능하다(DevTools 가 이렇게 쓴다).
   다만 emu 의 짧은 연결·DDS 와 함께 쓸 때를 PR 0 에서 실측한다.
+
+### 6.4 `Emu.Route` 이벤트 계약 (제안)
+
+앱이 emu 의존 없이 구현할 수 있도록, 이름과 필드를 emu 가 보장하는 계약으로 둔다. 구현 시
+README 두 벌에도 같은 내용을 싣는다.
+
+- **전달**: `dart:developer` 의 `postEvent('Emu.Route', data)`. 기본 `Extension` 스트림.
+  리스너가 없으면 no-op 이라 emu 없이 돌려도 비용이 거의 없다(§3.1).
+- **의미**: 이벤트 하나가 "지금 화면은 이것" 이라는 **상태 보고**다. push/pop 같은 연산이 아니다.
+  같은 값이 연달아 오면 emu 가 하나로 합친다.
+  emu 는 앞 이벤트의 필드를 이어받지 않는다. 탭 화면으로 돌아올 때도 `detail` 까지 다시 담아 보낸다.
+- **보낼 때**: 앱 시작 직후 한 번, 그리고 화면·탭이 바뀔 때마다. 시작 때 보내야 첫 화면과 hot restart
+  직후의 화면이 비지 않는다.
+
+| 필드 | 타입 | 필수 | 뜻 | 예 |
+|---|---|---|---|---|
+| `location` | String | 예 | 실제 경로. 재현할 때 그대로 다시 열 수 있는 값 | `/user/42?tab=posts` |
+| `name` | String | 아니오 | 같은 화면끼리 묶는 이름이나 패턴 | `user` 또는 `/user/:id` |
+| `detail` | String | 아니오 | 경로로 드러나지 않는 화면 내부 상태(탭, 모달 등) | `feed`, `sheet:filter` |
+
+- **emu 의 처리**: `location` 이 문자열이 아니거나 비어 있으면 무시하고, 세션당 한 번 경고한다.
+  모르는 필드는 무시한다(나중에 필드를 더해도 옛 emu 가 깨지지 않음). 각 값은 1KB 에서 자른다.
+  값은 **받은 그대로** 저장한다. 민감한 값은 앱이 보내기 전에 거른다.
+- **표시**: `LogEntry.route` 는 `location`, `detail` 이 있으면 `location · detail`.
+  `name` 과 원래 값은 `route` 엔트리의 `data` 에 둔다.
+
+앱 쪽 예시(`go_router` 16 기준, emu 패키지 없음):
+
+```dart
+import 'dart:developer' as developer;
+import 'package:flutter/foundation.dart';
+
+void reportEmuRoute(String location, {String? name, String? detail}) {
+  if (!kDebugMode) return;
+  developer.postEvent('Emu.Route', {
+    'location': location,
+    if (name != null) 'name': name,
+    if (detail != null) 'detail': detail,
+  });
+}
+
+// 라우터 이동: go/push/pop, ShellRoute 안의 이동까지 지난다.
+void reportCurrent() {
+  final s = router.state; // 가장 깊은 leaf 의 상태
+  reportEmuRoute(s.uri.toString(), name: s.name ?? s.fullPath);
+}
+router.routerDelegate.addListener(reportCurrent);
+reportCurrent(); // 시작 직후 한 번
+
+// 라우트가 아닌 탭: 탭 인덱스가 바뀌는 곳에서
+reportEmuRoute(router.state.uri.toString(), name: router.state.name, detail: 'feed');
+```
+
+`router.state` 는 `routerDelegate.state` 이고(`router.dart:271`), 마지막 매치가 `ShellRouteMatch` 면
+가장 깊은 leaf 까지 내려간다(`delegate.dart:201`, `match.dart:786-790`). `Navigator.push` 로 띄우는
+모달까지 남기려면 루트 Navigator 에 앱 자체 `NavigatorObserver` 를 달아 `didPush`/`didPop` 에서
+같은 함수를 부르면 된다. 이것도 Flutter API 만 쓰므로 emu 의존이 생기지 않는다.
 
 ## 7. 기기 조작을 action 엔트리로
 
@@ -317,8 +380,9 @@ Logs 탭을 확장한다. 새 탭을 만들지 않는다. 같은 스트림과 �
 (Linux CI 포트 테스트 간섭), 기존 `FakeEngine` 과 순수 함수로 검증한다. 이벤트 소스는 스트림 seam 뒤에 둬서
 서버 테스트에 실제 `VmService` 가 필요 없게 한다.
 
-**PR 0 — 라이브 스파이크(문서만).** 예제 앱에서 §6.2 의 스냅샷 평가식, 평가식 리스너 후보, 구독 공존,
-순서 편차를 잰다. 결과를 이 문서에 반영한다. 이번 메모는 소스 확인만 했으므로 먼저 해야 한다.
+**PR 0 — 라이브 스파이크(문서만).** 예제 앱에서 §6.2 의 스냅샷 평가식, 구독 공존, 순서 편차를 잰다.
+평가식 리스너 후보는 여유가 있으면 본다. 결과를 이 문서에 반영한다. PR 4(1층)만 이 결과에 걸려 있고,
+PR 1~3 은 기다리지 않아도 된다.
 
 **PR 1 — 모델 + 요청 + `emu timeline`.** 라우트 없이도 쓸모 있는 첫 단계.
 
@@ -333,18 +397,20 @@ Logs 탭을 확장한다. 새 탭을 만들지 않는다. 같은 스트림과 �
 - 테스트: 조작 전후 seq 순서, 실패 시 엔트리, `text` 내용 미저장, **`assert --log` 가 action 에 안 걸림**,
   `/api/errors` 배너에 안 섞임.
 
-**PR 3 — 1층 라우트.**
+**PR 3 — 장기 연결 + `Emu.Route`(2층).** 이슈 리포터 같은 `go_router` 앱이 바로 쓰는 단계라 1층보다 먼저 한다.
 
-- 장기 연결, `Flutter.Navigation` 파서, 스냅샷, `currentRoute`, 재시작 시 초기화, `request` 의 시작 라우트.
-- 테스트: 파서 표(push/pop/null route/name null/이상한 payload), 가짜 스트림으로 찍기, 같은 값 중복 제거,
-  URI 변경 시 재구독, 연결 실패가 세션에 영향 없음, 평가식 빌더의 문자열 테스트.
-- 문서: `DESIGN.md` 변경 이력, 이 문서 상태 갱신.
+- 장기 연결과 재구독, `Emu.Route` 파서(§6.4 계약), `currentRoute` 찍기, 같은 값 합치기, 재시작 시 초기화,
+  `request` 의 시작 라우트.
+- 테스트: 계약 표(필수 필드 누락·타입 오류·빈 값·모르는 필드·1KB 초과·`detail` 합성), 가짜 스트림으로
+  찍기, URI 변경 시 재구독, 연결 실패가 세션에 영향 없음, 경고는 세션당 한 번.
+- 문서: README 두 벌에 계약과 `go_router` 예시, SKILL.md, `DESIGN.md` 변경 이력.
+  `emu_hook` 헬퍼는 만들지 않는다(Q12).
 
-**PR 4 — 2층 `Emu.Route`.**
+**PR 4 — 1층(`Flutter.Navigation` + 스냅샷).** PR 0 결과에 따라 범위를 정한다.
 
-- `emu_hook` 의 `EmuRoute.report`, 서버의 우선순위 처리.
-- 테스트: `Emu.Route` 수신 뒤 1층 무시, `emu_hook` 단위 테스트, `kDebugMode` 가드 문서화.
-- 문서: README 두 벌의 `go_router` 예시.
+- `Flutter.Navigation` 파서, 디바운스 뒤 스냅샷, 두 층의 관계(§6.2).
+- 테스트: 파서 표(push/pop/null route/name null/이상한 payload), `Emu.Route` 를 받은 isolate 에서 1층 무시,
+  hot restart 뒤 1층 재개, 평가식 빌더의 문자열 테스트.
 
 **PR 5 — 대시보드.**
 
@@ -353,21 +419,25 @@ Logs 탭을 확장한다. 새 탭을 만들지 않는다. 같은 스트림과 �
 
 ## 11. 열린 질문
 
-메인테이너 합의가 필요한 결정들이다. Q1·Q9 는 PR 3 전에, Q4·Q5 는 PR 1 전에 정해야 한다.
-나머지는 해당 PR 리뷰에서 정해도 된다.
+메인테이너 합의가 필요한 결정들이다. Q4·Q5 는 PR 1 전에, Q9·Q11 은 PR 3 전에 정해야 한다.
+나머지는 해당 PR 리뷰에서 정해도 된다. Q1·Q2·Q3·Q8 은 이슈 리포터의 답(§13)으로 방향이 정해져
+확정으로 표시했다. 메인테이너가 뒤집지 않으면 이대로 간다.
 
 | # | 질문 | 선택지 | 추천 |
 |---|---|---|---|
-| Q1 | 라우트 감지 범위 | A. 1층만 / B. 1층 + `Emu.Route` / C. `NavigatorObserver` 까지 | **B.** A 는 `go_router` 앱에서 이슈 목표를 못 채운다 |
-| Q2 | 이슈 제안의 로그 줄 규약(c)도 받을까 | A. 받지 않음 / B. `Emu.Route` 와 함께 수용 | **A.** 2층 입구는 하나로. 단 `Emu.Route` 를 쓰기 어려운 앱이 나오면 재검토 |
-| Q3 | 라우트 값이 다를 때 표기 | A. 그대로(이름·패턴·URI 혼재) / B. 앱이 준 값 우선 + `data.via` 로 출처 표기 | **B** |
+| Q1 | 라우트 감지 범위 | A. 1층만 / B. 1층 + `Emu.Route` / C. `NavigatorObserver` 까지 | **B (확정).** A 는 `go_router` 앱과 라우트 아닌 탭을 못 잡고, C 는 emu 패키지 의존이 필요하다 |
+| Q2 | 이슈 제안의 로그 줄 규약(c)도 받을까 | A. 받지 않음 / B. `Emu.Route` 와 함께 수용 | **A (확정).** 리포터도 `Emu.Route` 로 충분하다고 했다. 쓰기 어려운 앱이 나오면 재검토 |
+| Q3 | 화면 표시 값 | A. 이름(패턴)만 / B. 실제 경로만 / C. 실제 경로 + 이름 | **C (확정).** 실제 경로는 재현용, 이름은 묶어 보기용. 출처는 `data.via` |
 | Q4 | `/api/logs` 기본 필터 | A. 새 kind 제외 / B. 전부 포함 / C. 별도 `/api/timeline` | **A.** B 는 assert 오탐, C 는 중복 경로 |
 | Q5 | 요청 표현 | A. 완료 1엔트리 + `startSeq` / B. 시작·완료 2엔트리 | **A** |
 | Q6 | 대시보드 배치 | A. Logs 탭 확장 / B. 새 Timeline 탭 | **A** |
 | Q7 | `emu text` 내용 저장 | A. 글자 수만 / B. 평문 / C. 설정으로 선택 | **A** |
-| Q8 | 라우트 인자 저장 | A. 저장 안 함 / B. 값 일부 / C. 전부 | **A.** 쿼리의 토큰이 파일에 남는다. `Emu.Route` URI 는 앱이 정하는 값 그대로 |
+| Q8 | 라우트 값의 민감 정보 | A. 1층 `arguments` 는 저장 안 함, `Emu.Route` 는 받은 그대로 / B. emu 가 쿼리를 걸러 냄 | **A (확정).** 앱이 보낼 때 거른다(리포터 동의). 1층 `arguments` 는 앱이 거를 기회가 없어 저장하지 않는다 |
 | Q9 | 장기 VM 연결을 기본으로 켤까 | A. 항상 / B. `emu.yaml` 옵션 / C. 처음 조회 때 | **A.** 조회 후에 켜면 지난 전환을 못 얻는다. 단 PR 0 결과가 나쁘면 B |
 | Q10 | 타임라인 위에 판정 기능을 얹을까 | A. 조회만 / B. `emu assert --route` 추가 | **A.** 판정 추가는 B1 경계 논의가 먼저다. 실수요가 생기면 별도 이슈 |
+| Q11 | `Emu.Route` 를 받은 뒤 1층 이벤트 | A. 그 isolate 동안 무시 / B. `currentRoute` 는 안 바꾸고 참고 엔트리로만 기록 | **A.** pop 이 열림·닫힘을 구분하지 못해 B 는 오해를 부르는 줄을 남긴다. 모달은 앱이 보낸다(§6.4) |
+| Q12 | `emu_hook` 에 `Emu.Route` 헬퍼를 둘까 | A. 두지 않음(계약 문서만) / B. 둔다 | **A.** 첫 사용자가 의존을 못 넣고, 헬퍼가 하는 일이 `postEvent` 한 줄이다. 요청이 오면 그때 추가 |
+| Q13 | 계약 필드 이름 | `location`/`name`/`detail` 그대로 / 다른 이름 | **그대로.** 계약 공개 뒤에는 바꾸기 어려우니 PR 3 리뷰에서 한 번 확정한다 |
 
 ## 12. `emu routes` 보류와의 관계
 
@@ -384,3 +454,17 @@ private eval 을 쓰지 않고 진행할 수 있고, 위 보류 결정을 뒤집
 **새로 알게 된 것.** (e) 가 PR 0 에서 검증되면 현재 화면 하나는 공개 API 로 얻을 수 있다. 그때
 `emu routes` 를 "전체 스택" 이 아니라 "현재 화면" 으로 줄여 다시 볼 여지가 있고, 재검토 조건으로
 남겨 둔다. `DESIGN.md` 의 변경 이력은 구현 시점(PR 3)에 갱신한다.
+
+## 13. 이슈 리포터 피드백 (2026-11-02)
+
+[이슈 코멘트](https://github.com/HuanSuh/emu/issues/89)에서 받은 답과 반영 내용.
+
+| 받은 답 | 설계에 준 영향 |
+|---|---|
+| `go_router` 16.2.4, 주로 `goNamed`·`pushNamed`, `ShellRoute` 안에 중첩 Navigator | 1층만으로는 주요 이동을 놓친다는 스파이크 결론과 맞다. 2층(PR 3)을 1층(PR 4)보다 먼저 한다 |
+| 모달·바텀시트는 `Navigator.of(context).push` 로 직접 띄움 | 1층에서는 이벤트가 오지만 2층을 쓰면 무시된다. 남기려면 앱이 보낸다(§6.2, §6.4 observer 예시, Q11) |
+| 하단 탭은 라우트가 아닌 화면 내부 상태(`IndexedStack` 계열) | 라우트 기반 방법으로는 원리상 못 잡는다(§3.3). 계약에 `detail` 필드를 두었다 |
+| 디버그 전용 한 줄은 가능, emu 패키지 의존은 불가 | `Emu.Route` 를 `dart:developer` 만으로 쓰는 계약으로 문서화(§6.4). `emu_hook` 헬퍼는 두지 않는다(Q12) |
+| 로그 줄 규약(c)은 필요 없음 | Q2 확정 |
+| 실제 경로를 선호하고, 묶어 보기용 이름도 함께 | 계약의 `location`(필수) + `name`(선택), Q3 확정 |
+| 민감한 값은 앱이 거르고 emu 는 받은 그대로 | Q8 확정 |
