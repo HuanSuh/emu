@@ -1344,6 +1344,8 @@ emu assert --since <seq> --expect '…'  # seq: the log cursor from before the r
 - A `tap` waits up to 10 s for its widget, and every `tap` and `text` is followed by a short
   settle. The first step that fails ends the run; the scenario stays on, and the answer says
   which step and why. An app that never goes quiet is not a failure.
+- On an iOS simulator, the first time a URL scheme opens on that device iOS asks to confirm. emu
+  can't tap that alert, so the first `tap` reports no widget: accept it once on the simulator.
 - Nothing starts when the app isn't running (409), or when the replay is missing (404) or
   broken (400): the active scenario doesn't change. A mistake in the file — an unknown step
   included — is listed by `emu mock` with the other problems.

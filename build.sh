@@ -4,7 +4,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 echo "» fetching deps"
-dart pub get >/dev/null
+# Offline first, at the locked versions: `emu update --local` promises no network,
+# and plain `pub get` fails without one even when everything is cached.
+dart pub get --offline --enforce-lockfile >/dev/null 2>&1 || dart pub get >/dev/null
 
 echo "» bundling web assets"
 dart run tool/bundle_web.dart
