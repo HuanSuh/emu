@@ -89,6 +89,8 @@ function renderMockList() {
     return `<div class="mscen${name === c.active || cli ? ' on' : ''}" data-scenario="${escapeHtml(name)}">` +
       `<span class="name">${escapeHtml(name)}${mockDirty(name) ? ' •' : ''}</span>` +
       (cli ? `<span class="mx" id="mock-reset" title="emu mock reset">clear</span>` : '') +
+      (c.replays[name] ? `<span class="mx" data-replay="${escapeHtml(name)}" title="${escapeHtml(replayNote(c.replays[name]))}">replay</span>` : '') +
+      (editable ? `<span class="mx" data-entry="${escapeHtml(name)}" title="Save the deep link in the URL box, or the last one opened, as this scenario's entry">set entry</span>` : '') +
       `<span class="src" title="${escapeHtml(c.sources[name] || 'emu.yaml')}">${cli ? 'cli' : editable ? 'file' : 'yaml'}</span></div>` +
       rules.map((rule, i) => {
         const sel = mockState.sel && mockState.sel.scenario === name && mockState.sel.index === i;
@@ -106,6 +108,12 @@ function renderMockList() {
       const m = (c.scenarios[CLI][Number(el.dataset.unset)] || {}).match || {};
       unsetOverride(`${m.method || '*'} ${m.url || m.path}`);
     };
+  });
+  mockEls.list.querySelectorAll('[data-replay]').forEach(el => {
+    el.onclick = (e) => { e.stopPropagation(); replayScenario(el.dataset.replay); };
+  });
+  mockEls.list.querySelectorAll('[data-entry]').forEach(el => {
+    el.onclick = (e) => { e.stopPropagation(); saveReplayEntry(el.dataset.entry); };
   });
   const reset = document.getElementById('mock-reset');
   if (reset) reset.onclick = () => unsetOverride(null);
@@ -245,6 +253,58 @@ async function saveScenario(name, rules = mockRules(name)) {
   toast(`saved ${mockState.config.dir}/${name}.json`);
   await loadMocks();
   return true;
+}
+
+// ---- replay -------------------------------------------------------------------
+
+function replayNote(replay) {
+  const url = replay.entry ? replay.entry.url : 'no entry link';
+  return `scenario on → ${url} → ${replay.steps.length} step(s) → settle`;
+}
+
+// The URL box if it has something, else the last link opened here: the server
+// doesn't track deep links, only this browser's history does.
+function replayEntryUrl(typed, history) {
+  return (typed || '').trim() || history[0] || null;
+}
+
+// The whole file: saving an entry keeps the steps it already has.
+function replayWithEntry(replay, url) {
+  return { entry: { url }, steps: (replay && replay.steps) || [] };
+}
+
+function replayOutcome(name, j) {
+  if (j.ok) return `replayed ${name}: ${j.steps.length} done`;
+  return j.active ? `replay stopped, ${name} stays on — ${j.error}` : `no replay: ${j.error}`;
+}
+
+async function saveReplayEntry(name) {
+  const c = mockState.config;
+  if (c.replayProblems[name]) { toast(`fix ${c.dir}/${name}.replay.json first`); return; }
+  const url = replayEntryUrl(els.urlInput.value, loadUrlHistory());
+  if (!url) { toast('open a deep link first, or type one in the URL box'); return; }
+  const r = await api(`/api/mock/replay/${encodeURIComponent(name)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(replayWithEntry(c.replays[name], url)),
+  });
+  const j = await r.json();
+  toast(j.ok ? `${name} enters at ${url}` : `not saved: ${j.error}`);
+  if (j.ok) loadMocks();
+}
+
+// One at a time: the request holds until the steps are done.
+let replaying = false;
+async function replayScenario(name) {
+  if (replaying) return;
+  replaying = true;
+  toast(`replaying ${name}…`);
+  try {
+    const r = await api(`/api/mock/replay/${encodeURIComponent(name)}`, { method: 'POST' });
+    toast(replayOutcome(name, await r.json()));
+  } catch (e) {
+    toast(`no replay: ${e}`);
+  }
+  replaying = false;
+  loadMocks();
 }
 
 // ---- traffic ------------------------------------------------------------------

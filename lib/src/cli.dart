@@ -2683,10 +2683,11 @@ Future<int> _mockCmd(List<String> args) async {
     print(jsonEncode(r));
     return r['ok'] == true ? 0 : 1;
   }
-  if (replay) replayLines((r['steps'] as List? ?? const []).cast<Map<String, dynamic>>()).forEach(print);
+  final steps = (r['steps'] as List? ?? const []).cast<Map<String, dynamic>>();
+  if (replay) replayLines(steps).forEach(print);
   if (r['ok'] != true) {
-    stderr.writeln('✗ ${r['error']}');
-    if (replay && r['active'] != null) stderr.writeln('(scenario "${r['active']}" stays on)');
+    // A replay that started has just printed where it stopped.
+    stderr.writeln(steps.isEmpty ? '✗ ${r['error']}' : '(scenario "${r['active']}" stays on)');
     return 1;
   }
   if (replay) {

@@ -1306,11 +1306,47 @@ emu mock unset GET '/v1/items*'   # one; `emu mock reset` clears them all
 emu mock log --json --bodies     # what the app actually sent, to assert on
 ```
 
+**Back to the screen in one command** — a scenario says what the app gets, not how to reach
+the screen that shows it. Put that in `mocks/<name>.replay.json` next to `mocks/<name>.json`
+(optional; scenarios in emu.yaml can't have one yet), and `emu mock use <name> --replay` turns
+the scenario on, opens the deep link, runs the steps and waits for the app to settle.
+
+```json
+{
+  "entry": { "url": "myapp://orders/1" },
+  "steps": [
+    { "tap": { "text": "Pay", "index": 0 } },
+    { "tap": { "key": "card-field" } },
+    { "text": "4242", "append": false },
+    { "settle": { "timeoutMs": 10000 } }
+  ]
+}
+```
+
+```bash
+emu mock use declined --replay         # prints each step; exit 1 at the first that fails
+emu mock use declined --replay --json  # {ok, scenario, active, steps: [{i, kind, ok, detail}], seq}
+emu assert --since <seq> --expect '…'  # seq: the log cursor from before the replay
+```
+
+- `entry.url` and `steps` are both optional, but give at least one. A step is `tap` (`text` or
+  `key`, plus `index` when several match), `text` (typed into the focused field, so tap it first;
+  `append: true` adds to what's there) or `settle` (up to 60000 ms).
+- A `tap` waits up to 10 s for its widget, and every `tap` and `text` is followed by a short
+  settle. The first step that fails ends the run; the scenario stays on, and the answer says
+  which step and why. An app that never goes quiet is not a failure.
+- Nothing starts when the app isn't running (409), or when the replay is missing (404) or
+  broken (400): the active scenario doesn't change. A mistake in the file — an unknown step
+  included — is listed by `emu mock` with the other problems.
+- Saving rules leaves the file alone; deleting the scenario deletes it. Versions of emu without
+  replay ignore it.
+
 **Dashboard → Debug → Mocks** shows the scenarios, an editor for each rule (match, status,
 delay, headers, body), and the live traffic: pick a request to see its request and response
 bodies, then **mock this response** to turn it into a rule of the scenario you picked (or the
 name typed in the toolbar), edit it, and save. Switching scenarios applies to the app's next
-request — no restart. Changing `hosts`, `upstream` or `define` needs `emu up` again (they are
+request — no restart. A scenario with a replay file has a **replay** button; **set entry** saves
+the link in the URL box, or the last one you opened, as its entry and keeps its steps. Changing `hosts`, `upstream` or `define` needs `emu up` again (they are
 build-time dart-defines).
 
 ## How it works

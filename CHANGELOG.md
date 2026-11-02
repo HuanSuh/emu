@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+### Added
+- 목 시나리오에 진입 딥링크와 준비 단계를 함께 저장해 한 번에 같은 화면을 다시 만드는 replay. `mocks/<name>.json` 옆의
+  선택 파일 `mocks/<name>.replay.json` 에 `entry.url` 과 `steps`(`tap`·`text`·`settle`)를 적으면 `emu mock use <name> --replay`
+  가 시나리오 적용 → 딥링크 → 단계 → settle 을 실행하고, 처음 실패한 단계에서 멈춰 어디서 왜 실패했는지 알려 준다. 대시보드
+  Mocks 에는 **replay** 와, 연 딥링크를 진입점으로 저장하는 **set entry** 가 생겼다. 시나리오 파일 형식은 그대로이고, 파일이
+  없으면 전과 같으며, 이 기능이 없는 버전의 emu 는 새 파일을 무시한다. emu.yaml 시나리오는 아직 지원하지 않는다.
+
 ## [0.17.4] - 2026-10-30
 
 ### Fixed
