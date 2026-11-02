@@ -65,7 +65,7 @@ void main() {
     installed('0.17.4');
     final r = await hook();
     expect(r.exitCode, 0);
-    expect(r.stdout, 'emu 0.17.5 준비됨(현재 CLI 0.17.4). 업데이트: hub 의 업데이트 버튼 또는 emu update\n');
+    expect(r.stdout, 'emu 0.17.5 is ready (CLI is 0.17.4). Update: the hub Update button or `emu update`\n');
     expect(File('$home/ran').existsSync(), isFalse, reason: 'the hook never runs emu by default');
   });
 
@@ -96,6 +96,22 @@ void main() {
     installed('0.17.4');
     File('$home/.emu/update.lock').writeAsStringSync('$pid');
     expect((await hook()).stdout, isEmpty);
+  });
+
+  test('silent: an empty lock is being taken right now', () async {
+    plugin('0.17.5');
+    installed('0.17.4');
+    File('$home/.emu/update.lock').writeAsStringSync('');
+    expect((await hook()).stdout, isEmpty);
+  });
+
+  test('an empty lock over 5 seconds old is stale, as in SelfUpdater._lock', () async {
+    plugin('0.17.5');
+    installed('0.17.4');
+    File('$home/.emu/update.lock')
+      ..writeAsStringSync('')
+      ..setLastModifiedSync(DateTime.now().subtract(const Duration(minutes: 1)));
+    expect((await hook()).stdout, contains('0.17.5'));
   });
 
   test('a dead lock does not silence it', () async {
@@ -140,7 +156,7 @@ void main() {
       installed('0.17.4');
       dart();
       final r = await hook(env: {'EMU_AUTO_UPDATE': '1'});
-      expect(r.stdout, contains('백그라운드'));
+      expect(r.stdout, contains('in the background'));
       await until(() => File('$home/ran').existsSync());
       expect(File('$home/ran').readAsStringSync(), 'update --yes --local\n');
       expect(File('$home/.emu/auto-update.failed').existsSync(), isFalse);
@@ -155,7 +171,7 @@ void main() {
       await until(() => failed.readAsStringSync().trim() == '0.17.5');
       File('$home/ran').deleteSync();
       final r = await hook(env: {'EMU_AUTO_UPDATE': '1'});
-      expect(r.stdout, contains('실패'));
+      expect(r.stdout, contains('auto-update failed'));
       expect(File('$home/ran').existsSync(), isFalse);
     });
 

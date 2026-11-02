@@ -33,12 +33,19 @@ newer() {
   return 1
 }
 
-# An update is running: an empty lock is being taken right now.
+# An update is running. Same rule as SelfUpdater._lock: an empty lock is being
+# taken right now, unless it is over 5 seconds old (the holder died before
+# writing its pid). GNU stat first: BSD rejects -c, but GNU accepts -f.
 update_running() {
   [ -f "$lock" ] || return 1
-  local holder
+  local holder mtime
   holder=$(cat "$lock" 2>/dev/null)
-  [ -z "$holder" ] && return 0
+  if [ -z "$holder" ]; then
+    mtime=$(stat -c %Y "$lock" 2>/dev/null || stat -f %m "$lock" 2>/dev/null) || return 0
+    [ -n "$mtime" ] || return 0
+    [ $(($(date +%s) - mtime)) -le 5 ]
+    return
+  fi
   kill -0 "$holder" 2>/dev/null
 }
 
@@ -59,7 +66,7 @@ if [ ! -e "$stable" ]; then
     esac
     linked=$(basename "$(dirname "$target")")
     if [ ! -e "$target" ] || newer "$plugin" "$linked" 2>/dev/null; then
-      echo "emu $plugin 준비됨(현재 CLI 는 이전 버전 폴더를 가리킴). /emu-setup 을 실행하면 고정 위치로 옮기고 업데이트합니다."
+      echo "emu $plugin is ready (the CLI still points at an older version folder). Run /emu-setup to move it to ~/.emu/bin and update."
     fi
     exit 0
   done
@@ -72,7 +79,7 @@ current=$(json_version "$record")
 [ -n "$current" ] || exit 0
 newer "$plugin" "$current" || exit 0
 
-notice="emu $plugin 준비됨(현재 CLI $current). 업데이트: hub 의 업데이트 버튼 또는 emu update"
+notice="emu $plugin is ready (CLI is $current). Update: the hub Update button or \`emu update\`"
 
 if [ "${EMU_AUTO_UPDATE:-}" != "1" ] || ! command -v dart >/dev/null 2>&1; then
   echo "$notice"
@@ -80,7 +87,7 @@ if [ "${EMU_AUTO_UPDATE:-}" != "1" ] || ! command -v dart >/dev/null 2>&1; then
 fi
 # Failed for this version before: say so instead of failing every session.
 if [ "$(cat "$failed" 2>/dev/null)" = "$plugin" ]; then
-  echo "emu $plugin 자동 업데이트 실패(로그: $log). 업데이트: hub 의 업데이트 버튼 또는 emu update"
+  echo "emu $plugin auto-update failed (log: $log). Update: the hub Update button or \`emu update\`"
   exit 0
 fi
 # Detached, so it outlives this hook (and `claude -p`). A lost lock race is no
@@ -92,5 +99,5 @@ nohup bash -c '
     echo "$4" >"$3"
   fi
 ' emu-auto-update "$stable" "$log" "$failed" "$plugin" </dev/null >/dev/null 2>&1 &
-echo "emu $plugin 로 백그라운드 업데이트를 시작했습니다(현재 CLI $current). 실행 중인 세션은 중단되지 않습니다."
+echo "Updating emu to $plugin in the background (CLI is $current). Running sessions keep running; new sessions use it."
 exit 0
