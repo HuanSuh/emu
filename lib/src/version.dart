@@ -14,10 +14,9 @@ const String kEmuVersion = String.fromEnvironment('EMU_VERSION', defaultValue: '
 
 const _repoSlug = 'HuanSuh/emu';
 
-/// The source checkout backing the running binary, resolved through the PATH
-/// symlink `emu-setup` creates (`ln -sf $CLAUDE_PLUGIN_ROOT/emu <path>/emu`).
-/// Null if the binary isn't sitting next to a git checkout of emu (e.g. run
-/// via `dart run` in dev, or a copied-out binary).
+/// The source checkout backing the running binary, resolved through a PATH
+/// symlink. Null if the binary isn't sitting next to a git checkout of emu
+/// (e.g. `~/.emu/bin/emu`, `dart run` in dev, or a copied-out binary).
 Directory? emuRepoRoot() {
   final dir = File(Platform.resolvedExecutable).parent;
   if (File('${dir.path}/pubspec.yaml').existsSync() && Directory('${dir.path}/.git').existsSync()) {
