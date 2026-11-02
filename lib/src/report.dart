@@ -27,6 +27,7 @@ import 'package:path/path.dart' as p;
 
 import 'error_parser.dart';
 import 'models.dart';
+import 'self_update.dart';
 import 'version.dart';
 
 /// Where reports go. `host/owner/name`, so `gh` never picks another host the
@@ -339,11 +340,17 @@ Future<String> osLine() async {
 /// How this emu was installed — tells a bug in a stale build from one in main.
 String installKind() {
   final self = File(Platform.resolvedExecutable).path;
+  final home = Platform.environment['HOME'];
+  if (home != null && self == '$home/.emu/bin/emu') return stableInstallLabel(InstallRecord.read(home));
   if (emuRepoRoot() != null) return 'git checkout';
   if (self.contains('.claude/plugins/')) return 'Claude Code plugin';
   if (self.endsWith('/dart') || self.endsWith('dart.exe')) return 'dart run';
   return 'binary';
 }
+
+/// [installKind] for `~/.emu/bin/emu`, by what it was built from.
+String stableInstallLabel(InstallRecord? record) =>
+    record?.source == 'git' ? 'git checkout, ~/.emu/bin' : 'Claude Code plugin, ~/.emu/bin';
 
 /// The tail every report carries. [device] / [appState] are null without a session.
 Future<Map<String, String>> collectEnvironment({String? device, String? appState, String? from}) async {

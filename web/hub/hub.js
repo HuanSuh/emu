@@ -174,6 +174,16 @@ function renderVersion(v) {
   b.innerHTML = `v${esc(v.running)}${busy ? ' · <b>updating…</b>' : v.updateAvailable ? ` · <b>new ${esc(v.latest)}</b>` : ''}${appStale() ? ' · <b>app ↻</b>' : ''}`;
   b.title = v.latest ? `This emu ${v.running} · latest release ${v.latest}` : `This emu ${v.running}`;
   b.onclick = () => showVersion(v);
+  renderReady(v, busy);
+}
+
+// Claude Code already fetched a newer plugin, this CLI isn't built from it yet.
+function renderReady(v, busy) {
+  const banner = $('update-banner');
+  banner.hidden = !v.ready || busy;
+  if (banner.hidden) return;
+  $('update-banner-text').textContent = `Update available · emu ${v.ready} ready · Running sessions keep running (new sessions use it)`;
+  $('update-banner-go').onclick = () => { showVersion(v); startUpdate(); };
 }
 
 // The macOS app (macos/) says which build it is; the hub says which one is on disk.
@@ -192,7 +202,7 @@ function showVersion(v) {
        ${v.notesHtml ? `<p>What changed:</p><div class="notes md">${v.notesHtml}</div>`
          : v.notes ? `<p>What changed:</p><pre class="notes">${esc(v.notes)}</pre>` : ''}
        <div class="upd" id="upd"></div>
-       <p class="sub">Update fetches the release (${v.install === 'plugin' ? '<code>claude plugin update</code>' : '<code>git pull</code>'}),
+       <p class="sub">Update ${v.ready === v.latest ? 'uses the version Claude Code already fetched' : `fetches the release (${v.source === 'plugin' ? '<code>claude plugin update</code>' : '<code>git pull</code>'})`},
          rebuilds emu and the macOS app, and restarts the hub. Sessions keep running — restart them to pick it up.
          In a terminal: <code>${esc(v.command)}</code>.</p>
        <div class="actions"><button id="ver-update" class="primary">Update to ${esc(v.latest)}</button></div>${app}`

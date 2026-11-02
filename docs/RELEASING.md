@@ -21,7 +21,7 @@
    CI(`test`)와 함께 통과해야 머지할 수 있다.
 4. 머지하면 workflow가 머지 커밋에 `vX.Y.Z` 태그를 달고, CHANGELOG의 해당 절을 본문으로
    GitHub Release를 만든다. `main` 에 커밋은 하지 않는다.
-5. 로컬 적용: `/plugin update emu` 후 `/emu-setup` (또는 `claude plugin update emu@emu` 후
-   플러그인 캐시에서 `./build.sh` 와 PATH 심링크 갱신).
+5. 로컬 적용: `emu update`(플러그인을 받아 빌드하고 `~/.emu/bin/emu` 교체). 자동 업데이트로 플러그인이
+   이미 새 버전이면 허브의 Update 버튼이나 `emu update --local` 로도 된다.
 
 `emu version`/`emu update` 의 최신 버전 확인은 GitHub 태그를 본다.

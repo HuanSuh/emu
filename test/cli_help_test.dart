@@ -48,7 +48,7 @@ void main() {
   // `4591` (https://github.com/HuanSuh/emu/issues/13).
   group('hand-parsed subcommands are strict', () {
     const manual = [
-      'version', 'doctor', 'update', 'uninstall', 'devices', 'configs', 'status',
+      'version', 'doctor', 'update', 'install', 'uninstall', 'devices', 'configs', 'status',
       'shot', 'open', 'open-url', 'down', 'reload', 'restart', 'cold', 'stop', 'attach', 'pages',
     ];
     for (final cmd in manual) {

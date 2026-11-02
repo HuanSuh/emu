@@ -271,27 +271,42 @@ class HubServer {
     if (force || cached == null || DateTime.now().difference(cached.at) > const Duration(hours: 1)) {
       _latest = (latest: await _latestVersion(), at: DateTime.now());
     }
-    final latest = _latest!.latest;
-    final newer = latest != null && kEmuVersion.contains('.') && !kEmuVersion.contains('-')
-        ? compareSemver(latest, kEmuVersion) > 0
+    final up = _updater();
+    // What Claude Code already put on disk counts too — no network needed.
+    final ready = up.pluginReady;
+    final released = _latest!.latest;
+    final latest = ready != null && (released == null || isNewer(ready.version, released)) ? ready.version : released;
+    final running = up.currentVersion;
+    final newer = latest != null && running.contains('.') && !running.contains('-')
+        ? compareSemver(latest, running) > 0
         : false;
     String? notes;
     if (newer) {
-      final log = await _fetchChangelog();
-      if (log != null) notes = changelogBetween(log, kEmuVersion, latest);
+      final log = ready != null && ready.version == latest ? _localChangelog(ready.dir) : await _fetchChangelog();
+      if (log != null) notes = changelogBetween(log, running, latest);
     }
     return {
       'running': kEmuVersion,
       'latest': latest,
       'updateAvailable': newer,
+      if (ready != null) 'ready': ready.version,
       'notes': ?notes,
       if (notes != null) 'notesHtml': renderChangelogHtml(notes),
-      'install': _updater().kind.name,
+      'install': up.kind.name,
+      'source': up.source.name,
       'update': ?_update,
       // The macOS app on disk — the app compares it with its own build.
       'appRev': ?installedAppRev(),
       'command': 'emu update',
     };
+  }
+
+  String? _localChangelog(String dir) {
+    try {
+      return File('$dir/CHANGELOG.md').readAsStringSync();
+    } on FileSystemException {
+      return null;
+    }
   }
 
   // ---- update ----------------------------------------------------------------
