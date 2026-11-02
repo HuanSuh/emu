@@ -6,12 +6,13 @@
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-02
+
 ### Added
 - 플러그인 SessionStart 훅: 플러그인이 설치된 CLI 보다 새로우면 세션 컨텍스트에 한 줄로 알린다(빌드·네트워크 없음. git 체크아웃·다운그레이드는
   조용히 넘어간다). `EMU_AUTO_UPDATE=1` 이면 백그라운드에서 빌드·교체한다. 기본은 꺼짐.
 - 허브·macOS 앱: 플러그인은 새 버전을 받았는데 CLI 가 옛 버전이면 GitHub 없이도 **Update** 배너를 띄운다.
 - `emu install`, `emu update --local`.
-
 - 목 시나리오에 진입 딥링크와 준비 단계를 함께 저장해 한 번에 같은 화면을 다시 만드는 replay. `mocks/<name>.json` 옆의
   선택 파일 `mocks/<name>.replay.json` 에 `entry.url` 과 `steps`(`tap`·`text`·`settle`)를 적으면 `emu mock use <name> --replay`
   가 시나리오 적용 → 딥링크 → 단계 → settle 을 실행하고, 처음 실패한 단계에서 멈춰 어디서 왜 실패했는지 알려 준다. 대시보드
@@ -537,7 +538,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.17.4...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/HuanSuh/emu/compare/v0.17.4...v0.18.0
 [0.17.4]: https://github.com/HuanSuh/emu/compare/v0.17.3...v0.17.4
 [0.17.3]: https://github.com/HuanSuh/emu/compare/v0.17.2...v0.17.3
 [0.17.2]: https://github.com/HuanSuh/emu/compare/v0.17.1...v0.17.2
