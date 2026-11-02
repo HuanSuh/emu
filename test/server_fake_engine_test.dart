@@ -4,8 +4,10 @@ import 'dart:io';
 
 import 'package:emu/src/device_lease.dart';
 import 'package:emu/src/engine.dart';
+import 'package:emu/src/locate.dart';
 import 'package:emu/src/log_store.dart';
 import 'package:emu/src/mock.dart';
+import 'package:emu/src/mock_replay.dart';
 import 'package:emu/src/models.dart';
 import 'package:emu/src/registry.dart';
 import 'package:emu/src/server.dart';
@@ -161,6 +163,8 @@ void main() {
     tmp.deleteSync(recursive: true);
   });
 
+  ReplayDevice? device;
+
   Future<EmuServer> start({LaunchOptions? opts, void Function(String root, LogStore logs)? onCreate}) async {
     final s = server = EmuServer(
       session: Session(project),
@@ -173,6 +177,7 @@ void main() {
         onCreate?.call(root, logs);
         return engine;
       },
+      replayDevice: (_) => device!,
     );
     await s.start(0, opts ?? LaunchOptions());
     return s;
@@ -378,5 +383,140 @@ void main() {
       expect((r.status, r.body['active']), (200, 'x'));
       expect(s.mock!.active, 'x');
     });
+
+    group('replay', () {
+      late _Replay fake;
+      setUp(() {
+        fake = _Replay();
+        device = fake;
+      });
+
+      Future<EmuServer> ready({Object? replay = const {'entry': {'url': 'a://b'}, 'steps': [{'tap': {'text': 'Pay'}}]}}) async {
+        final s = await withMocks();
+        fake.server = s;
+        Directory('${project.path}/mocks').createSync();
+        File('${project.path}/mocks/x.json').writeAsStringSync(jsonEncode([rule]));
+        if (replay != null) File('${project.path}/mocks/x.replay.json').writeAsStringSync(jsonEncode(replay));
+        engine.appRunning();
+        await _settle();
+        return s;
+      }
+
+      test('turns the scenario on before opening the link, then runs the steps', () async {
+        final s = await ready();
+        fake.found = [LocateMatch(1, 2, 10, 10, 'Text')];
+        final before = s.logStore.lastSeq;
+        final r = await _call(s, 'POST', '/api/mock/replay/x');
+        expect(r.status, 200, reason: '${r.body}');
+        expect(fake.calls.take(3), ['open a://b with x', 'locate Pay', 'tap 1,2']);
+        expect(r.body['ok'], isTrue);
+        expect(r.body['scenario'], 'x');
+        expect(r.body['seq'], greaterThanOrEqualTo(before));
+        expect(r.body['steps'], [
+          {'i': null, 'kind': 'entry', 'ok': true, 'detail': 'a://b'},
+          {'i': 0, 'kind': 'tap', 'ok': true, 'detail': 'tapped Text at 1,2'},
+          {'i': null, 'kind': 'settle', 'ok': true, 'detail': 'settled'},
+        ]);
+        expect(s.mock!.active, 'x');
+      });
+
+      test('a step that fails is a 422 saying where; the scenario stays on', () async {
+        final s = await ready(replay: const {'steps': [{'text': 'x'}, {'text': 'y'}]});
+        fake.textError = StateError('no focused text field');
+        final r = await _call(s, 'POST', '/api/mock/replay/x');
+        expect(r.status, 422);
+        expect(r.body['ok'], isFalse);
+        expect(r.body['error'], contains('steps[0] text'));
+        expect(r.body['active'], 'x');
+        expect((r.body['steps'] as List).length, 1);
+        expect(fake.calls.where((c) => c.startsWith('text')), hasLength(1));
+        expect(logs(s).any((l) => l.contains('stopped')), isTrue);
+      });
+
+      test('refused without touching the scenario: no VM Service, no replay, a bad one, no scenario', () async {
+        var s = await ready();
+        engine.lost();
+        var r = await _call(s, 'POST', '/api/mock/replay/x');
+        expect((r.status, r.body['error']), (409, 'app is not running (no VM service)'));
+        engine.appRunning();
+        File('${project.path}/mocks/x.replay.json').writeAsStringSync('{"steps":[{"swipe":{}}]}');
+        r = await _call(s, 'POST', '/api/mock/replay/x');
+        expect(r.status, 400);
+        expect(r.body['error'], contains('swipe'));
+        File('${project.path}/mocks/x.replay.json').deleteSync();
+        r = await _call(s, 'POST', '/api/mock/replay/x');
+        expect(r.status, 404);
+        expect(r.body['error'], contains('has no replay'));
+        r = await _call(s, 'POST', '/api/mock/replay/nope');
+        expect(r.status, 404);
+        expect(r.body['error'], contains('no scenario'));
+        expect(s.mock!.active, isNull);
+        expect(fake.calls, isEmpty);
+      });
+
+      test('one at a time', () async {
+        final s = await ready();
+        fake.openGate = Completer();
+        final first = _call(s, 'POST', '/api/mock/replay/x');
+        await _until(() => fake.calls.isNotEmpty);
+        final second = await _call(s, 'POST', '/api/mock/replay/x');
+        expect((second.status, second.body['error']), (409, 'a replay is already running'));
+        fake.found = [LocateMatch(1, 2, 10, 10, 'Text')];
+        fake.openGate!.complete();
+        expect((await first).status, 200);
+      });
+
+      test('PUT writes the file, is listed, and bad content is a 400', () async {
+        final s = await ready(replay: null);
+        final r = await _call(s, 'PUT', '/api/mock/replay/x', body: jsonEncode({'entry': {'url': 'a://saved'}}));
+        expect(r.status, 200, reason: '${r.body}');
+        expect((r.body['replays'] as Map)['x'], {'entry': {'url': 'a://saved'}, 'steps': <Object>[]});
+        expect(jsonDecode(File('${project.path}/mocks/x.replay.json').readAsStringSync()),
+            {'entry': {'url': 'a://saved'}, 'steps': <Object>[]});
+        expect((await _call(s, 'PUT', '/api/mock/replay/x', body: '{"steps":3}')).status, 400);
+        expect((await _call(s, 'PUT', '/api/mock/replay/nope', body: '{"entry":{"url":"a://b"}}')).status, 400);
+        expect((await _call(s, 'GET', '/api/mock/replay/x')).status, 405);
+      });
+
+      test('deleting the scenario removes its replay', () async {
+        final s = await ready();
+        expect((await _call(s, 'DELETE', '/api/mock/scenarios/x')).status, 200);
+        expect(File('${project.path}/mocks/x.replay.json').existsSync(), isFalse);
+      });
+    });
   });
+}
+
+/// A device that notes each call, with which scenario was on for the link.
+class _Replay implements ReplayDevice {
+  EmuServer? server;
+  final calls = <String>[];
+  List<LocateMatch> found = const [];
+  Object? textError;
+  Completer<void>? openGate;
+
+  @override
+  Future<String?> openUrl(String url) async {
+    calls.add('open $url with ${server!.mock!.active}');
+    await openGate?.future;
+    return null;
+  }
+
+  @override
+  Future<List<LocateMatch>> locate({String? text, String? key}) async {
+    calls.add('locate ${text ?? key}');
+    return found;
+  }
+
+  @override
+  Future<void> tap(int x, int y) async => calls.add('tap $x,$y');
+
+  @override
+  Future<void> enterText(String text, {required bool append}) async {
+    calls.add('text $text');
+    if (textError != null) throw textError!;
+  }
+
+  @override
+  Future<bool> settle(Duration timeout) async => true;
 }

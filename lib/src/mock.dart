@@ -37,6 +37,7 @@ import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
 
+import 'mock_replay.dart';
 import 'project_config.dart';
 
 /// One canned answer: when [matches], respond with [status], [headers] and
@@ -124,6 +125,8 @@ class MockConfig {
     this.dir = 'mocks',
     this.scenarios = const {},
     this.sources = const {},
+    this.replays = const {},
+    this.replayProblems = const {},
     this.problems = const [],
   });
 
@@ -145,6 +148,12 @@ class MockConfig {
 
   /// Scenario → where it's defined: `emu.yaml`, or its file (`mocks/x.json`).
   final Map<String, String> sources;
+
+  /// Scenario → its `<dir>/<name>.replay.json`, for those that have a usable one.
+  final Map<String, MockReplay> replays;
+
+  /// Scenario → what's wrong with its replay file (also in [problems]).
+  final Map<String, List<String>> replayProblems;
   final List<String> problems;
 
   /// Whether `emu up` should start the mock server.
@@ -165,6 +174,8 @@ class MockConfig {
           for (final e in scenarios.entries) e.key: [for (final r in e.value) r.toJson()],
         },
         'sources': sources,
+        'replays': {for (final e in replays.entries) e.key: e.value.toJson()},
+        'replayProblems': replayProblems,
         'problems': problems,
       };
 }
@@ -259,11 +270,16 @@ MockConfig withScenarioFiles(MockConfig config, String projectRoot) {
   final scenarios = {...config.scenarios};
   final sources = {...config.sources};
   final problems = [...config.problems];
+  final sidecars = <File>[];
   final files = folder.listSync().whereType<File>().where((f) => f.path.endsWith('.json')).toList()
     ..sort((a, b) => a.path.compareTo(b.path));
   for (final file in files) {
     final name = p.basenameWithoutExtension(file.path);
     final rel = p.join(config.dir, p.basename(file.path));
+    if (file.path.endsWith(_replaySuffix)) {
+      sidecars.add(file); // once every scenario is known
+      continue;
+    }
     if (!_scenarioName.hasMatch(name)) continue; // a response body file, not a scenario
     final Object? raw;
     try {
@@ -284,6 +300,33 @@ MockConfig withScenarioFiles(MockConfig config, String projectRoot) {
     scenarios[name] = rules;
     sources[name] = rel;
   }
+  final replays = <String, MockReplay>{};
+  final replayProblems = <String, List<String>>{};
+  for (final file in sidecars) {
+    final base = p.basename(file.path);
+    final name = base.substring(0, base.length - _replaySuffix.length);
+    if (!_scenarioName.hasMatch(name)) continue;
+    final rel = p.join(config.dir, base);
+    if (!sources.containsKey(name)) {
+      problems.add('$rel: no scenario "$name" — expected next to $name.json');
+      continue;
+    }
+    final found = <String>[];
+    if (sources[name] == 'emu.yaml') {
+      found.add('$rel: "$name" is defined in emu.yaml — a replay goes with a scenario file');
+    } else {
+      try {
+        final replay = parseReplay(jsonDecode(file.readAsStringSync()), rel, found);
+        if (replay != null) replays[name] = replay;
+      } catch (e) {
+        found.add('$rel: not valid JSON ($e)');
+      }
+    }
+    if (found.isNotEmpty) {
+      replayProblems[name] = found;
+      problems.addAll(found);
+    }
+  }
   return MockConfig(
     hosts: config.hosts,
     upstream: config.upstream,
@@ -292,9 +335,13 @@ MockConfig withScenarioFiles(MockConfig config, String projectRoot) {
     dir: config.dir,
     scenarios: scenarios,
     sources: sources,
+    replays: replays,
+    replayProblems: replayProblems,
     problems: problems,
   );
 }
+
+const _replaySuffix = '.replay.json';
 
 /// Write scenario [name] to `<dir>/<name>.json`. Returns the problems with
 /// [rules] (nothing is written then), or an empty list.
@@ -312,12 +359,29 @@ List<String> writeScenario(MockConfig config, String projectRoot, String name, O
   return const [];
 }
 
-/// Remove scenario [name]'s file. False when it isn't a file scenario.
+/// Write [raw] as scenario [name]'s replay, `<dir>/<name>.replay.json`, in
+/// place of any before it. Returns the problems (nothing is written then),
+/// or an empty list.
+List<String> writeReplay(MockConfig config, String projectRoot, String name, Object? raw) {
+  final source = config.sources[name];
+  if (source == null) return ['no scenario "$name" — save it first'];
+  if (source == 'emu.yaml') return ['"$name" is defined in emu.yaml — a replay goes with a scenario file'];
+  final problems = <String>[];
+  final replay = parseReplay(raw, '$name replay', problems);
+  if (replay == null) return problems;
+  File(p.join(projectRoot, config.dir, '$name$_replaySuffix'))
+      .writeAsStringSync('${const JsonEncoder.withIndent('  ').convert(replay.toJson())}\n');
+  return const [];
+}
+
+/// Remove scenario [name]'s file and its replay. False when it isn't a file scenario.
 bool deleteScenario(MockConfig config, String projectRoot, String name) {
   final source = config.sources[name];
   if (source == null || source == 'emu.yaml') return false;
   final file = File(p.join(projectRoot, source));
   if (file.existsSync()) file.deleteSync();
+  final replay = File(p.join(projectRoot, config.dir, '$name$_replaySuffix'));
+  if (replay.existsSync()) replay.deleteSync();
   return true;
 }
 

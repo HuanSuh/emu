@@ -1,7 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:emu/src/locate.dart';
 import 'package:emu/src/mock.dart';
+import 'package:emu/src/mock_replay.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -413,4 +415,287 @@ mocks:
       expect(writeScenario(MockConfig(), root.path, 'x', {'rules': []}).single, contains('list'));
     });
   });
+
+  group('replay files', () {
+    late Directory root;
+    setUp(() {
+      root = Directory.systemTemp.createTempSync('emu_mock_replay_');
+      Directory('${root.path}/mocks').createSync();
+    });
+    tearDown(() => root.deleteSync(recursive: true));
+
+    const rule = {'match': {'path': '/a'}, 'respond': {'status': 200}};
+    const good = {
+      'entry': {'url': 'myapp://orders/1?a=1&b=2'},
+      'steps': [
+        {'tap': {'text': 'Pay', 'index': 1}},
+        {'tap': {'key': 'card'}},
+        {'text': '4242'},
+        {'text': '!', 'append': true},
+        {'settle': {'timeoutMs': 2000}},
+        {'settle': <String, dynamic>{}},
+      ],
+    };
+    void write(String name, Object? json) => File('${root.path}/mocks/$name').writeAsStringSync(jsonEncode(json));
+    MockConfig load([MockConfig? base]) => withScenarioFiles(base ?? MockConfig(), root.path);
+
+    test('no file: nothing changes', () {
+      write('x.json', [rule]);
+      final c = load();
+      expect(c.replays, isEmpty);
+      expect(c.problems, isEmpty);
+      expect(c.toJson()['replays'], isEmpty);
+    });
+
+    test('read next to its scenario, which stays a plain list of rules', () {
+      write('x.json', [rule]);
+      write('x.replay.json', good);
+      final c = load();
+      expect(c.problems, isEmpty);
+      expect(c.scenarios.keys, ['x']);
+      expect(c.scenarios['x']!.single.toJson()['match'], rule['match']);
+      expect(c.replays['x']!.toJson(), good);
+      expect(c.replays['x']!.describe, 'myapp://orders/1?a=1&b=2 + 6 step(s)');
+    });
+
+    test('steps alone, or a link alone, is enough; neither is a problem', () {
+      expect(parseReplay({'steps': [{'text': 'a'}]}, 'r', [])!.url, isNull);
+      expect(parseReplay({'entry': {'url': 'a://b'}}, 'r', [])!.steps, isEmpty);
+      final problems = <String>[];
+      expect(parseReplay({}, 'r', problems), isNull);
+      expect(problems.single, contains('entry.url, steps or both'));
+    });
+
+    for (final (label, raw, says) in <(String, Object?, String)>[
+      ('not an object', [1], 'expected { entry'),
+      ('unknown field', {'entry': {'url': 'a://b'}, 'x': 1}, 'unknown field "x"'),
+      ('no scheme', {'entry': {'url': 'orders/1'}}, 'r.entry'),
+      ('steps not a list', {'steps': {}}, 'r.steps'),
+      ('unknown step', {'steps': [{'swipe': {}}]}, 'unknown step "swipe"'),
+      ('two kinds in a step', {'steps': [{'tap': {'text': 'a'}, 'text': 'b'}]}, 'r.steps[0]'),
+      ('tap with both', {'steps': [{'tap': {'text': 'a', 'key': 'b'}}]}, 'r.steps[0].tap'),
+      ('tap with neither', {'steps': [{'tap': {'index': 0}}]}, 'r.steps[0].tap'),
+      ('tap with a coordinate', {'steps': [{'tap': {'text': 'a', 'x': 1}}]}, 'r.steps[0].tap'),
+      ('negative index', {'steps': [{'tap': {'text': 'a', 'index': -1}}]}, 'tap.index'),
+      ('empty text', {'steps': [{'text': ''}]}, 'r.steps[0].text'),
+      ('append on a tap', {'steps': [{'tap': {'text': 'a'}, 'append': true}]}, 'append'),
+      ('append not a bool', {'steps': [{'text': 'a', 'append': 'yes'}]}, 'append'),
+      ('settle too long', {'steps': [{'settle': {'timeoutMs': 60001}}]}, 'settle'),
+      ('settle unknown field', {'steps': [{'settle': {'quietMs': 5}}]}, 'settle'),
+    ]) {
+      test('rejected: $label', () {
+        final problems = <String>[];
+        expect(parseReplay(raw, 'r', problems), isNull);
+        expect(problems.join('\n'), contains(says));
+      });
+    }
+
+    test('a broken file is reported, never ignored; the scenario still works', () {
+      write('x.json', [rule]);
+      write('x.replay.json', {'steps': [{'swipe': {}}]});
+      write('y.json', [rule]);
+      File('${root.path}/mocks/y.replay.json').writeAsStringSync('{');
+      final c = load();
+      expect(c.scenarios.keys, ['x', 'y']);
+      expect(c.replays, isEmpty);
+      expect(c.replayProblems['x']!.single, contains('mocks/x.replay.json.steps[0]'));
+      expect(c.replayProblems['y']!.single, contains('not valid JSON'));
+      expect(c.problems, hasLength(2));
+    });
+
+    test('a file with no scenario, or one for an emu.yaml scenario, is reported', () {
+      write('ghost.replay.json', good);
+      write('yaml.replay.json', good);
+      final c = load(parseMocks({
+        'hosts': ['a.test'],
+        'scenarios': {'yaml': [rule]},
+      }));
+      expect(c.replays, isEmpty);
+      expect(c.problems.join('\n'), allOf(contains('no scenario "ghost"'), contains('defined in emu.yaml')));
+      expect(c.replayProblems.keys, ['yaml']);
+    });
+
+    test('saving rules leaves the replay; writing a replay leaves the rules', () {
+      write('x.json', [rule]);
+      write('x.replay.json', good);
+      expect(writeScenario(load(), root.path, 'x', [rule, rule]), isEmpty);
+      expect(load().replays['x']!.toJson(), good);
+      expect(writeReplay(load(), root.path, 'x', {'entry': {'url': 'a://new'}}), isEmpty);
+      expect(jsonDecode(File('${root.path}/mocks/x.replay.json').readAsStringSync()), {
+        'entry': {'url': 'a://new'},
+        'steps': <Object>[],
+      });
+      expect(load().scenarios['x'], hasLength(2));
+    });
+
+    test('writing is refused without a file scenario, or with bad content', () {
+      write('x.json', [rule]);
+      final yaml = parseMocks({
+        'hosts': ['a.test'],
+        'scenarios': {'yaml': [rule]},
+      });
+      expect(writeReplay(load(), root.path, 'nope', good).single, contains('no scenario'));
+      expect(writeReplay(load(yaml), root.path, 'yaml', good).single, contains('emu.yaml'));
+      expect(writeReplay(load(), root.path, 'x', {'steps': [{'swipe': {}}]}).single, contains('swipe'));
+      expect(File('${root.path}/mocks/x.replay.json').existsSync(), isFalse);
+    });
+
+    test('deleting a scenario takes its replay with it', () {
+      write('x.json', [rule]);
+      write('x.replay.json', good);
+      expect(deleteScenario(load(), root.path, 'x'), isTrue);
+      expect(Directory('${root.path}/mocks').listSync(), isEmpty);
+    });
+  });
+
+  group('runReplay', () {
+    test('entry, then steps in order, then a settle', () async {
+      final d = _Device()..found = [_match()];
+      final r = await runReplay(
+        const MockReplay(url: 'a://b', steps: [
+          ReplayTap(text: 'Pay'),
+          ReplayText('42', append: true),
+          ReplaySettle(timeoutMs: 500),
+        ]),
+        d,
+      );
+      expect(d.calls, [
+        'open a://b',
+        'locate Pay', 'tap 1,2', 'settle 3000', // each input waits for the next screen
+        'text 42 true', 'settle 3000',
+        'settle 500',
+        'settle 10000',
+      ]);
+      expect([for (final x in r) (x.step, x.kind, x.ok)], [
+        (null, 'entry', true),
+        (0, 'tap', true),
+        (1, 'text', true),
+        (2, 'settle', true),
+        (null, 'settle', true),
+      ]);
+      expect(replayFailure(r), isNull);
+    });
+
+    test('a tap waits for its widget to appear', () async {
+      final d = _Device();
+      var looks = 0;
+      d.onLocate = () => ++looks < 3 ? [] : [_match()];
+      final r = await runReplay(
+        const MockReplay(steps: [ReplayTap(key: 'k')]),
+        d,
+        retry: Duration.zero,
+      );
+      expect(looks, 3);
+      expect(r.first.ok, isTrue);
+      expect(d.calls.where((c) => c.startsWith('tap')), hasLength(1));
+    });
+
+    test('a widget that never appears stops the run there and says which', () async {
+      final d = _Device();
+      final r = await runReplay(
+        const MockReplay(url: 'a://b', steps: [ReplayTap(text: 'Gone'), ReplayText('never')]),
+        d,
+        tapWait: const Duration(milliseconds: 20),
+        retry: const Duration(milliseconds: 1),
+      );
+      expect(r.last.ok, isFalse);
+      expect(replayFailure(r), 'steps[0] tap: no widget matches text "Gone" (waited 20ms)');
+      expect(d.calls.any((c) => c.startsWith('text')), isFalse);
+      expect(d.calls.contains('settle 10000'), isFalse);
+    });
+
+    test('an index past the matches waits too; several with no index stops at once', () async {
+      var d = _Device()..found = [_match()];
+      var r = await runReplay(
+        const MockReplay(steps: [ReplayTap(text: 'a', index: 1)]),
+        d,
+        tapWait: Duration.zero,
+      );
+      expect(r.single.detail, contains('index 1 out of range'));
+      d = _Device()..found = [_match(), _match()];
+      r = await runReplay(const MockReplay(steps: [ReplayTap(text: 'a')]), d);
+      expect(r.single.detail, contains('matched 2 widgets'));
+      expect(d.calls.where((c) => c.startsWith('locate')), hasLength(1));
+    });
+
+    test('a locate that errors is retried; a tap that errors is not', () async {
+      final d = _Device();
+      var looks = 0;
+      d.onLocate = () => ++looks < 2 ? throw StateError('restarting') : [_match()];
+      d.tapError = StateError('lost');
+      final r = await runReplay(const MockReplay(steps: [ReplayTap(text: 'a')]), d, retry: Duration.zero);
+      expect(looks, 2);
+      expect(d.calls.where((c) => c.startsWith('tap')), hasLength(1));
+      expect(r.single.detail, contains('lost'));
+    });
+
+    test('a link that fails to open ends it before any step', () async {
+      final d = _Device()..openError = 'no device connected';
+      final r = await runReplay(const MockReplay(url: 'a://b', steps: [ReplayText('x')]), d);
+      expect(replayFailure(r), 'entry: no device connected');
+      expect(d.calls, ['open a://b']);
+    });
+
+    test('an app that never settles is no failure', () async {
+      final d = _Device()..settled = false;
+      final r = await runReplay(const MockReplay(steps: [ReplaySettle(timeoutMs: 5)]), d);
+      expect(r.map((x) => x.ok), [true, true]);
+      expect(r.first.detail, 'still busy after 5ms');
+    });
+
+    test('over the limit, it stops at the next step', () async {
+      final d = _Device();
+      final r = await runReplay(const MockReplay(url: 'a://b'), d, limit: Duration(microseconds: -1));
+      expect(r.single.ok, isFalse);
+      expect(d.calls, isEmpty);
+    });
+
+    test('lines for the CLI name the place in the file', () {
+      expect(
+        replayLines([
+          ReplayResult(null, 'entry', true, 'a://b').toJson(),
+          ReplayResult(2, 'tap', false, 'gone').toJson(),
+        ]),
+        ['✓ entry  a://b', '✗ steps[2] tap  gone'],
+      );
+    });
+  });
+}
+
+LocateMatch _match() => LocateMatch(1, 2, 10, 10, 'Text');
+
+class _Device implements ReplayDevice {
+  final calls = <String>[];
+  List<LocateMatch> found = const [];
+  List<LocateMatch> Function()? onLocate;
+  String? openError;
+  Object? tapError;
+  bool settled = true;
+
+  @override
+  Future<String?> openUrl(String url) async {
+    calls.add('open $url');
+    return openError;
+  }
+
+  @override
+  Future<List<LocateMatch>> locate({String? text, String? key}) async {
+    calls.add('locate ${text ?? key}');
+    return onLocate?.call() ?? found;
+  }
+
+  @override
+  Future<void> tap(int x, int y) async {
+    calls.add('tap $x,$y');
+    if (tapError != null) throw tapError!;
+  }
+
+  @override
+  Future<void> enterText(String text, {required bool append}) async => calls.add('text $text $append');
+
+  @override
+  Future<bool> settle(Duration timeout) async {
+    calls.add('settle ${timeout.inMilliseconds}');
+    return settled;
+  }
 }
