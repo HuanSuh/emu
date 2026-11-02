@@ -24,6 +24,9 @@ cd <emu-repo> && dart pub get && ./build.sh
 ln -sf "$PWD/emu" /usr/local/bin/emu
 ```
 
+세션 시작 때 `emu X.Y.Z 준비됨` 안내가 보이면 플러그인만 새 버전이다. 사용자에게 알리고, 원하면
+`emu update` 를 실행한다(실행 중인 세션은 끊기지 않고, 새로 띄운 세션부터 적용).
+
 명령은 **Flutter 프로젝트 루트**(또는 그 하위)에서 실행한다. 다른 곳이면
 `EMU_PROJECT=/path/to/app` 를 앞에 붙인다. 모든 명령은 `--json` 을 지원한다.
 

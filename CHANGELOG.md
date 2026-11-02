@@ -6,6 +6,17 @@
 
 ## [Unreleased]
 
+### Added
+- 플러그인 SessionStart 훅: 플러그인이 설치된 CLI 보다 새로우면 세션 컨텍스트에 한 줄로 알린다(빌드·네트워크 없음. git 체크아웃·다운그레이드는
+  조용히 넘어간다). `EMU_AUTO_UPDATE=1` 이면 백그라운드에서 빌드·교체한다. 기본은 꺼짐.
+- 허브·macOS 앱: 플러그인은 새 버전을 받았는데 CLI 가 옛 버전이면 GitHub 없이도 **Update** 배너를 띄운다.
+- `emu install`, `emu update --local`.
+
+### Changed
+- 플러그인 설치의 실행 파일이 버전 폴더가 아닌 고정 위치 `~/.emu/bin/emu` 로 옮겨져, 마켓플레이스 자동 업데이트를 켜도 PATH 링크가 끊기지
+  않는다. 교체는 rename 이라 실행 중인 hub·세션은 영향이 없다. 이전 설치는 다음 `emu update` 나 `/emu-setup` 때 자동으로 옮겨지고(macOS 앱은
+  한 번 다시 빌드) git 체크아웃 설치는 그대로다. 링크가 이미 끊겼다면 `/emu-setup` 을 다시 실행한다.
+
 ## [0.17.4] - 2026-10-30
 
 ### Fixed

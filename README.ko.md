@@ -77,11 +77,18 @@ emu 사용법(스킬)과 `/emu-setup` 명령을 어느 프로젝트에서든 쓸
 ```
 /plugin marketplace add HuanSuh/emu   # 또는 로컬 경로: /plugin marketplace add <이 리포 경로>
 /plugin install emu@emu
-/emu-setup                            # 바이너리 빌드 + PATH 심링크 자동화
+/emu-setup                            # emu 빌드 후 ~/.emu/bin/emu 에 설치하고 PATH 에 심링크
 ```
 
+바이너리는 버전 폴더 밖의 `~/.emu/bin/emu` 에 있어서 마켓플레이스 자동 업데이트를 켜 둘 수 있다.
+Claude Code 가 새 버전을 받으면 SessionStart 훅이 Claude 에게 알리고, 허브와 macOS 앱에 **Update**
+배너가 뜬다. `emu update` 나 버튼이 빌드해 파일을 교체한다. 실행 중인 세션은 그대로 돌고, 새로 띄운
+세션부터 새 버전을 쓴다. `EMU_AUTO_UPDATE=1` 을 켜면 훅이 이 일을 백그라운드에서 한다(`dart` 필요.
+실패하면 다음 세션에 알리고, 로그는 `~/.emu/auto-update.log`).
+
 - `skills/emu/SKILL.md` — Claude에게 기동→관찰→조작→검증 루프를 가르친다.
-- `commands/emu-setup.md` — `emu` 바이너리를 빌드해 PATH에 심링크한다.
+- `commands/emu-setup.md` — `emu` 바이너리를 빌드해 `~/.emu/bin` 에 설치하고 PATH에 심링크한다.
+- `hooks/hooks.json` — 세션 시작 때 플러그인과 설치된 CLI 버전을 비교한다(빌드·네트워크 없음).
 - 스킬은 `emu` 바이너리가 PATH에 있어야 동작한다(`/emu-setup` 이 처리).
 
 ## 빠른 시작
@@ -156,8 +163,9 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 |------|------|
 | `emu --version` / `-v` | 설치된 버전 표시 + 최신 릴리스 존재 여부 확인 |
 | `emu doctor` | 의존성 점검 (flutter / adb / emulator / xcrun) + 업데이트 상태 |
-| `emu update [-y]` | 최신 릴리스 설치: git 체크아웃은 pull + 재빌드, Claude Code 플러그인 설치는 `claude plugin marketplace update` + `claude plugin update` 로 새 버전을 받아 빌드하고 PATH 심링크를 옮긴다(`claude` CLI 가 없으면 `/plugin update emu` + `/emu-setup` 안내). macOS 앱이 있으면 다시 빌드. `--json` 은 stdout 에 결과 객체 하나, 단계는 stderr |
-| `emu uninstall [-y]` | 현재 실행 중인 바이너리를 가리키는 PATH 심링크 제거 |
+| `emu update [-y]` | 최신 릴리스 설치: git 체크아웃은 pull + 재빌드, Claude Code 플러그인 설치는 Claude Code 가 이미 받은 버전을 빌드하거나, 먼저 `claude plugin marketplace update` + `claude plugin update` 로 받은 뒤 `~/.emu/bin/emu` 를 교체한다(이전 설치는 최신이어도 그 위치로 옮긴다. `--local` 은 디스크에 있는 버전만 쓴다. `claude` CLI 가 없고 받아 둔 버전도 없으면 `/plugin update emu` + `/emu-setup` 안내). macOS 앱이 있으면 다시 빌드. `--json` 은 stdout 에 결과 객체 하나, 단계는 stderr |
+| `emu install` | 이 바이너리를 `~/.emu/bin/emu` 에 설치하고 PATH 심링크를 옮긴다. 더 새 버전은 덮어쓰지 않는다(`/emu-setup` 이 실행) |
+| `emu uninstall [-y]` | 현재 실행 중인 바이너리를 가리키는 PATH 심링크 제거(`~/.emu/bin/emu` 면 그 파일도) |
 | `emu devices` | `flutter devices` + Android AVD 목록. 다른 emu 세션이 점유한 기기는 `(in use: <project>, <dashboard>)` 로 표시(`--json` 은 기기별 `lease` 필드) |
 | `emu configs` | `.vscode/launch.json` 의 실행 구성 목록 (debug만 실행 가능) + `emu.yaml`/`emu.local.yaml` 의 profile 목록 |
 | `emu config [--profile <name>]` | `emu.yaml` 계층 병합 결과 + 학습된 메모리 표시. `--profile` 주면 그 profile로 resolve된 값을 대신 미리보기 |
@@ -764,7 +772,7 @@ emu report --mine                               # 내가 보낸 리포트와 상
   기본 브라우저로.
 
 `emu app status|open|uninstall`. 설치한 셸의 `PATH` 를 기억하고(Finder 로 뜬 앱의 PATH 는 최소라서),
-`emu update` 가 앱 소스나 앱이 실행하는 emu 바이너리(플러그인 업데이트는 새 폴더에 빌드)가 바뀌었으면 다시
+`emu update` 가 앱 소스나 앱이 실행하는 emu 바이너리 경로가 바뀌었으면 다시
 빌드한다.
 
 ## 대시보드 페이지
