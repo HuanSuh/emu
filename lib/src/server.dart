@@ -25,9 +25,11 @@ import 'frame.dart';
 import 'hub.dart' show hubFrameAncestors;
 import 'input.dart';
 import 'locate.dart';
+import 'locate.dart' as loc show locate;
 import 'log_store.dart';
 import 'memory_diff.dart' as mem;
 import 'mock.dart';
+import 'mock_replay.dart';
 import 'models.dart';
 import 'open_url.dart';
 import 'pages.dart';
@@ -126,12 +128,14 @@ class EmuServer {
     this.flutterExecutable = 'flutter',
     void Function(int code)? exitProcess,
     AppEngine Function(String projectRoot, LogStore logStore)? engineFactory,
+    ReplayDevice Function(String vmServiceUri)? replayDevice,
   })  : leases = leases ?? DeviceLeases(),
         registry = registry ?? SessionRegistry(),
         recent = recent ?? RecentProjects(),
         devices = DeviceManager(flutterExecutable: flutterExecutable),
         _exit = exitProcess ?? exit,
-        _engineFactory = engineFactory;
+        _engineFactory = engineFactory,
+        _replayDevice = replayDevice;
 
   final Session session;
 
@@ -144,6 +148,12 @@ class EmuServer {
   /// Builds [engine] in [start]; null is a [FlutterEngine] on
   /// [flutterExecutable] — a seam for tests.
   final AppEngine Function(String projectRoot, LogStore logStore)? _engineFactory;
+
+  /// What `/api/mock/replay` drives; null is the app itself — a seam for tests.
+  final ReplayDevice Function(String vmServiceUri)? _replayDevice;
+
+  /// A replay is running: a second one would tap over it.
+  bool _replaying = false;
 
   /// Machine-wide device ownership, so two sessions never drive one device.
   final DeviceLeases leases;
@@ -673,7 +683,9 @@ class EmuServer {
   /// - `GET  /api/mock/log?n=`               recent requests
   /// - `GET  /api/mock/hits/<id>`            one request, with bodies
   /// - `PUT  /api/mock/scenarios/<name> {rules}`   write `<dir>/<name>.json`
-  /// - `DELETE /api/mock/scenarios/<name>`  remove it
+  /// - `DELETE /api/mock/scenarios/<name>`  remove it (and its replay)
+  /// - `PUT  /api/mock/replay/<name> {entry?, steps?}`  write `<dir>/<name>.replay.json`
+  /// - `POST /api/mock/replay/<name>`        scenario on → entry link → steps → settle
   /// - `POST /api/mock/overrides {rule, save?}`    `emu mock set` (in memory; save also writes a scenario)
   /// - `DELETE /api/mock/overrides[?key=GET /v1/x]` `emu mock unset` / `reset`
   Future<Response> _mockApi(Request req, String path) async {
@@ -761,6 +773,21 @@ class EmuServer {
       _broadcast({'type': 'mock', 'active': server.active});
       return _json(state());
     }
+    if (path.startsWith('/api/mock/replay/')) {
+      final name = Uri.decodeComponent(path.substring('/api/mock/replay/'.length));
+      if (req.method == 'POST') return _replay(server, config, name);
+      if (req.method != 'PUT') return _json({'ok': false, 'error': 'use POST or PUT'}, status: 405);
+      Object? body;
+      try {
+        body = jsonDecode(await req.readAsString());
+      } catch (_) {}
+      final problems = writeReplay(config, session.projectRoot.path, name, body);
+      if (problems.isNotEmpty) return _json({'ok': false, 'error': problems.join('\n'), 'problems': problems}, status: 400);
+      logStore.system('mock: saved the replay of "$name" (${config.dir}/$name.replay.json)');
+      config = server.load();
+      _broadcast({'type': 'mock', 'active': server.active});
+      return _json(state());
+    }
     if (req.method == 'POST') {
       Object? body;
       try {
@@ -778,6 +805,45 @@ class EmuServer {
       _broadcast({'type': 'mock', 'active': name});
     }
     return _json(state());
+  }
+
+  /// `emu mock use <name> --replay`: everything that can be refused is checked
+  /// before the scenario changes. A step that fails leaves the scenario on —
+  /// the app has already seen its answers — and says so in `active`.
+  Future<Response> _replay(MockServer server, MockConfig config, String name) async {
+    if (!config.scenarios.containsKey(name)) {
+      return _json({'ok': false, 'error': 'no scenario "$name" (${config.scenarios.keys.join(', ')})'}, status: 404);
+    }
+    final problems = config.replayProblems[name];
+    if (problems != null) return _json({'ok': false, 'error': problems.join('\n'), 'problems': problems}, status: 400);
+    final replay = config.replays[name];
+    if (replay == null) {
+      return _json({'ok': false, 'error': 'scenario "$name" has no replay (${config.dir}/$name.replay.json)'}, status: 404);
+    }
+    Response? early;
+    final uri = _vmOr409((r) => early = r);
+    if (uri == null) return early!;
+    if (_replaying) return _json({'ok': false, 'error': 'a replay is already running'}, status: 409);
+    _replaying = true;
+    final seq = logStore.lastSeq;
+    try {
+      server.active = name;
+      logStore.system('mock: replaying "$name"');
+      _broadcast({'type': 'mock', 'active': name});
+      final results = await runReplay(replay, _replayDevice?.call(uri) ?? _AppReplayDevice(this, uri));
+      final failure = replayFailure(results);
+      if (failure != null) logStore.add('mock: replay of "$name" stopped — $failure', level: LogLevel.error, source: 'system');
+      return _json({
+        'ok': failure == null,
+        'scenario': name,
+        'active': server.active,
+        'error': ?failure,
+        'steps': [for (final r in results) r.toJson()],
+        'seq': seq,
+      }, status: failure == null ? 200 : 422);
+    } finally {
+      _replaying = false;
+    }
   }
 
   Future<HttpServer> _bind(int requestedPort) async {
@@ -1614,4 +1680,27 @@ String contentTypeFor(String path) {
   if (path.endsWith('.svg')) return 'image/svg+xml';
   if (path.endsWith('.png')) return 'image/png';
   return 'application/octet-stream';
+}
+
+/// A replay on the running app, through what `tap`, `text`, `settle` and
+/// `/api/open-url` use.
+class _AppReplayDevice implements ReplayDevice {
+  _AppReplayDevice(this.server, this.uri);
+  final EmuServer server;
+  final String uri;
+
+  @override
+  Future<String?> openUrl(String url) async {
+    final (_, body) = await server._openDeepLink(url);
+    return body['ok'] == true ? null : '${body['error']}';
+  }
+
+  @override
+  Future<List<LocateMatch>> locate({String? text, String? key}) => loc.locate(uri, text: text, key: key);
+  @override
+  Future<void> tap(int x, int y) => runTap(uri, x, y);
+  @override
+  Future<void> enterText(String text, {required bool append}) => runText(uri, text, append: append);
+  @override
+  Future<bool> settle(Duration timeout) => waitForSettle(uri, timeout: timeout);
 }
