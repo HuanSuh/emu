@@ -1198,10 +1198,41 @@ emu mock unset GET '/v1/items*'   # 하나 제거, `emu mock reset` 은 전부
 emu mock log --json --bodies     # 앱이 실제로 보낸 요청으로 검증
 ```
 
+**명령 하나로 그 화면까지** — 시나리오는 앱이 받을 응답만 말하고, 그 응답이 보이는 화면까지 가는 길은 말하지 않는다.
+그 길을 `mocks/<name>.json` 옆의 `mocks/<name>.replay.json` 에 적으면(선택, emu.yaml 시나리오는 아직 지원하지 않는다)
+`emu mock use <name> --replay` 가 시나리오를 켜고, 딥링크를 열고, 단계를 실행하고, 앱이 잦아들 때까지 기다린다.
+
+```json
+{
+  "entry": { "url": "myapp://orders/1" },
+  "steps": [
+    { "tap": { "text": "Pay", "index": 0 } },
+    { "tap": { "key": "card-field" } },
+    { "text": "4242", "append": false },
+    { "settle": { "timeoutMs": 10000 } }
+  ]
+}
+```
+
+```bash
+emu mock use declined --replay         # 단계별 결과 출력, 처음 실패한 단계에서 exit 1
+emu mock use declined --replay --json  # {ok, scenario, active, steps: [{i, kind, ok, detail}], seq}
+emu assert --since <seq> --expect '…'  # seq: replay 전의 로그 커서
+```
+
+- `entry.url` 과 `steps` 는 각각 선택이지만 하나는 있어야 한다. 단계는 `tap`(`text` 또는 `key`, 여럿이면 `index`),
+  `text`(포커스된 입력란에 입력하므로 먼저 tap, `append: true` 면 이어 붙임), `settle`(최대 60000ms) 이다.
+- `tap` 은 위젯이 나타날 때까지 최대 10초 기다리고, `tap`·`text` 뒤에는 짧게 settle 한다. 처음 실패한 단계에서 멈추고,
+  시나리오는 켜진 채로 두며, 어느 단계가 왜 실패했는지 답한다. 앱이 끝내 잦아들지 않는 것은 실패가 아니다.
+- 앱이 실행 중이 아니거나(409) replay 가 없거나(404) 잘못됐으면(400) 아무것도 시작하지 않고 활성 시나리오도 바꾸지
+  않는다. 파일의 오류(모르는 단계 포함)는 `emu mock` 이 다른 문제들과 함께 보여 준다.
+- 규칙을 저장해도 이 파일은 그대로고, 시나리오를 지우면 함께 지워진다. replay 를 모르는 버전의 emu 는 이 파일을 무시한다.
+
 **대시보드 → Debug → Mocks** 에서 시나리오 목록, 규칙 편집기(match·status·delay·headers·body), 실시간
 트래픽을 본다. 요청을 고르면 요청·응답 본문이 보이고, **mock this response** 로 그 응답을 고른 시나리오
 (또는 툴바에 입력한 이름)의 규칙으로 만든 뒤 고쳐서 저장한다. 시나리오 전환은 앱의 다음 요청부터 바로
-적용된다(재시작 불필요). `hosts`·`upstream`·`define` 변경은 빌드 시점 dart-define 이라 `emu up` 을 다시 해야 한다.
+적용된다(재시작 불필요). replay 파일이 있는 시나리오에는 **replay** 버튼이 있고, **set entry** 는 URL 입력란의 링크나
+마지막으로 연 링크를 그 시나리오의 진입점으로 저장한다(단계는 그대로). `hosts`·`upstream`·`define` 변경은 빌드 시점 dart-define 이라 `emu up` 을 다시 해야 한다.
 
 ## 동작 원리
 

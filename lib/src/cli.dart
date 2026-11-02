@@ -23,6 +23,7 @@ import 'memory_diff.dart';
 import 'models.dart';
 import 'open_url.dart';
 import 'mock.dart';
+import 'mock_replay.dart';
 import 'page_ask.dart';
 import 'pages.dart';
 import 'project_config.dart';
@@ -2644,6 +2645,8 @@ void _printConfirm(Map<String, dynamic> r) {
 Future<int> _mockCmd(List<String> args) async {
   const usage = 'usage: emu mock                       scenarios, the active one, CLI overrides\n'
       '       emu mock use <scenario>        answer matching requests from that scenario\n'
+      '       emu mock use <scenario> --replay   … then back to its screen: entry deep link, steps and\n'
+      '                                      a settle from mocks/<scenario>.replay.json\n'
       '       emu mock off                   scenarios off (CLI overrides still apply)\n'
       '       emu mock set <METHOD|*> <path|url> [--status N] [--body JSON|text | --body-file F]\n'
       '                    [--header "k: v"]... [--delay ms] [--save <scenario>]\n'
@@ -2665,11 +2668,13 @@ Future<int> _mockCmd(List<String> args) async {
     ..addOption('save')
     ..addOption('count', abbr: 'n')
     ..addFlag('bodies', negatable: false)
+    ..addFlag('replay', negatable: false)
     ..addFlag('json', negatable: false)
     ..addFlag('help', abbr: 'h', negatable: false);
   final (res, code) = _parseOrUsage(parser, args, usage);
   if (res == null) return code!;
   final json = res.flag('json');
+  final replay = res.flag('replay');
   final rest = res.rest;
   final sub = rest.isEmpty ? 'status' : rest.first;
   final n = int.tryParse(res.option('count') ?? '50');
@@ -2683,6 +2688,7 @@ Future<int> _mockCmd(List<String> args) async {
     _ => false,
   } &&
       (sub == 'set' || !ruleOptions) &&
+      (sub == 'use' || !replay) &&
       (sub == 'log' || !res.wasParsed('count') && !res.flag('bodies'));
   if (!valid) {
     stderr.writeln(usage);
@@ -2719,7 +2725,12 @@ Future<int> _mockCmd(List<String> args) async {
     case 'reset':
       r = await _deleteJson(info, '/api/mock/overrides');
     case 'use':
-      r = await _postJson(info, '/api/mock', jsonEncode({'scenario': rest[1]}));
+      r = replay
+          // Longer than the server lets a replay run (replayLimit), so a slow
+          // one isn't reported as no response.
+          ? await _postJson(info, '/api/mock/replay/${Uri.encodeComponent(rest[1])}', '',
+              timeout: const Duration(minutes: 5))
+          : await _postJson(info, '/api/mock', jsonEncode({'scenario': rest[1]}));
     case 'off':
       r = await _postJson(info, '/api/mock', jsonEncode({'scenario': null}));
     case 'log':
@@ -2735,9 +2746,16 @@ Future<int> _mockCmd(List<String> args) async {
     print(jsonEncode(r));
     return r['ok'] == true ? 0 : 1;
   }
+  final steps = (r['steps'] as List? ?? const []).cast<Map<String, dynamic>>();
+  if (replay) replayLines(steps).forEach(print);
   if (r['ok'] != true) {
-    stderr.writeln('✗ ${r['error']}');
+    // A replay that started has just printed where it stopped.
+    stderr.writeln(steps.isEmpty ? '✗ ${r['error']}' : '(scenario "${r['active']}" stays on)');
     return 1;
+  }
+  if (replay) {
+    print('active:  ${r['active']}   (assert --since ${r['seq']})');
+    return 0;
   }
   if (sub == 'log') {
     final hits = (r['hits'] as List).cast<Map<String, dynamic>>();
@@ -2831,8 +2849,12 @@ void _printMock(Map<String, dynamic> m, {required String? active, int? port}) {
   final scenarios = (m['scenarios'] as Map).cast<String, dynamic>();
   if (scenarios.isEmpty) print('(no scenarios — add mocks.scenarios to emu.yaml)');
   final sources = (m['sources'] as Map? ?? const {}).cast<String, dynamic>();
+  final replays = (m['replays'] as Map? ?? const {}).cast<String, dynamic>();
   for (final e in scenarios.entries) {
     print('${e.key == active ? '▸' : ' '} ${e.key}   (${sources[e.key] ?? 'emu.yaml'})');
+    if (replays[e.key] case final Map replay) {
+      print('    replay: ${(replay['entry'] as Map?)?['url'] ?? '(no entry)'} + ${(replay['steps'] as List).length} step(s)');
+    }
     for (final r in (e.value as List).cast<Map<String, dynamic>>()) {
       final match = r['match'] as Map, respond = r['respond'] as Map;
       print('    ${match['method'] ?? '*'} ${match['url'] ?? match['path']} → ${respond['status']}'

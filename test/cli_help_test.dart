@@ -72,4 +72,24 @@ void main() {
       expect((await _run(['status', 'extra'])).$1, 2);
     });
   });
+
+  group('mock --replay', () {
+    test('goes with use and a scenario only — refused before it needs a session', () async {
+      for (final argv in [
+        ['mock', '--replay'],
+        ['mock', 'use', '--replay'],
+        ['mock', 'off', '--replay'],
+        ['mock', 'log', '--replay'],
+      ]) {
+        final (code, _) = await _run(argv);
+        expect(code, 2, reason: '$argv');
+      }
+    });
+
+    test('is in the usage', () async {
+      final (code, out) = await _run(['mock', '--help']);
+      expect(code, 0);
+      expect(out, contains('--replay'));
+    });
+  });
 }

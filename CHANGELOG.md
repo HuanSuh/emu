@@ -12,6 +12,12 @@
 - 허브·macOS 앱: 플러그인은 새 버전을 받았는데 CLI 가 옛 버전이면 GitHub 없이도 **Update** 배너를 띄운다.
 - `emu install`, `emu update --local`.
 
+- 목 시나리오에 진입 딥링크와 준비 단계를 함께 저장해 한 번에 같은 화면을 다시 만드는 replay. `mocks/<name>.json` 옆의
+  선택 파일 `mocks/<name>.replay.json` 에 `entry.url` 과 `steps`(`tap`·`text`·`settle`)를 적으면 `emu mock use <name> --replay`
+  가 시나리오 적용 → 딥링크 → 단계 → settle 을 실행하고, 처음 실패한 단계에서 멈춰 어디서 왜 실패했는지 알려 준다. 대시보드
+  Mocks 에는 **replay** 와, 연 딥링크를 진입점으로 저장하는 **set entry** 가 생겼다. 시나리오 파일 형식은 그대로이고, 파일이
+  없으면 전과 같으며, 이 기능이 없는 버전의 emu 는 새 파일을 무시한다. emu.yaml 시나리오는 아직 지원하지 않는다.
+
 ### Changed
 - 플러그인 설치의 실행 파일이 버전 폴더가 아닌 고정 위치 `~/.emu/bin/emu` 로 옮겨져, 마켓플레이스 자동 업데이트를 켜도 PATH 링크가 끊기지
   않는다. 교체는 rename 이라 실행 중인 hub·세션은 영향이 없다. 이전 설치는 다음 `emu update` 나 `/emu-setup` 때 자동으로 옮겨지고(macOS 앱은
