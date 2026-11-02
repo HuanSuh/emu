@@ -77,11 +77,18 @@ emu 사용법(스킬)과 `/emu-setup` 명령을 어느 프로젝트에서든 쓸
 ```
 /plugin marketplace add HuanSuh/emu   # 또는 로컬 경로: /plugin marketplace add <이 리포 경로>
 /plugin install emu@emu
-/emu-setup                            # 바이너리 빌드 + PATH 심링크 자동화
+/emu-setup                            # emu 빌드 후 ~/.emu/bin/emu 에 설치하고 PATH 에 심링크
 ```
 
+바이너리는 버전 폴더 밖의 `~/.emu/bin/emu` 에 있어서 마켓플레이스 자동 업데이트를 켜 둘 수 있다.
+Claude Code 가 새 버전을 받으면 SessionStart 훅이 Claude 에게 알리고, 허브와 macOS 앱에 **Update**
+배너가 뜬다. `emu update` 나 버튼이 빌드해 파일을 교체한다. 실행 중인 세션은 그대로 돌고, 새로 띄운
+세션부터 새 버전을 쓴다. `EMU_AUTO_UPDATE=1` 을 켜면 훅이 이 일을 백그라운드에서 한다(`dart` 필요.
+실패하면 다음 세션에 알리고, 로그는 `~/.emu/auto-update.log`).
+
 - `skills/emu/SKILL.md` — Claude에게 기동→관찰→조작→검증 루프를 가르친다.
-- `commands/emu-setup.md` — `emu` 바이너리를 빌드해 PATH에 심링크한다.
+- `commands/emu-setup.md` — `emu` 바이너리를 빌드해 `~/.emu/bin` 에 설치하고 PATH에 심링크한다.
+- `hooks/hooks.json` — 세션 시작 때 플러그인과 설치된 CLI 버전을 비교한다(빌드·네트워크 없음).
 - 스킬은 `emu` 바이너리가 PATH에 있어야 동작한다(`/emu-setup` 이 처리).
 
 ## 빠른 시작
@@ -156,8 +163,9 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 |------|------|
 | `emu --version` / `-v` | 설치된 버전 표시 + 최신 릴리스 존재 여부 확인 |
 | `emu doctor` | 의존성 점검 (flutter / adb / emulator / xcrun) + 업데이트 상태 |
-| `emu update [-y]` | 최신 릴리스 설치: git 체크아웃은 pull + 재빌드, Claude Code 플러그인 설치는 `claude plugin marketplace update` + `claude plugin update` 로 새 버전을 받아 빌드하고 PATH 심링크를 옮긴다(`claude` CLI 가 없으면 `/plugin update emu` + `/emu-setup` 안내). macOS 앱이 있으면 다시 빌드. `--json` 은 stdout 에 결과 객체 하나, 단계는 stderr |
-| `emu uninstall [-y]` | 현재 실행 중인 바이너리를 가리키는 PATH 심링크 제거 |
+| `emu update [-y]` | 최신 릴리스 설치: git 체크아웃은 pull + 재빌드, Claude Code 플러그인 설치는 Claude Code 가 이미 받은 버전을 빌드하거나, 먼저 `claude plugin marketplace update` + `claude plugin update` 로 받은 뒤 `~/.emu/bin/emu` 를 교체한다(이전 설치는 최신이어도 그 위치로 옮긴다. `--local` 은 디스크에 있는 버전만 쓴다. `claude` CLI 가 없고 받아 둔 버전도 없으면 `/plugin update emu` + `/emu-setup` 안내). macOS 앱이 있으면 다시 빌드. `--json` 은 stdout 에 결과 객체 하나, 단계는 stderr |
+| `emu install` | 이 바이너리를 `~/.emu/bin/emu` 에 설치하고 PATH 심링크를 옮긴다. 더 새 버전은 덮어쓰지 않는다(`/emu-setup` 이 실행) |
+| `emu uninstall [-y]` | 현재 실행 중인 바이너리를 가리키는 PATH 심링크 제거(`~/.emu/bin/emu` 면 그 파일도) |
 | `emu devices` | `flutter devices` + Android AVD 목록. 다른 emu 세션이 점유한 기기는 `(in use: <project>, <dashboard>)` 로 표시(`--json` 은 기기별 `lease` 필드) |
 | `emu configs` | `.vscode/launch.json` 의 실행 구성 목록 (debug만 실행 가능) + `emu.yaml`/`emu.local.yaml` 의 profile 목록 |
 | `emu config [--profile <name>]` | `emu.yaml` 계층 병합 결과 + 학습된 메모리 표시. `--profile` 주면 그 profile로 resolve된 값을 대신 미리보기 |
@@ -764,7 +772,7 @@ emu report --mine                               # 내가 보낸 리포트와 상
   기본 브라우저로.
 
 `emu app status|open|uninstall`. 설치한 셸의 `PATH` 를 기억하고(Finder 로 뜬 앱의 PATH 는 최소라서),
-`emu update` 가 앱 소스나 앱이 실행하는 emu 바이너리(플러그인 업데이트는 새 폴더에 빌드)가 바뀌었으면 다시
+`emu update` 가 앱 소스나 앱이 실행하는 emu 바이너리 경로가 바뀌었으면 다시
 빌드한다.
 
 ## 대시보드 페이지
@@ -1190,10 +1198,43 @@ emu mock unset GET '/v1/items*'   # 하나 제거, `emu mock reset` 은 전부
 emu mock log --json --bodies     # 앱이 실제로 보낸 요청으로 검증
 ```
 
+**명령 하나로 그 화면까지** — 시나리오는 앱이 받을 응답만 말하고, 그 응답이 보이는 화면까지 가는 길은 말하지 않는다.
+그 길을 `mocks/<name>.json` 옆의 `mocks/<name>.replay.json` 에 적으면(선택, emu.yaml 시나리오는 아직 지원하지 않는다)
+`emu mock use <name> --replay` 가 시나리오를 켜고, 딥링크를 열고, 단계를 실행하고, 앱이 잦아들 때까지 기다린다.
+
+```json
+{
+  "entry": { "url": "myapp://orders/1" },
+  "steps": [
+    { "tap": { "text": "Pay", "index": 0 } },
+    { "tap": { "key": "card-field" } },
+    { "text": "4242", "append": false },
+    { "settle": { "timeoutMs": 10000 } }
+  ]
+}
+```
+
+```bash
+emu mock use declined --replay         # 단계별 결과 출력, 처음 실패한 단계에서 exit 1
+emu mock use declined --replay --json  # {ok, scenario, active, steps: [{i, kind, ok, detail}], seq}
+emu assert --since <seq> --expect '…'  # seq: replay 전의 로그 커서
+```
+
+- `entry.url` 과 `steps` 는 각각 선택이지만 하나는 있어야 한다. 단계는 `tap`(`text` 또는 `key`, 여럿이면 `index`),
+  `text`(포커스된 입력란에 입력하므로 먼저 tap, `append: true` 면 이어 붙임), `settle`(최대 60000ms) 이다.
+- `tap` 은 위젯이 나타날 때까지 최대 10초 기다리고, `tap`·`text` 뒤에는 짧게 settle 한다. 처음 실패한 단계에서 멈추고,
+  시나리오는 켜진 채로 두며, 어느 단계가 왜 실패했는지 답한다. 앱이 끝내 잦아들지 않는 것은 실패가 아니다.
+- iOS 시뮬레이터는 그 기기에서 URL scheme 을 처음 열 때 확인 창을 띄운다. emu 는 이 창을 누를 수 없어 첫 `tap` 이 위젯을
+  못 찾았다고 답한다. 시뮬레이터에서 한 번 허용하면 된다.
+- 앱이 실행 중이 아니거나(409) replay 가 없거나(404) 잘못됐으면(400) 아무것도 시작하지 않고 활성 시나리오도 바꾸지
+  않는다. 파일의 오류(모르는 단계 포함)는 `emu mock` 이 다른 문제들과 함께 보여 준다.
+- 규칙을 저장해도 이 파일은 그대로고, 시나리오를 지우면 함께 지워진다. replay 를 모르는 버전의 emu 는 이 파일을 무시한다.
+
 **대시보드 → Debug → Mocks** 에서 시나리오 목록, 규칙 편집기(match·status·delay·headers·body), 실시간
 트래픽을 본다. 요청을 고르면 요청·응답 본문이 보이고, **mock this response** 로 그 응답을 고른 시나리오
 (또는 툴바에 입력한 이름)의 규칙으로 만든 뒤 고쳐서 저장한다. 시나리오 전환은 앱의 다음 요청부터 바로
-적용된다(재시작 불필요). `hosts`·`upstream`·`define` 변경은 빌드 시점 dart-define 이라 `emu up` 을 다시 해야 한다.
+적용된다(재시작 불필요). replay 파일이 있는 시나리오에는 **replay** 버튼이 있고, **set entry** 는 URL 입력란의 링크나
+마지막으로 연 링크를 그 시나리오의 진입점으로 저장한다(단계는 그대로). `hosts`·`upstream`·`define` 변경은 빌드 시점 dart-define 이라 `emu up` 을 다시 해야 한다.
 
 ## 동작 원리
 

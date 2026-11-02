@@ -35,6 +35,54 @@ Future<Object?> _js(String prelude, String body) async {
 
 void main() {
   final app = File('web/app.js').readAsStringSync();
+  final mocks = File('web/mocks.js').readAsStringSync();
+
+  test(
+    'mock replay: which link becomes the entry, what is saved, what is said',
+    skip: _node ? false : 'node is not installed',
+    () async {
+      final r = await _js(
+        '''
+${_fn(mocks, 'replayNote')}
+${_fn(mocks, 'replayEntryUrl')}
+${_fn(mocks, 'replayWithEntry')}
+${_fn(mocks, 'replayOutcome')}
+''',
+        '''
+      return {
+        typed: replayEntryUrl('  a://typed ', ['a://last']),
+        last: replayEntryUrl('  ', ['a://last', 'a://old']),
+        none: replayEntryUrl('', []),
+        keeps: replayWithEntry({ entry: { url: 'a://old' }, steps: [{ text: 'x' }] }, 'a://new'),
+        fresh: replayWithEntry(undefined, 'a://new'),
+        note: replayNote({ steps: [{}] }),
+        done: replayOutcome('x', { ok: true, steps: [{}, {}] }),
+        stopped: replayOutcome('x', { ok: false, active: 'x', error: 'steps[0] tap: gone' }),
+        refused: replayOutcome('x', { ok: false, error: 'app is not running' }),
+      };
+    ''',
+      );
+      expect(r, {
+        'typed': 'a://typed',
+        'last': 'a://last',
+        'none': null,
+        'keeps': {
+          'entry': {'url': 'a://new'},
+          'steps': [
+            {'text': 'x'},
+          ],
+        },
+        'fresh': {
+          'entry': {'url': 'a://new'},
+          'steps': <Object>[],
+        },
+        'note': 'scenario on → no entry link → 1 step(s) → settle',
+        'done': 'replayed x: 2 done',
+        'stopped': 'replay stopped, x stays on — steps[0] tap: gone',
+        'refused': 'no replay: app is not running',
+      });
+    },
+  );
 
   test(
     'a stream message that is not JSON is skipped, the rest still parse',

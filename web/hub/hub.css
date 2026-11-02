@@ -125,6 +125,8 @@ button.dhead:hover { color: var(--fg); }
 .md a { color: var(--accent); }
 
 /* Update progress. */
+.update-banner { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--border); font-size: 12px; line-height: 1.4; }
+.update-banner[hidden] { display: none; }
 .upd { margin: 10px 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
 .upd[hidden] { display: none; }
 .upd.failed, .upd.refused { border-color: var(--error); }

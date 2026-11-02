@@ -81,11 +81,20 @@ project.
 ```
 /plugin marketplace add HuanSuh/emu   # or a local path: /plugin marketplace add <this repo path>
 /plugin install emu@emu
-/emu-setup                            # automates the binary build + PATH symlink
+/emu-setup                            # builds emu, installs it to ~/.emu/bin/emu, links it onto PATH
 ```
 
+The binary lives in `~/.emu/bin/emu`, outside the versioned plugin folder, so
+marketplace auto-update can stay on. When Claude Code fetches a new version,
+a SessionStart hook tells Claude, and the hub and macOS app show an **Update**
+banner; `emu update` or the button builds it and swaps the file. Running
+sessions keep going; new ones use the new version. Set `EMU_AUTO_UPDATE=1` to
+have the hook do that in the background instead (needs `dart`; failures are
+reported at the next session, log in `~/.emu/auto-update.log`).
+
 - `skills/emu/SKILL.md` — teaches Claude the boot → observe → drive → verify loop.
-- `commands/emu-setup.md` — builds the `emu` binary and symlinks it onto PATH.
+- `commands/emu-setup.md` — builds the `emu` binary, installs it to `~/.emu/bin` and symlinks it onto PATH.
+- `hooks/hooks.json` — at session start, compares the plugin with the installed CLI (no build, no network).
 - The skill needs the `emu` binary on PATH (`/emu-setup` handles that).
 
 ## Quick start
@@ -164,8 +173,9 @@ What this loop gives an agent:
 |---------|-------------|
 | `emu --version` / `-v` | Show the installed version + whether a newer release is available |
 | `emu doctor` | Check dependencies (flutter / adb / emulator / xcrun) + update status |
-| `emu update [-y]` | Install the latest release: a git checkout pulls + rebuilds; a Claude Code plugin install runs `claude plugin marketplace update` + `claude plugin update`, builds the new version and moves the PATH symlink to it (no `claude` CLI → prints the `/plugin update emu` + `/emu-setup` steps). Rebuilds the macOS app when installed. `--json` keeps one result object on stdout, steps on stderr |
-| `emu uninstall [-y]` | Remove the PATH symlink(s) pointing at the running binary |
+| `emu update [-y]` | Install the latest release: a git checkout pulls + rebuilds; a Claude Code plugin install builds the version Claude Code already fetched, or runs `claude plugin marketplace update` + `claude plugin update` first, then swaps `~/.emu/bin/emu` (older installs move there, also when already up to date; `--local` uses only what is on disk; no `claude` CLI and nothing fetched → prints the `/plugin update emu` + `/emu-setup` steps). Rebuilds the macOS app when installed. `--json` keeps one result object on stdout, steps on stderr |
+| `emu install` | Put this binary at `~/.emu/bin/emu` and move the PATH symlinks there. Never replaces a newer one (`/emu-setup` runs it) |
+| `emu uninstall [-y]` | Remove the PATH symlink(s) pointing at the running binary (and the file itself when it is `~/.emu/bin/emu`) |
 | `emu devices` | `flutter devices` + Android AVD list. Devices held by another emu session are marked `(in use: <project>, <dashboard>)` (`--json`: a `lease` field per device) |
 | `emu configs` | List run configs from `.vscode/launch.json` (debug only) + profiles from `emu.yaml`/`emu.local.yaml` |
 | `emu config [--profile <name>]` | Show the merged `emu.yaml` config + learned memory; with `--profile`, preview that named profile's resolved config instead |
@@ -845,8 +855,7 @@ window around the hub:
 
 `emu app status|open|uninstall`. The app keeps the `PATH` of the shell it was
 installed from (Finder gives apps a minimal one), and `emu update` rebuilds it
-when its sources or the emu binary it runs (a plugin update builds one in a new
-folder) changed.
+when its sources or the path of the emu binary it runs changed.
 
 ## Dashboard pages
 
@@ -1306,11 +1315,49 @@ emu mock unset GET '/v1/items*'   # one; `emu mock reset` clears them all
 emu mock log --json --bodies     # what the app actually sent, to assert on
 ```
 
+**Back to the screen in one command** — a scenario says what the app gets, not how to reach
+the screen that shows it. Put that in `mocks/<name>.replay.json` next to `mocks/<name>.json`
+(optional; scenarios in emu.yaml can't have one yet), and `emu mock use <name> --replay` turns
+the scenario on, opens the deep link, runs the steps and waits for the app to settle.
+
+```json
+{
+  "entry": { "url": "myapp://orders/1" },
+  "steps": [
+    { "tap": { "text": "Pay", "index": 0 } },
+    { "tap": { "key": "card-field" } },
+    { "text": "4242", "append": false },
+    { "settle": { "timeoutMs": 10000 } }
+  ]
+}
+```
+
+```bash
+emu mock use declined --replay         # prints each step; exit 1 at the first that fails
+emu mock use declined --replay --json  # {ok, scenario, active, steps: [{i, kind, ok, detail}], seq}
+emu assert --since <seq> --expect '…'  # seq: the log cursor from before the replay
+```
+
+- `entry.url` and `steps` are both optional, but give at least one. A step is `tap` (`text` or
+  `key`, plus `index` when several match), `text` (typed into the focused field, so tap it first;
+  `append: true` adds to what's there) or `settle` (up to 60000 ms).
+- A `tap` waits up to 10 s for its widget, and every `tap` and `text` is followed by a short
+  settle. The first step that fails ends the run; the scenario stays on, and the answer says
+  which step and why. An app that never goes quiet is not a failure.
+- On an iOS simulator, the first time a URL scheme opens on that device iOS asks to confirm. emu
+  can't tap that alert, so the first `tap` reports no widget: accept it once on the simulator.
+- Nothing starts when the app isn't running (409), or when the replay is missing (404) or
+  broken (400): the active scenario doesn't change. A mistake in the file — an unknown step
+  included — is listed by `emu mock` with the other problems.
+- Saving rules leaves the file alone; deleting the scenario deletes it. Versions of emu without
+  replay ignore it.
+
 **Dashboard → Debug → Mocks** shows the scenarios, an editor for each rule (match, status,
 delay, headers, body), and the live traffic: pick a request to see its request and response
 bodies, then **mock this response** to turn it into a rule of the scenario you picked (or the
 name typed in the toolbar), edit it, and save. Switching scenarios applies to the app's next
-request — no restart. Changing `hosts`, `upstream` or `define` needs `emu up` again (they are
+request — no restart. A scenario with a replay file has a **replay** button; **set entry** saves
+the link in the URL box, or the last one you opened, as its entry and keeps its steps. Changing `hosts`, `upstream` or `define` needs `emu up` again (they are
 build-time dart-defines).
 
 ## How it works

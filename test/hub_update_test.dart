@@ -125,6 +125,50 @@ void main() {
     await ws.close();
   });
 
+  test('version: a newer plugin on disk is an update, without the network', () async {
+    final home = '${tmp.path}/home';
+    final plugins = '$home/.claude/plugins';
+    final dir = '$plugins/cache/emu/emu/0.3.0';
+    Directory('$dir/.claude-plugin').createSync(recursive: true);
+    File('$dir/build.sh').writeAsStringSync('');
+    File('$dir/.claude-plugin/plugin.json').writeAsStringSync('{"version":"0.3.0"}');
+    File('$dir/CHANGELOG.md').writeAsStringSync('## [0.3.0] - 2026-11-02\n\n### Added\n- local notes\n\n## [0.1.0] - 2026-01-01\n');
+    File('$plugins/installed_plugins.json').writeAsStringSync(jsonEncode({
+      'plugins': {
+        'emu@emu': [
+          {'scope': 'user', 'installPath': dir, 'version': '0.3.0'},
+        ],
+      },
+    }));
+    final local = HubServer(
+      registry: SessionRegistry(dir: Directory('${tmp.path}/sessions2')),
+      recent: RecentProjects(file: File('${tmp.path}/projects2.json')),
+      infoFile: File('${tmp.path}/hub2.json'),
+      latestVersion: () async => null,
+      fetchChangelog: () async => fail('no network for what is on disk'),
+      updater: () => SelfUpdater(
+        executable: '$home/.emu/bin/emu',
+        currentVersion: '0.1.0',
+        environment: {'HOME': home, 'PATH': ''},
+        run: run,
+        latestVersion: () async => null,
+        appInstalled: () => false,
+        lockFile: File('${tmp.path}/update2.lock'),
+      ),
+    );
+    await local.start(port: 0);
+    addTearDown(local.close);
+    final v = jsonDecode((await http.get(Uri.parse('http://127.0.0.1:${local.port}/api/version'),
+            headers: {'X-Emu-Token': local.token}))
+        .body) as Map;
+    expect(v['updateAvailable'], isTrue);
+    expect(v['ready'], '0.3.0');
+    expect(v['latest'], '0.3.0');
+    expect(v['install'], 'stable');
+    expect(v['source'], 'plugin');
+    expect(v['notes'], contains('local notes'));
+  });
+
   test('a second click while it runs is refused', () async {
     buildGate = Completer();
     expect((await post()).statusCode, 202);

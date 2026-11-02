@@ -24,6 +24,9 @@ cd <emu-repo> && dart pub get && ./build.sh
 ln -sf "$PWD/emu" /usr/local/bin/emu
 ```
 
+세션 시작 때 `emu X.Y.Z is ready` 안내가 보이면 플러그인만 새 버전이다. 사용자에게 알리고, 원하면
+`emu update` 를 실행한다(실행 중인 세션은 끊기지 않고, 새로 띄운 세션부터 적용).
+
 명령은 **Flutter 프로젝트 루트**(또는 그 하위)에서 실행한다. 다른 곳이면
 `EMU_PROJECT=/path/to/app` 를 앞에 붙인다. 모든 명령은 `--json` 을 지원한다.
 
@@ -158,6 +161,9 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
   — 요청 하나의 응답을 즉시 지정(시나리오보다 우선, 메모리에만, `unset`/`reset` 으로 제거). 케이스별 자동
   검증: set → 앱이 다시 요청하게(새로고침 tap 또는 `emu restart`) → `emu find`/`shot` 으로 판정. 앱 쪽 설정(emu_hook 또는 base URL dart-define)은
   README "API 목업" 참고.
+- `emu mock use <scenario> --replay [--json]` — 시나리오를 켜고 `mocks/<scenario>.replay.json` 대로 진입 딥링크 →
+  단계(`tap` text/key·`text`·`settle`) → settle 까지 실행해 같은 화면을 다시 만든다. 처음 실패한 단계에서 멈추고(exit 1)
+  어느 단계가 왜 실패했는지 보여 준다. 진입 경로를 매번 찾지 말고 이 파일에 적어 둔다. 응답의 `seq` 는 `assert --since` 에 쓴다.
 - `emu block <page>.<block> [--select <col>=<value>] [--seg <name>]` — 페이지의 list(표)·diff 블록이
   보여 주는 내용을 CLI로. `--select` 가 대시보드에서 행을 고른 것처럼 `{{selected.<col>}}` 을 채운다.
   `--seg` 를 빼면 첫 세그먼트, `optional` 세그먼트면 비교 없음(빈 `{{seg}}`).

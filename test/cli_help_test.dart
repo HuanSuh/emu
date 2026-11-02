@@ -48,7 +48,7 @@ void main() {
   // `4591` (https://github.com/HuanSuh/emu/issues/13).
   group('hand-parsed subcommands are strict', () {
     const manual = [
-      'version', 'doctor', 'update', 'uninstall', 'devices', 'configs', 'status',
+      'version', 'doctor', 'update', 'install', 'uninstall', 'devices', 'configs', 'status',
       'shot', 'open', 'open-url', 'down', 'reload', 'restart', 'cold', 'stop', 'attach', 'pages',
     ];
     for (final cmd in manual) {
@@ -70,6 +70,26 @@ void main() {
     test('a second positional is rejected', () async {
       expect((await _run(['shot', 'a.png', 'b.png'])).$1, 2);
       expect((await _run(['status', 'extra'])).$1, 2);
+    });
+  });
+
+  group('mock --replay', () {
+    test('goes with use and a scenario only — refused before it needs a session', () async {
+      for (final argv in [
+        ['mock', '--replay'],
+        ['mock', 'use', '--replay'],
+        ['mock', 'off', '--replay'],
+        ['mock', 'log', '--replay'],
+      ]) {
+        final (code, _) = await _run(argv);
+        expect(code, 2, reason: '$argv');
+      }
+    });
+
+    test('is in the usage', () async {
+      final (code, out) = await _run(['mock', '--help']);
+      expect(code, 0);
+      expect(out, contains('--replay'));
     });
   });
 }

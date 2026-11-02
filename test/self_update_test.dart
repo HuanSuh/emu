@@ -208,10 +208,17 @@ void main() {
         'bash build.sh @$newDir',
         'emu version --json',
       ]);
-      expect(r.binary, '$newDir/emu');
+      final stable = '$home/.emu/bin/emu';
+      expect(r.binary, stable);
       expect(r.linked, ['$bin/emu']);
-      expect(Link('$bin/emu').targetSync(), '$newDir/emu');
+      expect(Link('$bin/emu').targetSync(), stable);
+      expect(File(stable).readAsStringSync(), 'new');
       expect(File('$oldDir/emu').existsSync(), isTrue, reason: 'the old build stays for whatever still runs it');
+      final rec = InstallRecord.read(home)!;
+      expect(rec.version, '0.2.0');
+      expect(rec.source, 'plugin');
+      expect(rec.dir, newDir);
+      expect(rec.marketplace, 'emu');
       expect(r.toJson()['install'], 'plugin');
     });
 
@@ -235,6 +242,67 @@ void main() {
       cmds.answers['emu version --json'] = ProcessResult(0, 1, '', 'crashed');
       await expectLater(updater('$oldDir/emu', path: bin).apply('0.2.0'), throwsA(isA<UpdateError>()));
       expect(Link('$bin/emu').targetSync(), '$oldDir/emu');
+    });
+
+    test('characterization: an old version-folder link is a plugin install, any marketplace name', () {
+      final dir = '$plugins/cache/some-market/emu/1.2.3';
+      Directory(dir).createSync(recursive: true);
+      expect(updater('$dir/emu').kind, InstallKind.plugin);
+      expect(updater('$oldDir/emu').kind, InstallKind.plugin);
+    });
+
+    test('characterization: a checkout inside the plugin cache is a git install', () {
+      Directory('$oldDir/.git').createSync();
+      File('$oldDir/pubspec.yaml').writeAsStringSync('name: emu\n');
+      expect(updater('$oldDir/emu').kind, InstallKind.git);
+    });
+
+    test('characterization: a plugin folder with a pubspec but no .git stays a plugin install', () {
+      File('$oldDir/pubspec.yaml').writeAsStringSync('name: emu\n');
+      expect(updater('$oldDir/emu').kind, InstallKind.plugin);
+    });
+
+    test('characterization: up to date, nothing runs and PATH stays', () async {
+      final r = await updater('$oldDir/emu', path: bin, current: '0.2.0').apply('0.2.0');
+      expect(r.updated, isFalse);
+      expect(r.binary, '$oldDir/emu');
+      expect(cmds.calls, isEmpty);
+      expect(Link('$bin/emu').targetSync(), '$oldDir/emu');
+    });
+
+    test('characterization: ~/.local/bin is moved even when it is not on PATH', () async {
+      pluginUpdates();
+      final tools = '${tmp.path}/tools';
+      Directory(tools).createSync();
+      File('$tools/claude').writeAsStringSync('');
+      final r = await updater('$oldDir/emu', path: tools).apply('0.2.0');
+      expect(r.linked, ['$bin/emu']);
+    });
+
+    test('characterization: a regular file named emu on PATH is left alone', () async {
+      pluginUpdates();
+      final other = '${tmp.path}/other';
+      Directory(other).createSync();
+      File('$other/emu').writeAsStringSync('mine');
+      final r = await updater('$oldDir/emu', path: '$other:$bin').apply('0.2.0');
+      expect(r.linked, ['$bin/emu']);
+      expect(File('$other/emu').readAsStringSync(), 'mine');
+    });
+
+    test('characterization: a dangling link that was never ours is left alone', () async {
+      pluginUpdates();
+      final other = '${tmp.path}/other';
+      Directory(other).createSync();
+      Link('$other/emu').createSync('${tmp.path}/gone/emu');
+      final r = await updater('$oldDir/emu', path: '$other:$bin').apply('0.2.0');
+      expect(r.linked, ['$bin/emu']);
+      expect(Link('$other/emu').targetSync(), '${tmp.path}/gone/emu');
+    });
+
+    test('characterization: a failed update releases the lock', () async {
+      cmds.answers['claude plugin update'] = ProcessResult(0, 1, '', 'network down');
+      await expectLater(updater('$oldDir/emu', path: bin).apply('0.2.0'), throwsA(isA<UpdateError>()));
+      expect(File('$home/.emu/update.lock').existsSync(), isFalse);
     });
 
     test('installPath: the user scope, highest version, of the folders that exist', () {
@@ -285,6 +353,283 @@ void main() {
           throwsA(isA<UpdateError>().having((e) => e.message, 'message', contains('network down'))));
       expect(Link('$bin/emu').targetSync(), '$oldDir/emu');
     });
+  });
+
+  group('fixed location', () {
+    late String plugins;
+    late String bin;
+    late String stable;
+
+    /// A plugin version folder Claude Code put on disk.
+    String pluginDir(String v, {bool built = false}) {
+      final dir = '$plugins/cache/emu/emu/$v';
+      Directory('$dir/.claude-plugin').createSync(recursive: true);
+      File('$dir/build.sh').writeAsStringSync('');
+      File('$dir/.claude-plugin/plugin.json').writeAsStringSync('{"name":"emu","version":"$v"}');
+      if (built) File('$dir/emu').writeAsStringSync('build $v');
+      return dir;
+    }
+
+    void installed(String dir, String v, {String scope = 'user'}) =>
+        File('$plugins/installed_plugins.json').writeAsStringSync(jsonEncode({
+          'plugins': {
+            'emu@emu': [
+              {'scope': scope, 'installPath': dir, 'version': v},
+            ],
+          },
+        }));
+
+    void record(String v, {String source = 'plugin', String? dir}) {
+      Directory('$home/.emu/bin').createSync(recursive: true);
+      File(stable).writeAsStringSync('stable $v');
+      InstallRecord(
+              version: v, source: source, dir: dir, pluginsDir: plugins, marketplace: 'emu', plugin: 'emu')
+          .write(home);
+    }
+
+    setUp(() {
+      plugins = '$home/.claude/plugins';
+      Directory(plugins).createSync(recursive: true);
+      bin = '$home/.local/bin';
+      Directory(bin).createSync(recursive: true);
+      stable = '$home/.emu/bin/emu';
+    });
+
+    test('is its own kind; the source comes from the record, the plugin without one', () {
+      expect(updater(stable).kind, InstallKind.stable);
+      expect(updater(stable).source, InstallKind.plugin);
+      record('0.1.0', source: 'git', dir: '${tmp.path}/repo');
+      expect(updater(stable).kind, InstallKind.stable);
+      expect(updater(stable).source, InstallKind.git);
+    });
+
+    test('a version on disk needs neither the network nor claude', () async {
+      record('0.1.0', dir: pluginDir('0.1.0'));
+      final dir = pluginDir('0.2.0');
+      installed(dir, '0.2.0');
+      Link('$bin/emu').createSync(stable);
+      cmds.effects['bash build.sh'] = (wd) => File('$wd/emu').writeAsStringSync('build 0.2.0');
+      cmds.answers['emu version --json'] = ProcessResult(0, 0, '{"version":"0.2.0"}\n', '');
+      final u = SelfUpdater(
+        executable: stable,
+        currentVersion: '0.1.0',
+        environment: {'HOME': home, 'PATH': bin},
+        run: cmds.call,
+        latestVersion: () async => null, // offline
+        appInstalled: () => false,
+        lockFile: File('$home/.emu/update.lock'),
+      );
+      expect(u.pluginReady?.version, '0.2.0');
+      final c = await u.check();
+      expect(c.newer, isTrue);
+      expect(c.latest, '0.2.0');
+      final r = await u.apply(c.latest!);
+      expect(cmds.calls, ['bash build.sh @$dir', 'emu version --json']);
+      expect(r.binary, stable);
+      expect(r.linked, isEmpty, reason: 'the link already points here');
+      expect(File(stable).readAsStringSync(), 'build 0.2.0');
+      expect(InstallRecord.read(home)!.version, '0.2.0');
+      expect(InstallRecord.read(home)!.dir, dir);
+    });
+
+    test('a release newer than what is on disk is fetched; a failed fetch falls back to the disk', () async {
+      record('0.1.0', dir: pluginDir('0.1.0'));
+      final dir = pluginDir('0.1.5');
+      installed(dir, '0.1.5');
+      File('$bin/claude').writeAsStringSync('');
+      cmds.effects['bash build.sh'] = (wd) => File('$wd/emu').writeAsStringSync('b');
+      cmds.answers['emu version --json'] = ProcessResult(0, 0, '{"version":"0.1.5"}\n', '');
+      cmds.answers['claude plugin update'] = ProcessResult(0, 1, '', 'offline');
+      final lines = <String>[];
+      await updater(stable, path: bin).apply('0.2.0', log: lines.add);
+      expect(lines, contains(contains('already on disk')));
+      expect(InstallRecord.read(home)!.version, '0.1.5');
+    });
+
+    test('never a downgrade: an older or same plugin is not ready, an older build not installed', () async {
+      record('0.3.0', dir: pluginDir('0.3.0'));
+      installed(pluginDir('0.2.0'), '0.2.0', scope: 'project');
+      expect(updater(stable, current: '0.3.0').pluginReady, isNull);
+      installed(pluginDir('0.3.0'), '0.3.0');
+      expect(updater(stable, current: '0.3.0').pluginReady, isNull);
+      // A hub still running 0.1.0 after the CLI went to 0.3.0: nothing is ready.
+      expect(updater(stable).pluginReady, isNull);
+    });
+
+    test('--local looks only at the disk', () async {
+      record('0.1.0', dir: pluginDir('0.1.0'));
+      installed(pluginDir('0.1.0'), '0.1.0');
+      var asked = false;
+      final u = SelfUpdater(
+        executable: stable,
+        currentVersion: '0.1.0',
+        environment: {'HOME': home, 'PATH': ''},
+        run: cmds.call,
+        latestVersion: () async {
+          asked = true;
+          return '0.9.0';
+        },
+        appInstalled: () => false,
+        lockFile: File('$home/.emu/update.lock'),
+      );
+      final c = await u.check(localOnly: true);
+      expect(c.newer, isFalse);
+      expect(asked, isFalse);
+    });
+
+    test('the swap is a rename: a running file keeps its inode and contents', () async {
+      record('0.1.0', dir: pluginDir('0.1.0'));
+      final dir = pluginDir('0.2.0');
+      installed(dir, '0.2.0');
+      cmds.effects['bash build.sh'] = (wd) => File('$wd/emu').writeAsStringSync('new');
+      cmds.answers['emu version --json'] = ProcessResult(0, 0, '{"version":"0.2.0"}\n', '');
+      // An open handle stands for a running binary's mapped file.
+      final running = File(stable).openSync();
+      addTearDown(running.closeSync);
+      await updater(stable, path: bin).apply('0.2.0');
+      expect(String.fromCharCodes(running.readSync(100)), 'stable 0.1.0');
+      expect(File(stable).readAsStringSync(), 'new');
+      expect(Directory('$home/.emu/bin').listSync().map((e) => e.path.split('/').last).toSet(), {'emu', 'emu.json'},
+          reason: 'no temp file left');
+    });
+
+    test('a failed install leaves the old binary', () async {
+      record('0.1.0', dir: pluginDir('0.1.0'));
+      final dir = pluginDir('0.2.0');
+      installed(dir, '0.2.0');
+      cmds.effects['bash build.sh'] = (wd) => File('$wd/emu').writeAsStringSync('new');
+      await expectLater(updater(stable, path: bin).apply('0.2.0'), throwsA(isA<UpdateError>()));
+      expect(File(stable).readAsStringSync(), 'stable 0.1.0', reason: 'no version: not installed');
+    });
+
+    test('another update holding the lock is refused, and migrate too', () async {
+      record('0.1.0', dir: pluginDir('0.1.0'));
+      final lock = File('$home/.emu/update.lock')..writeAsStringSync('');
+      addTearDown(() {
+        if (lock.existsSync()) lock.deleteSync();
+      });
+      final dir = pluginDir('0.1.0');
+      Link('$bin/emu').createSync('$plugins/cache/emu/emu/0.0.9/emu');
+      await expectLater(updater(stable, path: bin).migrate(), throwsA(isA<UpdateError>()));
+      await expectLater(updater('$dir/emu', path: bin).install(), throwsA(isA<UpdateError>()));
+      expect(Link('$bin/emu').targetSync(), '$plugins/cache/emu/emu/0.0.9/emu');
+    });
+
+    group('migration', () {
+      test('(a) a link to the running binary and (b) a dead plugin link move; the rest stay', () async {
+        final dir = pluginDir('0.1.0', built: true);
+        final other = '${tmp.path}/other';
+        final dead = '${tmp.path}/dead';
+        final mine = '${tmp.path}/mine';
+        final alive = '${tmp.path}/alive';
+        for (final d in [other, dead, mine, alive]) {
+          Directory(d).createSync();
+        }
+        Link('$bin/emu').createSync('$dir/emu');
+        Link('$dead/emu').createSync('$plugins/cache/emu/emu/0.0.1/emu');
+        Link('$mine/emu').createSync('${tmp.path}/checkout/emu'); // dangling, not the plugin's
+        final older = pluginDir('0.0.9', built: true);
+        Link('$alive/emu').createSync('$older/emu'); // not dangling, not running
+        File('$other/emu').writeAsStringSync('mine');
+        final u = updater('$dir/emu', path: '$other:$dead:$mine:$alive:$bin');
+        final r = await u.migrate();
+        expect(r!.binary, stable);
+        expect(r.linked, unorderedEquals(['$bin/emu', '$dead/emu']));
+        expect(Link('$bin/emu').targetSync(), stable);
+        expect(Link('$dead/emu').targetSync(), stable);
+        expect(Link('$mine/emu').targetSync(), '${tmp.path}/checkout/emu');
+        expect(Link('$alive/emu').targetSync(), '$older/emu');
+        expect(File('$other/emu').readAsStringSync(), 'mine');
+        expect(File(stable).readAsStringSync(), 'build 0.1.0');
+        final rec = InstallRecord.read(home)!;
+        expect(rec.source, 'plugin');
+        expect(rec.dir, dir);
+      });
+
+      test('a dead plugin link of another plugin name stays', () async {
+        final dir = pluginDir('0.1.0', built: true);
+        Link('$bin/emu').createSync('$plugins/cache/emu/other/0.0.1/emu');
+        await updater('$dir/emu', path: bin).migrate();
+        expect(Link('$bin/emu').targetSync(), '$plugins/cache/emu/other/0.0.1/emu');
+      });
+
+      test('a git checkout is not moved', () async {
+        final repo = '${tmp.path}/emu';
+        Directory('$repo/.git').createSync(recursive: true);
+        File('$repo/pubspec.yaml').writeAsStringSync('name: emu\n');
+        File('$repo/emu').writeAsStringSync('old');
+        Link('$bin/emu').createSync('$repo/emu');
+        expect(await updater('$repo/emu', path: bin).migrate(), isNull);
+        expect(Link('$bin/emu').targetSync(), '$repo/emu');
+        expect(File(stable).existsSync(), isFalse);
+      });
+
+      test('stable with nothing to repair does nothing', () async {
+        record('0.1.0');
+        Link('$bin/emu').createSync(stable);
+        expect(await updater(stable, path: bin).migrate(), isNull);
+      });
+
+      test('stable repairs a dead plugin link', () async {
+        record('0.1.0');
+        Link('$bin/emu').createSync('$plugins/cache/emu/emu/0.0.1/emu');
+        final r = await updater(stable, path: bin).migrate();
+        expect(r!.linked, ['$bin/emu']);
+        expect(Link('$bin/emu').targetSync(), stable);
+      });
+
+      test('an old pinned binary does not replace a newer one, but its link moves', () async {
+        record('0.5.0');
+        final dir = pluginDir('0.1.0', built: true);
+        Link('$bin/emu').createSync('$dir/emu');
+        final lines = <String>[];
+        await updater('$dir/emu', path: bin).migrate(log: lines.add);
+        expect(File(stable).readAsStringSync(), 'stable 0.5.0');
+        expect(InstallRecord.read(home)!.version, '0.5.0');
+        expect(Link('$bin/emu').targetSync(), stable);
+        expect(lines, contains(contains('keeping it')));
+      });
+
+      test('a development build never migrates', () async {
+        final dir = pluginDir('0.1.0', built: true);
+        expect(await updater('$dir/emu', path: bin, current: '0.0.0-dev').migrate(), isNull);
+        expect(File(stable).existsSync(), isFalse);
+      });
+    });
+
+    test('install from a checkout records git, and update then pulls that checkout', () async {
+      final repo = '${tmp.path}/emu';
+      Directory('$repo/.git').createSync(recursive: true);
+      File('$repo/pubspec.yaml').writeAsStringSync('name: emu\n');
+      File('$repo/emu').writeAsStringSync('old');
+      await updater('$repo/emu', path: bin).install();
+      final rec = InstallRecord.read(home)!;
+      expect(rec.source, 'git');
+      expect(rec.dir, repo);
+      cmds.effects['bash build.sh'] = (wd) => File('$wd/emu').writeAsStringSync('new');
+      cmds.answers['emu version --json'] = ProcessResult(0, 0, '{"version":"0.2.0"}\n', '');
+      final r = await updater(stable, path: bin).apply('0.2.0');
+      expect(cmds.calls, contains('git -C $repo pull --ff-only'));
+      expect(r.binary, stable);
+      expect(File(stable).readAsStringSync(), 'new');
+      expect(InstallRecord.read(home)!.source, 'git');
+    });
+
+    test('the macOS app follows the new path', () async {
+      final dir = pluginDir('0.1.0', built: true);
+      cmds.answers['emu app install'] = ProcessResult(0, 0, '{"ok":true}\n', '');
+      final r = await updater('$dir/emu', path: bin, app: true).migrate();
+      expect(cmds.calls.last, 'emu app install --if-changed --json');
+      expect(r!.app, 'updated');
+    });
+  });
+
+  test('characterization: a loose binary is unknown and nothing runs', () async {
+    final u = updater('${tmp.path}/emu');
+    expect(u.kind, InstallKind.unknown);
+    await expectLater(u.check(), throwsA(isA<UpdateError>().having((e) => e.refused, 'refused', isTrue)));
+    await expectLater(u.apply('0.2.0'), throwsA(isA<UpdateError>().having((e) => e.refused, 'refused', isTrue)));
+    expect(cmds.calls, isEmpty);
   });
 
   test('a development build or a loose binary is refused', () async {

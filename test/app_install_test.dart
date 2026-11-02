@@ -43,7 +43,7 @@ void main() {
     record(appSourcesRev(), '/plugins/cache/emu/emu/0.1.0/emu');
     expect(installedAppEmu(bundle), '/plugins/cache/emu/emu/0.1.0/emu');
     expect(await appIsCurrent(bundle: bundle, emu: '/plugins/cache/emu/emu/0.1.0/emu'), isTrue);
-    // A plugin update builds the new binary in another folder: the app must follow it.
+    // An old install moving to ~/.emu/bin changes the path: the app must follow it once.
     expect(await appIsCurrent(bundle: bundle, emu: '/plugins/cache/emu/emu/0.2.0/emu'), isFalse);
     record('000000000000', '/plugins/cache/emu/emu/0.2.0/emu');
     expect(await appIsCurrent(bundle: bundle, emu: '/plugins/cache/emu/emu/0.2.0/emu'), isFalse);

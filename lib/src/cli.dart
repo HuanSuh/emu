@@ -23,6 +23,7 @@ import 'memory_diff.dart';
 import 'models.dart';
 import 'open_url.dart';
 import 'mock.dart';
+import 'mock_replay.dart';
 import 'page_ask.dart';
 import 'pages.dart';
 import 'project_config.dart';
@@ -54,6 +55,8 @@ Future<int> runCli(List<String> argv) async {
         return await _doctor(rest);
       case 'update':
         return await _update(rest);
+      case 'install':
+        return await _install(rest);
       case 'uninstall':
         return await _uninstall(rest);
       case 'devices':
@@ -224,11 +227,13 @@ Future<int> _doctor(List<String> args) async {
 // update
 // --------------------------------------------------------------------------
 Future<int> _update(List<String> args) async {
-  const usage = 'usage: emu update [-y, --yes] [--json]\n'
-      '   git checkout: git pull + build.sh. Claude Code plugin: claude plugin update, build the\n'
-      '   new version, move the PATH symlink. Then the macOS app, if installed — a failed app build\n'
-      '   still counts as updated (--json: ok true, app "failed: …", exit 0; rerun `emu app install`).';
-  final bad = _checkArgs(args, usage, flags: const {'--yes', '-y'});
+  const usage = 'usage: emu update [-y, --yes] [--local] [--json]\n'
+      '   git checkout: git pull + build.sh. Claude Code plugin: build the new version (claude plugin\n'
+      '   update first unless Claude Code already fetched it) and swap ~/.emu/bin/emu, which running\n'
+      '   sessions survive. Then the macOS app, if installed — a failed app build still counts as\n'
+      '   updated (--json: ok true, app "failed: …", exit 0; rerun `emu app install`).\n'
+      '   --local: only a version already on disk; no network, no `claude`.';
+  final bad = _checkArgs(args, usage, flags: const {'--yes', '-y', '--local'});
   if (bad != null) return bad;
   final json = args.contains('--json');
   final yes = args.contains('--yes') || args.contains('-y');
@@ -246,10 +251,20 @@ Future<int> _update(List<String> args) async {
   // matters only when there is something newer.
   final ({InstallKind install, String? latest, bool newer}) checked;
   try {
-    checked = await updater.check();
+    checked = await updater.check(localOnly: args.contains('--local'));
   } on UpdateError catch (e) {
     fail(e.message);
     return 1;
+  }
+
+  // Nothing newer (or offline) still moves an old install to ~/.emu/bin.
+  UpdateResult? migrated;
+  if (!checked.newer) {
+    try {
+      migrated = await updater.migrate(log: json ? stderr.writeln : print);
+    } on UpdateError catch (e) {
+      (json ? stderr : stdout).writeln('! ${e.message}');
+    }
   }
 
   final latest = checked.latest;
@@ -260,7 +275,14 @@ Future<int> _update(List<String> args) async {
 
   if (!checked.newer) {
     if (json) {
-      print(jsonEncode({'ok': true, 'updated': false, 'current': kEmuVersion, 'latest': latest}));
+      print(jsonEncode({
+        'ok': true,
+        'updated': false,
+        'current': kEmuVersion,
+        'latest': latest,
+        if (migrated != null) 'binary': migrated.binary,
+        if (migrated != null && migrated.linked.isNotEmpty) 'linked': migrated.linked,
+      }));
     } else {
       print('✓ up to date (v$kEmuVersion)');
     }
@@ -280,7 +302,7 @@ Future<int> _update(List<String> args) async {
       }));
       return 1;
     }
-    print('update available: v$kEmuVersion → v$latest (${updater.kind == InstallKind.plugin ? 'Claude Code plugin' : 'git checkout'})');
+    print('update available: v$kEmuVersion → v$latest (${updater.source == InstallKind.plugin ? 'Claude Code plugin' : 'git checkout'})');
     stdout.write('Proceed? [y/N] ');
     final answer = stdin.readLineSync()?.trim().toLowerCase();
     if (answer != 'y' && answer != 'yes') {
@@ -304,10 +326,39 @@ Future<int> _update(List<String> args) async {
   } else {
     print('✓ updated to v$latest — restart any running `emu up` session to pick it up.');
     if (hub != null) print('  the hub still runs v${hub.version ?? kEmuVersion}: `emu hub --stop && emu hub` (or Update in the hub)');
-    if (result.install == InstallKind.plugin) print('  restart Claude Code to load the new emu skills');
+    if (updater.source == InstallKind.plugin) print('  restart Claude Code to load the new emu skills');
     if (result.app == 'updated' && await appRunning()) print('  the emu app is running — quit it (⌘Q) and open it again');
   }
   return 0;
+}
+
+// --------------------------------------------------------------------------
+// install
+// --------------------------------------------------------------------------
+Future<int> _install(List<String> args) async {
+  const usage = 'usage: emu install [--json]\n'
+      '   Put this binary at ~/.emu/bin/emu (a rename: running sessions keep theirs) and move the PATH\n'
+      '   symlinks that point at it, or at a plugin build whose folder is gone. Never replaces a newer\n'
+      '   one. /emu-setup runs this.';
+  final bad = _checkArgs(args, usage);
+  if (bad != null) return bad;
+  final json = args.contains('--json');
+  try {
+    final r = await SelfUpdater().install(log: json ? stderr.writeln : print);
+    if (json) {
+      print(jsonEncode({...r.toJson(), 'version': kEmuVersion}));
+    } else {
+      print('✓ ${r.binary}');
+    }
+    return 0;
+  } on UpdateError catch (e) {
+    if (json) {
+      print(jsonEncode({'ok': false, 'error': e.message}));
+    } else {
+      stderr.writeln('✗ ${e.message}');
+    }
+    return 1;
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -345,13 +396,18 @@ Future<int> _uninstall(List<String> args) async {
     } catch (_) {}
   }
 
+  // The fixed location is ours too: the binary and its record go with the links.
+  final installer = SelfUpdater();
+  final stable = installer.kind == InstallKind.stable;
+  if (stable) links.add(installer.stableBinary);
+
   if (links.isEmpty) {
     fail('no PATH entry pointing at the running binary ($self) was found — '
         'nothing to remove. If emu is still on PATH, remove it manually.');
     return 1;
   }
 
-  final isPlugin = self.contains('.claude/plugins/cache/');
+  final isPlugin = self.contains('.claude/plugins/cache/') || (stable && installer.source == InstallKind.plugin);
 
   if (!json) {
     print('will remove:');
@@ -396,6 +452,14 @@ Future<int> _uninstall(List<String> args) async {
       removed.add(l);
     } catch (e) {
       errors.add('$l: $e');
+    }
+  }
+
+  if (stable) {
+    try {
+      InstallRecord.fileIn(Platform.environment['HOME'] ?? '.').deleteSync();
+    } on FileSystemException {
+      // Already gone.
     }
   }
 
@@ -2581,6 +2645,8 @@ void _printConfirm(Map<String, dynamic> r) {
 Future<int> _mockCmd(List<String> args) async {
   const usage = 'usage: emu mock                       scenarios, the active one, CLI overrides\n'
       '       emu mock use <scenario>        answer matching requests from that scenario\n'
+      '       emu mock use <scenario> --replay   … then back to its screen: entry deep link, steps and\n'
+      '                                      a settle from mocks/<scenario>.replay.json\n'
       '       emu mock off                   scenarios off (CLI overrides still apply)\n'
       '       emu mock set <METHOD|*> <path|url> [--status N] [--body JSON|text | --body-file F]\n'
       '                    [--header "k: v"]... [--delay ms] [--save <scenario>]\n'
@@ -2602,11 +2668,13 @@ Future<int> _mockCmd(List<String> args) async {
     ..addOption('save')
     ..addOption('count', abbr: 'n')
     ..addFlag('bodies', negatable: false)
+    ..addFlag('replay', negatable: false)
     ..addFlag('json', negatable: false)
     ..addFlag('help', abbr: 'h', negatable: false);
   final (res, code) = _parseOrUsage(parser, args, usage);
   if (res == null) return code!;
   final json = res.flag('json');
+  final replay = res.flag('replay');
   final rest = res.rest;
   final sub = rest.isEmpty ? 'status' : rest.first;
   final n = int.tryParse(res.option('count') ?? '50');
@@ -2620,6 +2688,7 @@ Future<int> _mockCmd(List<String> args) async {
     _ => false,
   } &&
       (sub == 'set' || !ruleOptions) &&
+      (sub == 'use' || !replay) &&
       (sub == 'log' || !res.wasParsed('count') && !res.flag('bodies'));
   if (!valid) {
     stderr.writeln(usage);
@@ -2656,7 +2725,12 @@ Future<int> _mockCmd(List<String> args) async {
     case 'reset':
       r = await _deleteJson(info, '/api/mock/overrides');
     case 'use':
-      r = await _postJson(info, '/api/mock', jsonEncode({'scenario': rest[1]}));
+      r = replay
+          // Longer than the server lets a replay run (replayLimit), so a slow
+          // one isn't reported as no response.
+          ? await _postJson(info, '/api/mock/replay/${Uri.encodeComponent(rest[1])}', '',
+              timeout: const Duration(minutes: 5))
+          : await _postJson(info, '/api/mock', jsonEncode({'scenario': rest[1]}));
     case 'off':
       r = await _postJson(info, '/api/mock', jsonEncode({'scenario': null}));
     case 'log':
@@ -2672,9 +2746,16 @@ Future<int> _mockCmd(List<String> args) async {
     print(jsonEncode(r));
     return r['ok'] == true ? 0 : 1;
   }
+  final steps = (r['steps'] as List? ?? const []).cast<Map<String, dynamic>>();
+  if (replay) replayLines(steps).forEach(print);
   if (r['ok'] != true) {
-    stderr.writeln('✗ ${r['error']}');
+    // A replay that started has just printed where it stopped.
+    stderr.writeln(steps.isEmpty ? '✗ ${r['error']}' : '(scenario "${r['active']}" stays on)');
     return 1;
+  }
+  if (replay) {
+    print('active:  ${r['active']}   (assert --since ${r['seq']})');
+    return 0;
   }
   if (sub == 'log') {
     final hits = (r['hits'] as List).cast<Map<String, dynamic>>();
@@ -2768,8 +2849,12 @@ void _printMock(Map<String, dynamic> m, {required String? active, int? port}) {
   final scenarios = (m['scenarios'] as Map).cast<String, dynamic>();
   if (scenarios.isEmpty) print('(no scenarios — add mocks.scenarios to emu.yaml)');
   final sources = (m['sources'] as Map? ?? const {}).cast<String, dynamic>();
+  final replays = (m['replays'] as Map? ?? const {}).cast<String, dynamic>();
   for (final e in scenarios.entries) {
     print('${e.key == active ? '▸' : ' '} ${e.key}   (${sources[e.key] ?? 'emu.yaml'})');
+    if (replays[e.key] case final Map replay) {
+      print('    replay: ${(replay['entry'] as Map?)?['url'] ?? '(no entry)'} + ${(replay['steps'] as List).length} step(s)');
+    }
     for (final r in (e.value as List).cast<Map<String, dynamic>>()) {
       final match = r['match'] as Map, respond = r['respond'] as Map;
       print('    ${match['method'] ?? '*'} ${match['url'] ?? match['path']} → ${respond['status']}'
@@ -3669,6 +3754,7 @@ COMMANDS
   doctor                 Check dependencies (flutter, adb, emulator, xcrun) + update status
   update                 Check GitHub for a newer emu release and install it
      -y, --yes              skip the confirmation prompt
+  install                Put this binary at ~/.emu/bin/emu and move the PATH symlinks there
   uninstall              Remove the emu PATH symlink(s) for this binary
      -y, --yes              skip the confirmation prompt
   devices                List devices + Android AVDs
