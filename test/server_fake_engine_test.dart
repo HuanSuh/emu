@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:emu/src/device_lease.dart';
 import 'package:emu/src/engine.dart';
 import 'package:emu/src/log_store.dart';
+import 'package:emu/src/mock.dart';
 import 'package:emu/src/models.dart';
 import 'package:emu/src/registry.dart';
 import 'package:emu/src/server.dart';
@@ -353,6 +354,29 @@ void main() {
       final r = await _call(s, 'POST', '/api/tap');
       expect(r.status, 400);
       expect(r.body, {'ok': false, 'error': 'x and y are required integers'});
+    });
+  });
+
+  group('mock scenarios', () {
+    const rule = {'match': {'path': '/a'}, 'respond': {'status': 200}};
+
+    /// A running server with mocks on, without binding the mock server's ports.
+    Future<EmuServer> withMocks() async {
+      final s = await start();
+      s.mock = MockServer(projectRoot: project.path, home: tmp.path, log: (_) {});
+      File('${project.path}/emu.yaml').writeAsStringSync('mocks:\n  hosts: [api.example.com]\n');
+      return s;
+    }
+
+    test('use switches the scenario; only POST with a known name does', () async {
+      final s = await withMocks();
+      expect((await _call(s, 'PUT', '/api/mock/scenarios/x', body: jsonEncode({'rules': [rule]}))).status, 200);
+      expect(jsonDecode(File('${project.path}/mocks/x.json').readAsStringSync()), [rule]);
+      expect((await _call(s, 'POST', '/api/mock', body: jsonEncode({'scenario': 'nope'}))).status, 404);
+      expect(s.mock!.active, isNull);
+      final r = await _call(s, 'POST', '/api/mock', body: jsonEncode({'scenario': 'x'}));
+      expect((r.status, r.body['active']), (200, 'x'));
+      expect(s.mock!.active, 'x');
     });
   });
 }

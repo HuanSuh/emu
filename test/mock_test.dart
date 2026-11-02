@@ -382,4 +382,35 @@ mocks:
       expect(hits.single.error, isNotNull);
     });
   });
+
+  group('scenario files as they are today', () {
+    late Directory root;
+    setUp(() {
+      root = Directory.systemTemp.createTempSync('emu_mock_files_');
+      Directory('${root.path}/mocks').createSync();
+    });
+    tearDown(() => root.deleteSync(recursive: true));
+
+    const rule = {'match': {'path': '/a'}, 'respond': {'status': 200}};
+    void write(String name, Object? json) => File('${root.path}/mocks/$name').writeAsStringSync(jsonEncode(json));
+
+    test('a top-level object is skipped without a problem — it may be a body file', () {
+      write('me.json', {'entry': {'url': 'app://x'}, 'rules': [rule]});
+      final c = withScenarioFiles(MockConfig(), root.path);
+      expect(c.scenarios, isEmpty);
+      expect(c.problems, isEmpty);
+    });
+
+    test('a name with a dot is never a scenario — what an older emu does with x.replay.json', () {
+      write('x.replay.json', [rule]);
+      final c = withScenarioFiles(MockConfig(), root.path);
+      expect(c.scenarios, isEmpty);
+    });
+
+    test('saving always writes a plain list', () {
+      expect(writeScenario(MockConfig(), root.path, 'x', [rule]), isEmpty);
+      expect(jsonDecode(File('${root.path}/mocks/x.json').readAsStringSync()), [rule]);
+      expect(writeScenario(MockConfig(), root.path, 'x', {'rules': []}).single, contains('list'));
+    });
+  });
 }
