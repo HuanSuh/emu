@@ -564,6 +564,7 @@ Future<int> _config(List<String> args) async {
         'onDeviceReady': pc.onDeviceReady,
         'onAppStarted': pc.onAppStarted,
         'pages': [for (final page in parsePages(pc.pages).pages) page.id],
+        'timeline': {'routes': pc.timelineRoutes},
       },
       'availableProfiles': names.toList()..sort(),
       'memory': mem.toJson(),
@@ -593,6 +594,7 @@ Future<int> _config(List<String> args) async {
   row('onAppStarted', pc.onAppStarted.isEmpty ? null : pc.onAppStarted.join(' ; '));
   final pages = parsePages(pc.pages);
   row('pages', pages.pages.isEmpty ? null : pages.pages.map((p) => p.id).join(', '));
+  row('timeline.routes', pc.timelineRoutes ? true : null);
   warnings.addAll(pages.problems.map((p) => 'pages: $p'));
   if ([pc.deviceId, pc.flavor, pc.target, pc.timeoutSec, pc.port, pc.platform]
           .every((v) => v == null) &&
@@ -943,6 +945,7 @@ Future<int> _up(List<String> args) async {
     if (target != null) '--target=$target',
     for (final d in dartDefines) '--dart-define=$d',
     if (mockPort != null) '--mock-port=$mockPort',
+    if (pc.timelineRoutes) '--timeline-routes',
     if (mockPort != null && mocks.hook) ...['--dart-define=EMU_MOCK=127.0.0.1:$mockPort',
         '--dart-define=EMU_MOCK_HOSTS=${mocks.hosts.join(',')}'],
     if (mockPort != null && mocks.define != null) '--dart-define=${mocks.define}=http://127.0.0.1:$mockPort',
@@ -1610,14 +1613,16 @@ Future<int> _timeline(List<String> args) async {
     ..addOption('lines', abbr: 'n', defaultsTo: '200')
     ..addOption('kind')
     ..addOption('grep', abbr: 'g')
+    ..addOption('route')
     ..addFlag('follow', abbr: 'f', negatable: false)
     ..addFlag('json', negatable: false)
     ..addFlag('help', abbr: 'h', negatable: false);
   const usage = 'usage: emu timeline [--since <seq>] [-n, --lines <N>] [--kind <list>] [-g, --grep <regex>]\n'
-      '                      [-f, --follow] [--json]\n'
+      '                      [--route <regex>] [-f, --follow] [--json]\n'
       '   App logs, mock requests, screen changes and emu\'s inputs in one list, in seq order.\n'
-      '   --kind   log, request, route, action — a comma list (default: all)\n'
-      '   --json   one entry per line, as `emu logs --json`';
+      '   --kind    log, request, route, action — a comma list (default: all)\n'
+      '   --route   only entries on a matching screen (its location or name, case-insensitive)\n'
+      '   --json    one entry per line, as `emu logs --json`';
   final (res, code) = _parseOrUsage(parser, args, usage);
   if (res == null) return code!;
   final Set<String> kinds;
@@ -1638,6 +1643,15 @@ Future<int> _timeline(List<String> args) async {
     return 2;
   }
   final json = res.flag('json');
+  final route = res.option('route');
+  for (final (flag, value) in [('grep', res.option('grep')), ('route', route)]) {
+    try {
+      if (value != null) RegExp(value);
+    } on FormatException catch (e) {
+      stderr.writeln('✗ --$flag: bad regular expression: ${e.message}');
+      return 2;
+    }
+  }
   void show(LogEntry e) => print(json ? jsonEncode(e.toJson()) : formatTimelineLine(e));
 
   final session = Session.require();
@@ -1647,9 +1661,10 @@ Future<int> _timeline(List<String> args) async {
       stderr.writeln('no timeline (no session has run). Start one with `emu up`.');
       return 1;
     }
+    // No notice about screen collection: offline, its state is unknown.
     readLogFile(
       session.logFile,
-      LogFilter(grep: res.option('grep'), sinceSeq: int.tryParse(since ?? ''), kinds: kinds),
+      LogFilter(grep: res.option('grep'), sinceSeq: int.tryParse(since ?? ''), kinds: kinds, route: route),
       limit: lines,
     ).forEach(show);
     return 0;
@@ -1659,6 +1674,7 @@ Future<int> _timeline(List<String> args) async {
     'kinds': kinds.join(','),
     'limit': '$lines',
     if (res.option('grep') != null) 'grep': res.option('grep')!,
+    'route': ?route,
   };
   String qs([int? sinceSeq]) => {...query, if (sinceSeq != null) 'sinceSeq': '$sinceSeq'}
       .entries
@@ -1670,6 +1686,10 @@ Future<int> _timeline(List<String> args) async {
     return 1;
   }
   (data['logs'] as List).cast<Map<String, dynamic>>().map(LogEntry.fromJson).forEach(show);
+  // Why there are no screens, when that is why: an app may be reporting
+  // them while emu isn't listening. Off the JSONL stream with --json.
+  final notice = _routesNotice(data['routes'] as String?, error: data['routesError'] as String?);
+  if (notice != null) json ? stderr.writeln(notice) : print(notice);
   if (!res.flag('follow')) return 0;
 
   var lastSeq = (data['lastSeq'] as int?) ?? 0;
@@ -3737,6 +3757,15 @@ String _levelTag(LogLevel level) => switch (level) {
       LogLevel.info => 'I',
     };
 
+/// The line `emu timeline` adds when screens can't show up (`/api/logs`
+/// `routes`); null while collection is on or connecting.
+String? _routesNotice(String? routes, {String? error}) => switch (routes) {
+      'off' => 'routes: off — set timeline.routes: true in emu.yaml and run emu up again',
+      'failed' => 'routes: failed — ${error ?? 'could not connect to the app'}. '
+          'Logs, requests and inputs are still recorded; run emu up again to retry',
+      _ => null,
+    };
+
 /// One `emu timeline` line: seq, time to the millisecond, level, the screen
 /// (left out while unknown) and the text.
 String formatTimelineLine(LogEntry e) {
@@ -3771,7 +3800,8 @@ Future<int> runServe(List<String> args) async {
     ..addMultiOption('forward-port', splitCommas: false)
     ..addMultiOption('on-device-ready', splitCommas: false)
     ..addMultiOption('on-app-started', splitCommas: false)
-    ..addOption('mock-port');
+    ..addOption('mock-port')
+    ..addFlag('timeline-routes', negatable: false);
   final res = parser.parse(args);
   final session = Session.require(start: res.option('project'));
   final server = EmuServer(session: session);
@@ -3802,6 +3832,7 @@ Future<int> runServe(List<String> args) async {
         onAppStarted: res.multiOption('on-app-started'),
         profile: res.option('profile'),
         mockPort: int.tryParse(res.option('mock-port') ?? ''),
+        timelineRoutes: res.flag('timeline-routes'),
       ),
     );
   } catch (e, st) {
@@ -3869,6 +3900,7 @@ COMMANDS
      -n, --lines <N>       Last N entries (default 200)
      --kind <list>         log, request, route, action (comma list; default all)
      -g, --grep <regex>    Filter the text (case-insensitive)
+     --route <regex>       Only entries on a matching screen (location or name)
      -f, --follow          Stream live
   errors [opts]          Structured exception banners parsed from the log stream
      --since <seq>         only banners after this seq (default: all buffered)

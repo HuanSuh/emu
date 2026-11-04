@@ -70,11 +70,16 @@ LogLevel inferLevel(String text, {bool isStderr = false}) {
 /// Which entries a read keeps: [LogStore.query] and the CLI's offline
 /// reads of `run.jsonl` ([readLogFile]) share it, so both see the same.
 class LogFilter {
-  LogFilter({String? grep, this.level, this.sinceSeq, this.since, this.kinds})
-      : grep = grep == null || grep.isEmpty ? null : RegExp(grep, caseSensitive: false);
+  LogFilter({String? grep, this.level, this.sinceSeq, this.since, this.kinds, String? route})
+      : grep = grep == null || grep.isEmpty ? null : RegExp(grep, caseSensitive: false),
+        route = route == null || route.isEmpty ? null : RegExp(route, caseSensitive: false);
 
   /// Case-insensitive, matched against the text.
   final RegExp? grep;
+
+  /// Case-insensitive, matched against the screen and its name: an entry
+  /// whose either one matches is kept, one with no screen never is.
+  final RegExp? route;
 
   /// Keep entries at or above this severity (by [LogLevel.rank]).
   final LogLevel? level;
@@ -92,6 +97,12 @@ class LogFilter {
     if (kinds != null && !kinds!.contains(e.kindName)) return false;
     if (level != null && e.level.rank < level!.rank) return false;
     if (grep != null && !grep!.hasMatch(e.text)) return false;
+    if (route != null) {
+      final r = route!;
+      if (!(e.route != null && r.hasMatch(e.route!)) && !(e.routeName != null && r.hasMatch(e.routeName!))) {
+        return false;
+      }
+    }
     return true;
   }
 
@@ -203,8 +214,9 @@ class LogStore {
     DateTime? since,
     int? limit,
     Set<String>? kinds,
+    String? route,
   }) =>
-      LogFilter(grep: grep, level: level, sinceSeq: sinceSeq, since: since, kinds: kinds)
+      LogFilter(grep: grep, level: level, sinceSeq: sinceSeq, since: since, kinds: kinds, route: route)
           .apply(_visible, limit: limit);
 
   /// Drop all buffered entries (and truncate the persistence file).

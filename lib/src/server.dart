@@ -38,6 +38,7 @@ import 'probe.dart';
 import 'registry.dart';
 import 'report.dart';
 import 'report_api.dart';
+import 'route_watch.dart';
 import 'session.dart';
 import 'settle.dart';
 import 'temp_device.dart';
@@ -67,6 +68,7 @@ class LaunchOptions {
     this.onAppStarted = const [],
     this.profile,
     this.mockPort,
+    this.timelineRoutes = false,
     this.extra = const [],
   });
 
@@ -116,6 +118,10 @@ class LaunchOptions {
   /// `mocks:` in emu.yaml: where the mock server listens (https origins;
   /// http ones on the next port). Null when mocks are off.
   final int? mockPort;
+
+  /// `timeline.routes: true` in emu.yaml: keep a VM Service connection for
+  /// the session and record the screens the app reports (`route_watch.dart`).
+  final bool timelineRoutes;
   final List<String> extra;
 }
 
@@ -130,6 +136,7 @@ class EmuServer {
     AppEngine Function(String projectRoot, LogStore logStore)? engineFactory,
     ReplayDevice Function(String vmServiceUri)? replayDevice,
     AppInput? input,
+    VmEventSourceFactory? routeSource,
   })  : leases = leases ?? DeviceLeases(),
         registry = registry ?? SessionRegistry(),
         recent = recent ?? RecentProjects(),
@@ -137,7 +144,8 @@ class EmuServer {
         _exit = exitProcess ?? exit,
         _engineFactory = engineFactory,
         _replayDevice = replayDevice,
-        input = input ?? const DeviceInput();
+        input = input ?? const DeviceInput(),
+        _routeSource = routeSource ?? connectVmEvents;
 
   final Session session;
 
@@ -157,6 +165,17 @@ class EmuServer {
   /// Every tap, swipe, text and deep link goes through this, after its
   /// `action` entry is written ([_recordAction]) — a seam for tests.
   final AppInput input;
+
+  /// How screen collection connects to the app — a seam for tests.
+  final VmEventSourceFactory _routeSource;
+
+  /// Screen collection (`timeline.routes`), null when it is off: then no
+  /// connection is ever made.
+  RouteWatcher? _routes;
+  StreamSubscription<AppStatus>? _routesFollow;
+
+  /// What `/api/logs` says of screen collection.
+  RouteCollection get routeCollection => _routes?.state ?? RouteCollection.off;
 
   /// A replay is running: a second one would tap over it.
   bool _replaying = false;
@@ -295,6 +314,7 @@ class EmuServer {
 
     diff = GitDiff(session.projectRoot.path);
     _snapshotSub = engine.statusStream.listen(_snapshotOnReload);
+    if (opts.timelineRoutes) _watchRoutes();
     pages = PagesApi(
       projectRoot: session.projectRoot.path,
       profile: opts.profile,
@@ -333,6 +353,20 @@ class EmuServer {
 
     // Resolve a device and launch.
     await _launch(opts);
+  }
+
+  /// `timeline.routes`: follow the app's VM Service and record the screens
+  /// it reports. Nothing here can stop the session — a failure is one warning.
+  void _watchRoutes() {
+    void warn(String m) => logStore.add(m, level: LogLevel.warn, source: 'system');
+    final watcher = _routes = RouteWatcher(
+      tracker: RouteTracker(logStore, warn: warn),
+      connect: _routeSource,
+      warn: warn,
+    );
+    _routesFollow = engine.statusStream.listen((s) => unawaited(watcher.follow(s.vmServiceUri)));
+    unawaited(watcher.follow(engine.status.vmServiceUri));
+    logStore.system('timeline: recording screen changes the app reports (timeline.routes)');
   }
 
   /// Record this server in the machine-wide registry, and again once its
@@ -963,14 +997,26 @@ class EmuServer {
         } on FormatException catch (e) {
           return _json({'error': e.message}, status: 400);
         }
-        final entries = logStore.query(
-          grep: q['grep'],
-          level: q['level'] != null ? LogLevel.fromName(q['level']) : null,
-          sinceSeq: int.tryParse(q['sinceSeq'] ?? ''),
-          limit: int.tryParse(q['limit'] ?? '') ?? 1000,
-          kinds: kinds,
-        );
-        return _json({'logs': entries.map((e) => e.toJson()).toList(), 'lastSeq': logStore.lastSeq});
+        final List<LogEntry> entries;
+        try {
+          entries = logStore.query(
+            grep: q['grep'],
+            level: q['level'] != null ? LogLevel.fromName(q['level']) : null,
+            sinceSeq: int.tryParse(q['sinceSeq'] ?? ''),
+            limit: int.tryParse(q['limit'] ?? '') ?? 1000,
+            kinds: kinds,
+            route: q['route'],
+          );
+        } on FormatException catch (e) {
+          return _json({'error': 'bad regular expression: ${e.message}'}, status: 400);
+        }
+        final routes = routeCollection;
+        return _json({
+          'logs': entries.map((e) => e.toJson()).toList(),
+          'lastSeq': logStore.lastSeq,
+          'routes': routes.name,
+          if (routes == RouteCollection.failed) 'routesError': ?_routes?.error,
+        });
       case '/api/logs/clear':
         logStore.clear();
         return _json({'ok': true});
@@ -1684,6 +1730,8 @@ class EmuServer {
     }
 
     await step(() => _postHocClaim?.cancel());
+    await step(() => _routesFollow?.cancel());
+    await step(() => _routes?.dispose());
     _fileWatchDebounce?.cancel();
     _pagesChangedDebounce?.cancel();
     _pageWatchDebounce?.cancel();
