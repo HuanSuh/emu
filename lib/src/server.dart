@@ -227,7 +227,7 @@ class EmuServer {
     scrubber: () => Scrubber.forProject(session.projectRoot.path, appIds: [
       for (final platform in ['android', 'ios']) ?builtAppId(session.projectRoot.path, platform),
     ]),
-    logs: () => logStore.query(limit: 1 << 20),
+    logs: () => logStore.query(limit: 1 << 20, kinds: LogKind.legacy),
     screenshot: () async {
       final ts = DateTime.now().toIso8601String().replaceAll(RegExp(r'[:.]'), '-');
       final out = '${session.stateDir.path}/report-shot-$ts.png';
@@ -658,10 +658,15 @@ class EmuServer {
     final server = MockServer(
       projectRoot: session.projectRoot.path,
       profile: opts.profile,
+      now: () => (seq: logStore.lastSeq, route: logStore.currentRoute, routeName: logStore.currentRouteName),
       log: (hit) {
+        // The screen that sent it, not the one current when it finished.
         logStore.add('[mock] ${hit.line}',
             level: hit.error != null ? LogLevel.error : (hit.scenario != null ? LogLevel.info : LogLevel.debug),
-            source: 'mock');
+            source: 'mock',
+            kind: LogKind.request,
+            data: hit.timelineData(),
+            routeAt: (route: hit.startRoute, routeName: hit.startRouteName));
         _broadcast({'type': 'mock-hit', 'hit': hit.toJson()});
       },
     );
@@ -940,12 +945,23 @@ class EmuServer {
           return _json({'error': '$e'}, status: 500);
         }
       case '/api/logs':
+        // `emu logs`/`assert`, `up`'s progress and the reload hint read this:
+        // without `kinds` it answers what it did before the timeline (no
+        // `route`/`action` entries — `assert --expect Login` must not match
+        // the record of `tap --text Login`). `emu timeline` asks for more.
         final q = req.url.queryParameters;
+        final Set<String> kinds;
+        try {
+          kinds = LogKind.parse(q['kinds']) ?? LogKind.legacy;
+        } on FormatException catch (e) {
+          return _json({'error': e.message}, status: 400);
+        }
         final entries = logStore.query(
           grep: q['grep'],
           level: q['level'] != null ? LogLevel.fromName(q['level']) : null,
           sinceSeq: int.tryParse(q['sinceSeq'] ?? ''),
           limit: int.tryParse(q['limit'] ?? '') ?? 1000,
+          kinds: kinds,
         );
         return _json({'logs': entries.map((e) => e.toJson()).toList(), 'lastSeq': logStore.lastSeq});
       case '/api/logs/clear':
@@ -954,7 +970,9 @@ class EmuServer {
       case '/api/errors':
         final q = req.url.queryParameters;
         final sinceSeq = int.tryParse(q['since'] ?? '');
-        final entries = logStore.query(sinceSeq: sinceSeq);
+        // Banners join consecutive lines: a route or action entry landing
+        // inside one must not become part of its text.
+        final entries = logStore.query(sinceSeq: sinceSeq, kinds: LogKind.legacy);
         final errors = parseErrorBanners(entries);
         // A banner still printing when this scan ran is reported unclosed
         // (best-effort). The next `--since` cursor must stop just before its
@@ -1538,7 +1556,10 @@ class EmuServer {
     }
     if (!(askOnly && asker != null)) {
       _sockets.add(socket);
-      // Prime the new client with current status and recent logs.
+      // Prime the new client with current status and recent logs — every
+      // kind: the dashboard judges a reconnect by how far the first seq is
+      // from the last it saw, and a filtered window would leave seq gaps
+      // that read as "missed too much, start over".
       socket.sink.add(jsonEncode({'type': 'status', 'status': engine.status.toJson()}));
       for (final e in logStore.query(limit: 500)) {
         socket.sink.add(jsonEncode({'type': 'log', 'entry': e.toJson()}));

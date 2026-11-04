@@ -5,6 +5,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'models.dart';
@@ -66,6 +67,59 @@ LogLevel inferLevel(String text, {bool isStderr = false}) {
   return LogLevel.info;
 }
 
+/// Which entries a read keeps: [LogStore.query] and the CLI's offline
+/// reads of `run.jsonl` ([readLogFile]) share it, so both see the same.
+class LogFilter {
+  LogFilter({String? grep, this.level, this.sinceSeq, this.since, this.kinds})
+      : grep = grep == null || grep.isEmpty ? null : RegExp(grep, caseSensitive: false);
+
+  /// Case-insensitive, matched against the text.
+  final RegExp? grep;
+
+  /// Keep entries at or above this severity (by [LogLevel.rank]).
+  final LogLevel? level;
+
+  /// Keep entries with seq strictly greater than this.
+  final int? sinceSeq;
+  final DateTime? since;
+
+  /// [LogKind] names to keep; null keeps every kind.
+  final Set<String>? kinds;
+
+  bool matches(LogEntry e) {
+    if (sinceSeq != null && e.seq <= sinceSeq!) return false;
+    if (since != null && e.timestamp.isBefore(since!)) return false;
+    if (kinds != null && !kinds!.contains(e.kindName)) return false;
+    if (level != null && e.level.rank < level!.rank) return false;
+    if (grep != null && !grep!.hasMatch(e.text)) return false;
+    return true;
+  }
+
+  /// The matches in [entries], only the most recent [limit] of them — the
+  /// filter applies first, so a limit counts kept entries.
+  List<LogEntry> apply(Iterable<LogEntry> entries, {int? limit}) {
+    var result = entries.where(matches).toList();
+    if (limit != null && result.length > limit) {
+      result = result.sublist(result.length - limit);
+    }
+    return result;
+  }
+}
+
+/// The entries of a `run.jsonl` [file] that [filter] keeps, the last [limit]
+/// of them. Unreadable lines are skipped: the file may be mid-write.
+List<LogEntry> readLogFile(File file, LogFilter filter, {int? limit}) {
+  if (!file.existsSync()) return const [];
+  final entries = <LogEntry>[];
+  for (final line in file.readAsLinesSync()) {
+    if (line.trim().isEmpty) continue;
+    try {
+      entries.add(LogEntry.fromJson(jsonDecode(line) as Map<String, dynamic>));
+    } catch (_) {}
+  }
+  return filter.apply(entries, limit: limit);
+}
+
 class LogStore {
   LogStore({this.capacity = 50000, File? persistFile}) : _persistFile = persistFile {
     if (_persistFile != null) {
@@ -96,12 +150,23 @@ class LogStore {
   /// Highest sequence number issued so far.
   int get lastSeq => _seq;
 
+  /// The current screen, stamped on every entry [add] makes; null while
+  /// unknown. Whoever tracks the screen sets these.
+  String? currentRoute;
+  String? currentRouteName;
+
   /// Append a raw line, inferring its level unless one is supplied.
+  ///
+  /// The entry gets [currentRoute] and [currentRouteName], or [routeAt]'s
+  /// screen instead (a request: the screen that sent it, when it started).
   LogEntry add(
     String text, {
     LogLevel? level,
     String source = 'app',
     DateTime? timestamp,
+    String? kind,
+    Map<String, dynamic>? data,
+    ({String? route, String? routeName})? routeAt,
   }) {
     final entry = LogEntry(
       seq: ++_seq,
@@ -109,6 +174,10 @@ class LogStore {
       level: level ?? inferLevel(text, isStderr: source == 'stderr'),
       text: text,
       source: source,
+      kind: kind,
+      route: routeAt != null ? routeAt.route : currentRoute,
+      routeName: routeAt != null ? routeAt.routeName : currentRouteName,
+      data: data,
     );
     _buffer.add(entry);
     if (_buffer.length > capacity + _slack) {
@@ -122,35 +191,21 @@ class LogStore {
   /// Convenience for emu's own lifecycle messages.
   LogEntry system(String text) => add(text, level: LogLevel.system, source: 'system');
 
-  /// Return entries matching the given filters, newest-last.
+  /// Return entries matching the given filters, newest-last (see [LogFilter]).
   ///
-  /// - [grep] is a case-insensitive regular expression matched against text.
-  /// - [level] keeps entries at or above that severity (by [LogLevel.rank]).
-  /// - [sinceSeq] keeps entries with seq strictly greater than the value.
-  /// - [limit] keeps only the most recent N of the matched set.
+  /// [kinds] defaults to every kind. A caller standing in for what the log
+  /// showed before the timeline passes [LogKind.legacy] itself.
+  /// [limit] keeps only the most recent N of the matched set.
   List<LogEntry> query({
     String? grep,
     LogLevel? level,
     int? sinceSeq,
     DateTime? since,
     int? limit,
-  }) {
-    RegExp? re;
-    if (grep != null && grep.isNotEmpty) {
-      re = RegExp(grep, caseSensitive: false);
-    }
-    var result = _visible.where((e) {
-      if (sinceSeq != null && e.seq <= sinceSeq) return false;
-      if (since != null && e.timestamp.isBefore(since)) return false;
-      if (level != null && e.level.rank < level.rank) return false;
-      if (re != null && !re.hasMatch(e.text)) return false;
-      return true;
-    }).toList();
-    if (limit != null && result.length > limit) {
-      result = result.sublist(result.length - limit);
-    }
-    return result;
-  }
+    Set<String>? kinds,
+  }) =>
+      LogFilter(grep: grep, level: level, sinceSeq: sinceSeq, since: since, kinds: kinds)
+          .apply(_visible, limit: limit);
 
   /// Drop all buffered entries (and truncate the persistence file).
   void clear() {

@@ -109,6 +109,10 @@ void main() {
     late List<MockHit> hits;
     late int port;
 
+    /// What the server's `now` reads: the session log's seq and screen.
+    var seqNow = 0;
+    String? screen;
+
     setUp(() async {
       root = Directory.systemTemp.createTempSync('emu_mock_test');
       upstream = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -140,7 +144,14 @@ mocks:
         respond: { status: 503, body: busy, delay: 200 }
 ''');
       hits = [];
-      server = MockServer(projectRoot: root.path, home: root.path, log: hits.add);
+      seqNow = 0;
+      screen = null;
+      server = MockServer(
+        projectRoot: root.path,
+        home: root.path,
+        log: hits.add,
+        now: () => (seq: seqNow, route: screen, routeName: screen == null ? null : 'name of $screen'),
+      );
       for (var i = 0;; i++) {
         try {
           port = 20000 + DateTime.now().microsecond % 20000 + i * 2;
@@ -178,6 +189,29 @@ mocks:
       expect(headers.value('x-upstream'), 'yes');
       expect(hits.single.scenario, isNull);
       expect(hits.single.url, 'http://127.0.0.1:${upstream.port}/v1/items?x=1');
+    });
+
+    test('a request keeps the log position and screen from when it came in', () async {
+      server.active = 'empty';
+      seqNow = 41;
+      screen = '/cart';
+      final pending = send('GET', '/v1/slow'); // answered after 200ms
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      seqNow = 99;
+      screen = '/elsewhere';
+      await pending;
+      final hit = hits.single;
+      expect((hit.startSeq, hit.startRoute, hit.startRouteName), (41, '/cart', 'name of /cart'));
+      expect(hit.timelineData(), {
+        'hitId': hit.id,
+        'method': 'GET',
+        'url': hit.url,
+        'status': 503,
+        'mocked': 'empty',
+        'ms': hit.elapsed.inMilliseconds,
+        'startSeq': 41,
+      });
+      expect(hit.toJson().keys, isNot(contains('startSeq')), reason: 'mock-hit messages stay as they were');
     });
 
     test('a scenario answers matching requests; the rest still pass through', () async {

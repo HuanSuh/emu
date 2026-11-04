@@ -106,6 +106,10 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
    - `emu logs [opts]` — 앱 로그.
      - `-g/--grep <regex>`, `-l/--level <e|w|i>`, `-n/--lines <N>`(기본 200),
        `-f/--follow`(스트리밍), `--clear`(버퍼 비우기).
+   - `emu timeline [--since <seq>] [-n N] [--kind log,request,route,action] [-g <regex>] [-f] [--json]` — 앱 로그와
+     목 서버를 지난 요청을 seq 순서 한 목록으로. `request` 엔트리의 `data.startSeq` 는 그 요청이 들어온 때의 seq 라,
+     요청이 나가 있는 동안의 로그가 둘 사이에 있다. seq 는 emu 에 도착한 순서라 몇 ms 안의 앞뒤는 믿지 않는다.
+     `emu logs`·`assert` 는 전처럼 `log`·`request` 만 본다.
    - `emu assert [opts]` — e2e/CI 오라클(로그 단언).
      - `--expect <regex>`(반드시 나타나야 함, 반복 가능),
        `--deny <regex>`(나타나면 안 됨, 반복 가능), `--since <seq>`(기본: 지금),

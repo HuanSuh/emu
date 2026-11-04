@@ -46,6 +46,41 @@ enum LogLevel {
       };
 }
 
+/// What a [LogEntry] records besides a plain log line, and the names the
+/// `kinds` filters use (`/api/logs?kinds=`, `emu timeline --kind`).
+abstract final class LogKind {
+  /// A plain log line: [LogEntry.kind] is null.
+  static const log = 'log';
+
+  /// A request through the mock server, on its completion.
+  static const request = 'request';
+
+  /// The current screen changed.
+  static const route = 'route';
+
+  /// An input emu injected: tap, swipe, text, deep link.
+  static const action = 'action';
+
+  static const all = {log, request, route, action};
+
+  /// What `/api/logs`, `/api/errors`, `emu logs` and reports see unless asked:
+  /// what the log held before the timeline.
+  static const legacy = {log, request};
+
+  /// `all`, or a comma list of the names above; null for an empty [spec].
+  /// Throws a [FormatException] naming an unknown kind.
+  static Set<String>? parse(String? spec) {
+    if (spec == null || spec.trim().isEmpty) return null;
+    final names = {for (final s in spec.split(',')) s.trim()}..remove('');
+    if (names.contains('all')) return all;
+    final unknown = names.difference(all);
+    if (unknown.isNotEmpty) {
+      throw FormatException('unknown kind "${unknown.first}" — use ${all.join(', ')} or all');
+    }
+    return names;
+  }
+}
+
 /// A single captured log line.
 class LogEntry {
   LogEntry({
@@ -54,6 +89,10 @@ class LogEntry {
     required this.level,
     required this.text,
     this.source = 'app',
+    this.kind,
+    this.route,
+    this.routeName,
+    this.data,
   });
 
   /// Monotonic sequence number assigned by the [LogStore]. Lets clients request
@@ -67,12 +106,34 @@ class LogEntry {
   /// Where the line came from: `app` (Flutter app/daemon), `stderr`, `system`.
   final String source;
 
+  /// Null for a plain log line, else a [LogKind] (`request`, `route`, `action`).
+  final String? kind;
+
+  /// The screen when this was recorded (a `request`: when it was sent), or
+  /// null when unknown — screen collection off, or nothing reported yet.
+  final String? route;
+
+  /// That screen's name or pattern, when the app or the router gives one.
+  final String? routeName;
+
+  /// Structured detail of a [kind], e.g. a request's method, url and status.
+  final Map<String, dynamic>? data;
+
+  /// [kind], with a plain line as [LogKind.log].
+  String get kindName => kind ?? LogKind.log;
+
+  /// Null fields are left out, so a plain line without a screen is the same
+  /// JSON as before the timeline.
   Map<String, dynamic> toJson() => {
         'seq': seq,
         'ts': timestamp.toIso8601String(),
         'level': level.name,
         'source': source,
         'text': text,
+        'kind': ?kind,
+        'route': ?route,
+        'routeName': ?routeName,
+        'data': ?data,
       };
 
   factory LogEntry.fromJson(Map<String, dynamic> json) => LogEntry(
@@ -81,6 +142,10 @@ class LogEntry {
         level: LogLevel.fromName(json['level'] as String?),
         text: json['text'] as String,
         source: (json['source'] as String?) ?? 'app',
+        kind: json['kind'] as String?,
+        route: json['route'] as String?,
+        routeName: json['routeName'] as String?,
+        data: (json['data'] as Map?)?.cast<String, dynamic>(),
       );
 
   /// One JSON object per line, for `.emu/run.jsonl` and `logs --json`.
