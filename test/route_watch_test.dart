@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:emu/src/log_store.dart';
 import 'package:emu/src/models.dart';
@@ -17,6 +18,9 @@ class FakeSource implements VmEventSource {
   Stream<VmEvent> get events => controller.stream;
 
   void add(VmEvent e) => controller.add(e);
+
+  @override
+  Future<String?> evaluate(String isolate, String libraryUri, String expression) async => null;
 
   @override
   Future<void> close() async {
@@ -156,6 +160,174 @@ void main() {
       tracker.onEvent(route({'location': '/a'}));
       tracker.disconnected();
       expect((store.currentRoute, store.currentRouteName), (null, null));
+    });
+  });
+
+  group('frameworkRoute', () {
+    // As the app posts it: decoded by the VM Service client.
+    Map<String, dynamic> snap(Object? location, List<Map<String, Object?>> chain) =>
+        jsonDecode(jsonEncode({'location': location, 'chain': chain})) as Map<String, dynamic>;
+    Map<String, Object?> page(String? name, {String type = '_PageBasedMaterialPageRoute<void>'}) =>
+        {'name': name, 'type': type, 'page': true, 'popup': false};
+    Map<String, Object?> route(String? name, {String type = 'MaterialPageRoute<void>', bool popup = false}) =>
+        {'name': name, 'type': type, 'page': false, 'popup': popup};
+    (String, String?)? of(Map<String, dynamic>? s, {String? routerLocation}) {
+      final r = frameworkRoute(s, routerLocation: routerLocation);
+      return r == null ? null : (r.route, r.name);
+    }
+
+    test('a router: its location, named by the innermost router page', () {
+      expect(of(snap('/user/42', [page('user')])), ('/user/42', 'user'));
+      expect(of(snap('/shop/item/3', [page(null), page('item/:id')])), ('/shop/item/3', 'item/:id'));
+    });
+
+    test("the listener's location wins: a push only shows there", () {
+      expect(of(snap('/user/42', [page('user')]), routerLocation: '/user/8'), ('/user/8', 'user'));
+    });
+
+    test("what the router didn't put on top is the detail", () {
+      expect(of(snap('/', [page('home'), route(null, type: 'DialogRoute<void>', popup: true)])),
+          ('/ · DialogRoute<void>', 'home'));
+      expect(of(snap('/shop', [page(null), route('shell-plain')])), ('/shop · shell-plain', null));
+      final r = frameworkRoute(snap('/', [route(null, type: 'ModalBottomSheetRoute<void>', popup: true)]))!;
+      expect(r.data, {'via': 'framework', 'location': '/', 'detail': 'ModalBottomSheetRoute<void>', 'description': 'ModalBottomSheetRoute<void>'});
+    });
+
+    test('no router (Navigator 1.0): the top route by name, else by type', () {
+      expect(of(snap(null, [route('/'), route('/details')])), ('/details', '/details'));
+      expect(of(snap(null, [route(null)])), ('MaterialPageRoute<void>', null));
+    });
+
+    test('nothing to go by, or a snapshot that failed: null', () {
+      for (final s in <Map<String, dynamic>?>[null, {}, snap(null, []), {'chain': 'x'}, {'error': 'Bad state: boom'}]) {
+        expect(frameworkRoute(s), isNull, reason: '$s');
+      }
+    });
+
+    test('the expressions are one line each, with no comment to swallow the rest', () {
+      for (final e in [snapshotExpression, routerListenerExpression]) {
+        expect(e, isNot(contains('\n')));
+        expect(e, isNot(contains('//')));
+        expect(e, startsWith('(() {'));
+        expect(e, endsWith('})()'));
+      }
+    });
+  });
+
+  group('RouteTracker framework layer', () {
+    late LogStore store;
+    late RouteTracker tracker;
+    late List<String> calls;
+    late Map<String, dynamic>? snapshot;
+    late String? listener;
+
+    /// The app's side: the snapshot expression answers on its next turn,
+    /// with an Emu.Snapshot event.
+    Future<String?> evaluate(String isolate, String library, String expression) async {
+      expect(library, frameworkLibrary);
+      final which = identical(expression, snapshotExpression) ? 'snapshot' : 'listener';
+      calls.add('$which@$isolate');
+      if (which == 'listener') return listener;
+      final answer = snapshot;
+      if (answer != null) Timer.run(() => tracker.onEvent(VmExtensionEvent('Emu.Snapshot', isolate, answer)));
+      return 'scheduled';
+    }
+
+    Future<void> settle() => Future<void>.delayed(const Duration(milliseconds: 30));
+    Map<String, dynamic> snap(String? location, String name) => {
+          'location': location,
+          'chain': [
+            {'name': name, 'type': 'MaterialPageRoute<void>', 'page': location != null, 'popup': false}
+          ],
+        };
+
+    setUp(() {
+      store = LogStore();
+      calls = [];
+      snapshot = snap('/', 'home');
+      listener = 'listening';
+      tracker = RouteTracker(store, warn: (_) {}, debounce: const Duration(milliseconds: 5));
+    });
+    tearDown(() => tracker.disconnected());
+
+    test('looks once connected: puts the listener on, then a route entry from the snapshot', () async {
+      tracker.connected('isolates/1', evaluate: evaluate);
+      await settle();
+      expect(calls, ['listener@isolates/1', 'snapshot@isolates/1']);
+      final e = store.query(kinds: {LogKind.route}).single;
+      expect((e.text, e.route, e.routeName, e.data?['via']), ('[route] /', '/', 'home', 'framework'));
+    });
+
+    test('a burst of navigation events is one look; the listener goes on once', () async {
+      tracker.connected('isolates/1', evaluate: evaluate);
+      await settle();
+      calls.clear();
+      snapshot = snap('/user/42', 'user');
+      for (var i = 0; i < 3; i++) {
+        tracker.onEvent(VmExtensionEvent('Flutter.Navigation', 'isolates/1', const {}));
+      }
+      await settle();
+      expect(calls, ['snapshot@isolates/1']);
+      expect(store.currentRoute, '/user/42');
+    });
+
+    test("no router yet: the listener is tried again on the next look", () async {
+      listener = 'no router';
+      tracker.connected('isolates/1', evaluate: evaluate);
+      await settle();
+      listener = 'listening';
+      tracker.onEvent(VmExtensionEvent('Flutter.FirstFrame', 'isolates/1', const {}));
+      await settle();
+      expect(calls, ['listener@isolates/1', 'snapshot@isolates/1', 'listener@isolates/1', 'snapshot@isolates/1']);
+    });
+
+    test("the router listener's location goes into the next look", () async {
+      tracker.connected('isolates/1', evaluate: evaluate);
+      await settle();
+      snapshot = snap('/user/42', 'user'); // what the router says after a push: the location before it
+      tracker.onEvent(VmExtensionEvent('Emu.RouterInformation', 'isolates/1', const {'location': '/user/8'}));
+      await settle();
+      expect((store.currentRoute, store.currentRouteName), ('/user/8', 'user'));
+    });
+
+    test("once the app's isolate sends Emu.Route, only that counts — until a hot restart", () async {
+      tracker.connected('isolates/1', evaluate: evaluate);
+      tracker.onEvent(route({'location': '/from-app'})); // before the first look is due
+      await settle();
+      expect(calls, isEmpty);
+      tracker.onEvent(VmExtensionEvent('Flutter.Navigation', 'isolates/1', const {}));
+      await settle();
+      expect([calls, store.currentRoute], [<String>[], '/from-app']);
+
+      tracker.onEvent(VmIsolateEvent('IsolateExit', 'isolates/1', name: 'main'));
+      tracker.onEvent(VmIsolateEvent('IsolateRunnable', 'isolates/2', name: 'main'));
+      await settle();
+      expect(calls, ['listener@isolates/2', 'snapshot@isolates/2']);
+      expect(store.currentRoute, '/');
+    });
+
+    test("old events from DDS's history don't trigger a look of their own", () async {
+      tracker.connected('isolates/1', evaluate: evaluate);
+      await settle();
+      calls.clear();
+      tracker.onEvent(VmExtensionEvent('Flutter.Navigation', 'isolates/1', const {}, history: true));
+      await settle();
+      expect(calls, isEmpty);
+    });
+
+    test('a failing evaluation, or a snapshot that failed in the app, leaves the screen as it was', () async {
+      tracker.connected('isolates/1', evaluate: (i, l, e) async => throw StateError('compiling'));
+      await settle();
+      tracker.onEvent(VmExtensionEvent('Emu.Snapshot', 'isolates/1', const {'error': 'Bad state: boom'}));
+      expect([store.currentRoute, store.query(kinds: {LogKind.route})], [null, isEmpty]);
+    });
+
+    test("a snapshot from DDS's history, or another isolate's, is not applied", () async {
+      tracker.connected('isolates/1', evaluate: evaluate);
+      await settle();
+      tracker.onEvent(VmExtensionEvent('Emu.Snapshot', 'isolates/1', snap('/old', 'old'), history: true));
+      tracker.onEvent(VmExtensionEvent('Emu.Snapshot', 'isolates/0', snap('/other', 'other')));
+      expect(store.currentRoute, '/');
     });
   });
 

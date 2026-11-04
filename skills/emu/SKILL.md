@@ -113,7 +113,8 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
      `emu logs`·`assert` 는 전처럼 `log`·`request` 만 본다.
      - 화면(`[screen]` 칸, `--route <regex>`)은 `emu.yaml` 의 `timeline: {routes: true}` 를 켜고 `emu up` 한 세션에서, 앱이
        `dart:developer` 로 `Emu.Route` 이벤트를 보낼 때만 찍힌다(README 「Screens」). 화면이 비어 있으면 출력 끝의
-       `routes: off|failed — …` 안내부터 본다. 켜져 있는데도 비면 앱이 보내지 않는 것이다 — 앱 코드를 고치기 전에 사용자에게 묻는다.
+       `routes: off|failed — …` 안내부터 본다. 앱이 보내지 않으면 emu 가 프레임워크에서 읽은 화면(`data.via: framework`,
+       라우터 위치 + 모달)을 찍는다 — 라우트가 아닌 탭은 못 본다. 앱 코드에 `Emu.Route` 를 더하기 전에 사용자에게 묻는다.
    - `emu assert [opts]` — e2e/CI 오라클(로그 단언).
      - `--expect <regex>`(반드시 나타나야 함, 반복 가능),
        `--deny <regex>`(나타나면 안 됨, 반복 가능), `--since <seq>`(기본: 지금),

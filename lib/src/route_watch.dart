@@ -11,6 +11,14 @@
 /// sends them to each new subscriber before it answers the subscription:
 /// those arrive marked [VmExtensionEvent.history]. They set the current
 /// screen (the app's last report) but write no entry — they happened before.
+///
+/// An app that sends no `Emu.Route` still gets screens, worked out without
+/// its code (the "framework" layer, [RouteTracker]): after a framework
+/// `Flutter.Navigation` event, or a location from a listener emu puts on the
+/// app's `RouteInformationProvider` ([routerListenerExpression]), a snapshot
+/// of the routes on screen ([snapshotExpression], answered as an
+/// `Emu.Snapshot` event). Once the app's isolate sends an `Emu.Route`, only
+/// what it sends counts — until a hot restart.
 library;
 
 import 'dart:async';
@@ -64,6 +72,10 @@ abstract interface class VmEventSource {
   /// Past events first (marked [VmExtensionEvent.history]), then live ones;
   /// done when the connection closes.
   Stream<VmEvent> get events;
+
+  /// [expression] in the scope of the library [libraryUri] of [isolate],
+  /// now (no pause): the string it gives, or null. Throws when it can't.
+  Future<String?> evaluate(String isolate, String libraryUri, String expression);
   Future<void> close();
 }
 
@@ -82,6 +94,26 @@ class _VmServiceSource implements VmEventSource {
 
   void _add(VmEvent e) {
     if (!_events.isClosed) _events.add(e);
+  }
+
+  /// Library ids by isolate and uri: an isolate's are fixed until it goes.
+  final Map<String, Map<String, String>> _libraries = {};
+
+  @override
+  Future<String?> evaluate(String isolate, String libraryUri, String expression) async {
+    final libs = _libraries[isolate] ??= {
+      for (final l in (await _service.getIsolate(isolate)).libraries ?? const <LibraryRef>[])
+        if (l.uri != null && l.id != null) l.uri!: l.id!,
+    };
+    final lib = libs[libraryUri];
+    if (lib == null) return null;
+    final r = await _service.evaluate(isolate, lib, expression);
+    if (r is! InstanceRef || r.kind != InstanceKind.kString) return null;
+    if (r.valueAsStringIsTruncated ?? false) {
+      final full = await _service.getObject(isolate, r.id!);
+      if (full is Instance) return full.valueAsString;
+    }
+    return r.valueAsString;
   }
 
   @override
@@ -119,6 +151,141 @@ Future<VmEventSource> connectVmEvents(String wsUri) async {
   return source;
 }
 
+/// Where the framework layer's expressions run: its scope has
+/// `WidgetsBinding`, `ModalRoute`, `PopupRoute`, `Page`, `Timer` and
+/// `dart:developer` (as `developer`). `Router` is not imported there, so it
+/// is found by its type's name.
+const frameworkLibrary = 'package:flutter/src/widgets/navigator.dart';
+
+/// One line from [source]: flutter_tools hands an expression to its compiler
+/// by lines, and a second line fails to compile. No `//` comments in [source].
+String oneLine(String source) =>
+    source.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).join(' ');
+
+/// Has the app look at the routes on screen and post them as an
+/// `Emu.Snapshot` event `{location, chain}`: the `Router`'s location (null
+/// without one), and from the outermost Navigator in, each current route's
+/// `name`, runtime `type`, whether its settings are a `Page` (the router put
+/// it there) and whether it is a `PopupRoute` (a dialog, a sheet) — or
+/// `{error}`. Routes that aren't current are skipped with what's under them,
+/// so what is left is what's on top. Each route is found as the
+/// `_ModalScope` widget it builds — a private name, matched as text: if
+/// Flutter renames it the chain comes back empty rather than wrong.
+///
+/// The look waits for the app's next turn (`Timer.run`): an evaluation can
+/// land in the middle of a frame being built, where the element tree can't
+/// be walked (`visitChildElements() called during build`).
+final snapshotExpression = oneLine(r'''
+(() {
+  Timer.run(() {
+    try {
+      final root = WidgetsBinding.instance.rootElement;
+      String? location;
+      final chain = <Map<String, Object?>>[];
+      void visit(Element e) {
+        final w = e.widget;
+        final t = w.runtimeType.toString();
+        if (location == null && t.startsWith('Router<')) {
+          try {
+            final uri = (w as dynamic).routeInformationProvider?.value?.uri;
+            if (uri != null) location = '$uri';
+          } catch (_) {}
+        }
+        if (t.startsWith('_ModalScope<')) {
+          final r = (w as dynamic).route as ModalRoute<dynamic>;
+          if (!r.isCurrent) return;
+          chain.add({'name': r.settings.name, 'type': '${r.runtimeType}', 'page': r.settings is Page, 'popup': r is PopupRoute});
+        }
+        e.visitChildElements(visit);
+      }
+      if (root != null) visit(root);
+      developer.postEvent('Emu.Snapshot', {'location': location, 'chain': chain});
+    } catch (e) {
+      developer.postEvent('Emu.Snapshot', {'error': '$e'});
+    }
+  });
+  return 'scheduled';
+})()
+''');
+
+/// Puts a listener on the app's `RouteInformationProvider` that sends each
+/// new location as `Emu.RouterInformation`: what a snapshot can't see, as
+/// `go_router` reports a `push` to its listeners and then quietly puts the
+/// location back. Once per isolate: it registers the service extension
+/// `ext.emu.timelineRouter` and stops when that is taken. Gives
+/// `listening`, `already`, or — try again later — `no router` (the app may
+/// not have built its `Router` yet) or `busy` (it landed mid-build, see
+/// [snapshotExpression]).
+final routerListenerExpression = oneLine(r'''
+(() {
+  final root = WidgetsBinding.instance.rootElement;
+  dynamic provider;
+  void find(Element e) {
+    if (provider != null) return;
+    final w = e.widget;
+    if (w.runtimeType.toString().startsWith('Router<')) {
+      provider = (w as dynamic).routeInformationProvider;
+      if (provider != null) return;
+    }
+    e.visitChildElements(find);
+  }
+  try {
+    if (root != null) find(root);
+  } catch (_) {
+    return 'busy';
+  }
+  final p = provider;
+  if (p == null) return 'no router';
+  try {
+    developer.registerExtension('ext.emu.timelineRouter', (m, a) async => developer.ServiceExtensionResponse.result('{}'));
+  } catch (_) {
+    return 'already';
+  }
+  p.addListener(() => developer.postEvent('Emu.RouterInformation', {'location': '${p.value.uri}'}));
+  return 'listening';
+})()
+''');
+
+/// The framework layer's screen from a [snapshot] (an `Emu.Snapshot`, see
+/// [snapshotExpression]) and the router listener's last location, or null
+/// when it shows nothing to go by:
+///
+/// - `route`: the router's location ([routerLocation] first — a `push`
+///   only shows there), else the top route's name, else its type. A top
+///   route the router didn't put there (a dialog, a sheet, a
+///   `Navigator.push`ed page) is added as `location · <its name or type>`.
+/// - `name`: the innermost router page's name (`go_router`: its name or
+///   path pattern); without a router, the top route's name.
+({String route, String? name, Map<String, dynamic> data})? frameworkRoute(Map<String, dynamic>? snapshot,
+    {String? routerLocation}) {
+  final json = snapshot;
+  if (json == null) return null;
+  final chain = [
+    for (final r in (json['chain'] is List ? json['chain'] as List : const []))
+      if (r is Map) (name: r['name'] is String ? r['name'] as String : null, type: '${r['type']}', page: r['page'] == true),
+  ];
+  final seen = json['location'];
+  final location = routerLocation ?? (seen is String && seen.isNotEmpty ? seen : null);
+  final top = chain.lastOrNull;
+  if (location == null) {
+    if (top == null) return null;
+    return (route: top.name ?? top.type, name: top.name, data: {'via': 'framework', 'name': ?top.name, 'description': top.type});
+  }
+  final page = chain.where((r) => r.page).lastOrNull;
+  final detail = top != null && !top.page ? top.name ?? top.type : null;
+  return (
+    route: detail != null ? '$location · $detail' : location,
+    name: page?.name,
+    data: {
+      'via': 'framework',
+      'location': location,
+      'name': ?page?.name,
+      'detail': ?detail,
+      'description': ?top?.type,
+    },
+  );
+}
+
 /// How much of each `Emu.Route` value is kept, in characters.
 const routeValueLimit = 1024;
 
@@ -150,9 +317,13 @@ const routeValueLimit = 1024;
 /// What `Emu.Route` events mean for the timeline, apart from the connection:
 /// fed [VmEvent]s, it keeps [store]'s current screen and writes `route` entries.
 class RouteTracker {
-  RouteTracker(this.store, {required this.warn});
+  RouteTracker(this.store, {required this.warn, this.debounce = const Duration(milliseconds: 150)});
 
   final LogStore store;
+
+  /// How long the framework layer waits after a trigger before it looks:
+  /// a `pushAndRemoveUntil` or a burst of pops is one look.
+  final Duration debounce;
 
   /// A problem with the app's events — said once a session, or an app that
   /// sends bad ones would fill the log.
@@ -171,13 +342,19 @@ class RouteTracker {
   }
 
   /// A connection subscribed; [isolate] is the app's. Events follow.
-  void connected(String? isolate) {
+  /// [evaluate] runs the framework layer's expressions; without it there is
+  /// only what the app reports.
+  void connected(String? isolate, {Future<String?> Function(String isolate, String library, String expression)? evaluate}) {
     _isolate = isolate;
+    _evaluate = evaluate;
+    _resetFramework();
+    _look();
   }
 
   /// The connection is gone: the app stopped or restarted, or the URI changed.
   void disconnected() {
     _isolate = null;
+    _evaluate = null;
     _clear();
   }
 
@@ -185,6 +362,59 @@ class RouteTracker {
     store.currentRoute = null;
     store.currentRouteName = null;
     appReports = false;
+    _resetFramework();
+  }
+
+  // ---- the framework layer ---------------------------------------------------
+
+  Future<String?> Function(String isolate, String library, String expression)? _evaluate;
+  Timer? _lookTimer;
+
+  /// The router listener's last location, and whether it is on, for [_isolate].
+  String? _routerLocation;
+  bool _listening = false;
+
+  void _resetFramework() {
+    _lookTimer?.cancel();
+    _lookTimer = null;
+    _routerLocation = null;
+    _listening = false;
+  }
+
+  /// Look at the screen after [debounce] — again, if a look was due.
+  void _look() {
+    if (_evaluate == null || appReports) return;
+    _lookTimer?.cancel();
+    _lookTimer = Timer(debounce, () => unawaited(_snapshot()));
+  }
+
+  Future<String?> _run(String isolate, String expression) async {
+    try {
+      return await _evaluate?.call(isolate, frameworkLibrary, expression);
+    } catch (_) {
+      return null; // a reload compiling, the isolate going: the next trigger looks again
+    }
+  }
+
+  /// Put the router listener on if it isn't, then have the app take a
+  /// snapshot: it answers with an `Emu.Snapshot` event ([_apply]).
+  Future<void> _snapshot() async {
+    final isolate = _isolate;
+    if (isolate == null || appReports) return;
+    if (!_listening) {
+      final r = await _run(isolate, routerListenerExpression);
+      if (isolate == _isolate && (r == 'listening' || r == 'already')) _listening = true;
+    }
+    if (isolate == _isolate && !appReports) await _run(isolate, snapshotExpression);
+  }
+
+  void _apply(Map<String, dynamic> snapshot) {
+    final seen = frameworkRoute(snapshot, routerLocation: _routerLocation);
+    if (seen == null) return;
+    if (seen.route == store.currentRoute && seen.name == store.currentRouteName) return;
+    store.currentRoute = seen.route;
+    store.currentRouteName = seen.name;
+    store.add('[route] ${seen.route}', level: LogLevel.system, source: 'route', kind: LogKind.route, data: seen.data);
   }
 
   void onEvent(VmEvent e) {
@@ -196,6 +426,18 @@ class RouteTracker {
       case VmIsolateEvent(kind: 'IsolateStart' || 'IsolateRunnable', :final isolate, :final name)
           when _isolate == null && (name == null || name == 'main'):
         _isolate = isolate;
+        _look();
+      case VmExtensionEvent(kind: 'Flutter.Navigation' || 'Flutter.FirstFrame', :final isolate, history: false)
+          when isolate == null || isolate == _isolate:
+        // The event's own route isn't used: a pop names the route it closed.
+        _look();
+      case VmExtensionEvent(kind: 'Emu.RouterInformation', :final isolate, :final data, history: false)
+          when isolate == null || isolate == _isolate:
+        if (data['location'] case final String location when location.isNotEmpty) _routerLocation = location;
+        _look();
+      case VmExtensionEvent(kind: 'Emu.Snapshot', :final isolate, :final data, history: false)
+          when (isolate == null || isolate == _isolate) && _evaluate != null && !appReports:
+        _apply(data);
       case VmExtensionEvent(kind: 'Emu.Route', :final isolate, :final data, :final history):
         if (_isolate != null && isolate != null && isolate != _isolate) return;
         if (_isolate == null) {
@@ -205,7 +447,9 @@ class RouteTracker {
         }
         final route = parseEmuRoute(data, _problem);
         if (route == null) return;
+        // The app reports its screens: stop guessing them for this isolate.
         appReports = true;
+        _lookTimer?.cancel();
         _set(route, entry: !history);
       default:
         break;
@@ -288,7 +532,7 @@ class RouteWatcher {
         return;
       }
       _source = source;
-      tracker.connected(source.isolate);
+      tracker.connected(source.isolate, evaluate: source.evaluate);
       _sub = source.events.listen(tracker.onEvent, onDone: () => _closed(generation, uri));
       error = null;
       _setState(RouteCollection.on);
@@ -326,6 +570,7 @@ class RouteWatcher {
   Future<void> dispose() async {
     _disposed = true;
     _generation++;
+    tracker.disconnected();
     await _drop();
   }
 }

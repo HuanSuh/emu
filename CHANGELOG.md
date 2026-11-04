@@ -24,6 +24,11 @@
   쌓아 둔 지난 이벤트로는 엔트리를 만들지 않고 지금 화면만 정한다. 기본은 꺼짐이고 꺼져 있으면 연결이 없다.
   `emu timeline --route <regex>`·`/api/logs?route=`, `/api/logs` 의 `routes`(`off`·`connecting`·`on`·`failed`)와
   `routesError`, 꺼져 있을 때 `emu timeline` 끝의 안내(`--json` 이면 stderr). `emu config` 에 `timeline.routes`.
+- 앱이 `Emu.Route` 를 보내지 않아도 화면을 찍는다(같은 `timeline.routes` 아래, `data.via: framework`). 프레임워크의
+  `Flutter.Navigation` 이나, emu 가 평가식으로 앱의 `RouteInformationProvider` 에 단 리스너가 알린 새 위치(`go_router`
+  의 `go`·`push`·pop)가 오면 150ms 뒤 지금 보이는 라우트를 읽어, 라우터 위치(없으면 맨 위 라우트의 이름이나 타입)에
+  다이얼로그·시트·`Navigator.push` 화면을 `· detail` 로 붙인다. 앱 isolate 가 `Emu.Route` 를 보내면 hot restart 전까지
+  꺼진다.
 
 - 대시보드 Logs 탭의 **Logs · Requests · Routes · Actions** 토글: 타임라인의 어떤 엔트리를 줄로 그릴지 고른다(기본은 전과 같은
   Logs·Requests, 브라우저에 기억). 화면 수집이 켜져 있으면 줄마다 화면 칸(툴팁에 이름)과 화면 전환 구분선이 생기고, 꺼졌거나

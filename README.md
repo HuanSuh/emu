@@ -475,6 +475,16 @@ and inputs.
   with `routes: off — …` (on stderr with `--json`) and `/api/logs` answers
   `"routes": "off"` (`connecting`, `on` or `failed` otherwise; `routesError`
   says why it failed). A failed connection is one warning; the session goes on.
+- Without `Emu.Route`, emu works the screen out itself, with no app code
+  (`data.via: framework`): after the framework's navigation event, or a new
+  location from a listener it puts on the app's `RouteInformationProvider`
+  (`go_router`'s `go`, `push` and pop), it reads the routes on screen. `route`
+  is the router's location — without a router (Navigator 1.0), the top route's
+  name or type — plus `· <name or type>` when a dialog, a sheet or a
+  `Navigator.push`ed page is on top; `routeName` is the router page's name
+  (`go_router`: the route's name or path pattern). It can't see tabs that
+  aren't routes or the app's own names: once the app's isolate sends an
+  `Emu.Route`, only what the app sends counts, until a hot restart.
 
 An app on `go_router` 16, with no emu dependency:
 
