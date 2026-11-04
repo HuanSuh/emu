@@ -727,6 +727,36 @@ pages:
       expect((await _call(s, 'POST', '/api/tap?x=1&y=2')).status, 200);
     });
 
+    /// The `routes` messages a dashboard socket gets while [then] runs.
+    Future<List<Map<String, dynamic>>> routesMessages(EmuServer s, Future<void> Function() then) async {
+      final socket = await WebSocket.connect('ws://127.0.0.1:${s.port}/api/stream?token=${s.token}');
+      final got = <Map<String, dynamic>>[];
+      final sub = socket.listen((m) {
+        final msg = jsonDecode(m as String) as Map<String, dynamic>;
+        if (msg['type'] == 'routes') got.add(msg);
+      });
+      await _until(() => got.isNotEmpty);
+      await then();
+      await _settle();
+      await sub.cancel();
+      await socket.close();
+      return got;
+    }
+
+    test('a dashboard hears the state when it connects', () async {
+      final s = await start();
+      expect(await routesMessages(s, () async {}), [{'type': 'routes', 'state': 'off'}]);
+    });
+
+    test('a dashboard hears the state change', () async {
+      final s = await start(opts: LaunchOptions(timelineRoutes: true));
+      final got = await routesMessages(s, () async {
+        engine.appRunning();
+        await _until(() => connects.isNotEmpty);
+      });
+      expect([for (final m in got) m['state']], ['connecting', 'on']);
+    });
+
     test('a bad --route regex is refused', () async {
       final s = await start();
       expect((await _call(s, 'GET', '/api/logs?route=(')).status, 400);

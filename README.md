@@ -909,6 +909,13 @@ emu report --mine                               # your reports and their status 
   fold that run; `expand all` / `collapse all` does every run, and runs that form afterwards
   follow it. A line that continues the last run joins it, open or folded as it is. While a search
   is on, every matching line shows, folded or not. `bulk` and `fold` are kept per browser.
+  The toggles left of the search — **Logs · Requests · Routes · Actions** — pick which of the
+  [timeline](#timeline--logs-requests-and-inputs-in-one-list)'s entries are rows: Logs and Requests
+  by default, as the tab always showed (kept per browser). With screen collection on
+  (`timeline.routes`) each row shows the screen it happened on (hover for its name; in a narrow
+  window it moves to the time's tooltip) and a screen change draws a line across the list; while
+  collection is off or failed, Routes is disabled and its tooltip says why. A request row opens
+  its bodies in **Mocks**.
 - Buttons: **Hot reload / Hot restart / Cold restart / Stop** (`r` / `R` keys too).
 - **Interactive screenshot panel** — shows the device screen and drives it directly
   with **click = tap / drag = swipe**. The input box at the bottom types into the

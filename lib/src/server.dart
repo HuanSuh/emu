@@ -177,6 +177,14 @@ class EmuServer {
   /// What `/api/logs` says of screen collection.
   RouteCollection get routeCollection => _routes?.state ?? RouteCollection.off;
 
+  /// Screen collection's state for the dashboard (its Routes toggle), sent
+  /// to each new socket and on every change.
+  Map<String, dynamic> _routesMessage() => {
+        'type': 'routes',
+        'state': routeCollection.name,
+        if (routeCollection == RouteCollection.failed) 'error': ?_routes?.error,
+      };
+
   /// A replay is running: a second one would tap over it.
   bool _replaying = false;
 
@@ -363,6 +371,7 @@ class EmuServer {
       tracker: RouteTracker(logStore, warn: warn),
       connect: _routeSource,
       warn: warn,
+      onState: (_) => _broadcast(_routesMessage()),
     );
     _routesFollow = engine.statusStream.listen((s) => unawaited(watcher.follow(s.vmServiceUri)));
     unawaited(watcher.follow(engine.status.vmServiceUri));
@@ -1659,6 +1668,7 @@ class EmuServer {
       // from the last it saw, and a filtered window would leave seq gaps
       // that read as "missed too much, start over".
       socket.sink.add(jsonEncode({'type': 'status', 'status': engine.status.toJson()}));
+      socket.sink.add(jsonEncode(_routesMessage()));
       for (final e in logStore.query(limit: 500)) {
         socket.sink.add(jsonEncode({'type': 'log', 'entry': e.toJson()}));
       }
