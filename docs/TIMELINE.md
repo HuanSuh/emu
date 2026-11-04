@@ -1,12 +1,12 @@
 # 타임라인 설계 메모
 
-> 상태: 설계 확정 중(구현 전). Q4·Q5·Q9·Q11 은 메인테이너가 결정했다(2026-11-03, §11). 이슈 리포터 리뷰(2026-11-04)를 반영했다(§14). 이슈 [#89](https://github.com/HuanSuh/emu/issues/89).
+> 상태: 설계 확정(구현 전). Q4·Q5·Q9·Q11 은 메인테이너가 결정했고(2026-11-03), 나머지 질문은 이슈 리포터 리뷰(2026-11-04, §14)에서 모두 정해 열린 질문이 없다(§11). PR 0 실측 결과로 PR 3·5 의 세부를 고칠 수 있다. 이슈 [#89](https://github.com/HuanSuh/emu/issues/89).
 > 이 문서는 합의용이다. 여기 적힌 명령·API는 아직 없다.
 
 ## 1. 결론 요약
 
 - **저장은 하나로.** 로그·요청·화면 전환·기기 조작을 전부 `LogStore` 의 같은 seq 에 넣고,
-  `LogEntry` 에 선택 필드 `kind`/`route`/`data` 를 더한다. 목 트래픽이 이미 이렇게 들어가 있다.
+  `LogEntry` 에 선택 필드 `kind`/`route`/`routeName`/`data` 를 더한다. 목 트래픽이 이미 이렇게 들어가 있다.
 - **기존 소비자는 그대로.** 새 종류(`route`, `action`)는 `/api/logs` 기본 응답에서 빠진다.
   `emu assert --log` 가 `emu tap --text Login` 의 기록에 걸리는 오탐을 막기 위해서다.
 - **스파이크 결과: `Flutter.Navigation` 만으로는 부족하다.** 이벤트는 있지만 선언형 Navigator
@@ -20,9 +20,10 @@
 - **이슈 리포터 피드백을 반영했다(§13).** `go_router` 앱, emu 패키지 의존 불가, 탭이 라우트가 아님,
   실제 경로와 라우트 이름을 함께 원함. 그래서 앱이 보내는 층을 먼저 구현한다(§10).
 - **이슈 리포터 리뷰를 반영했다(§14).** 조작 기록 위치, 대시보드가 바뀌기 전 단계의 처리, DDS 기록,
-  앱 예시 코드를 고쳤다. 정할 것은 Q15·Q16 으로 남겼다.
+  앱 예시 코드를 고쳤다. 기록마다 화면 이름(`routeName`)도 찍고(Q15), 대시보드를 1층보다 먼저 한다(Q16).
+  남은 질문도 모두 정했다(§11.2).
 - **화면 수집은 켜야 동작한다(Q9).** 라우트를 받는 장기 VM Service 연결은 `emu.yaml` 의
-  `timeline.routes: true`(제안 이름)로 켤 때만 연다. 기본은 꺼짐이고, 꺼져 있으면 지금과 똑같이 동작하며
+  `timeline.routes: true`(Q14)로 켤 때만 연다. 기본은 꺼짐이고, 꺼져 있으면 지금과 똑같이 동작하며
   타임라인에는 로그·요청·조작만 나오고 화면 칸은 비어 있다. 비어 있는 이유는 CLI·대시보드가 알려 준다(§6.5).
 - **`emu routes` 보류 사유는 해소되지 않았다.** 타임라인은 전체 스택이 필요 없어 그 문제를 피해 갈
   뿐이다(§12).
@@ -41,7 +42,7 @@
 - **`mocks:` 설정이 없는 앱의 요청 캡처.** 지금 요청은 `emu_hook` 또는 base URL 로 emu 를 지난 것만
   보인다. DevTools 의 HTTP 프로파일 같은 별도 수집 경로는 다루지 않는다.
 - **전체 Navigator 스택 덤프**(`emu routes`, §12).
-- **타임라인 기반 판정.** 조회만 하고 "이 화면이어야 한다" 같은 단언은 넣지 않는다(B1).
+- **타임라인 기반 판정.** 조회만 하고 "이 화면이어야 한다" 같은 단언은 넣지 않는다(B1, Q10).
 - **요청 본문 저장.** 본문은 지금처럼 `MockHit` 에 두고 타임라인은 `hitId` 로 가리킨다.
 
 ## 3. 스파이크: `Flutter.Navigation`
@@ -174,6 +175,7 @@ PR 0 에서 확인한다.
 ```dart
 final String? kind;                // null = 일반 로그, 'request' | 'route' | 'action'
 final String? route;               // 기록 시점의 현재 화면. 모르면 null
+final String? routeName;           // 그 화면의 이름이나 패턴(Q15). 모르면 null
 final Map<String, dynamic>? data;  // kind 별 구조화 데이터
 ```
 
@@ -181,8 +183,9 @@ final Map<String, dynamic>? data;  // kind 별 구조화 데이터
 지금과 바이트까지 같다. `fromJson` 은 이미 추가 키에 관대하므로(`models.dart:76-82`) 옛 바이너리가 새
 `run.jsonl` 을 읽어도 깨지지 않는다.
 
-`LogStore` 에 `String? currentRoute` 를 두고 `add` 가 모든 엔트리에 찍는다. 찍는 지점이 한 곳이면
-소스가 늘어도 빠지는 곳이 없다.
+`LogStore` 에 지금 화면(`currentRoute`·`currentRouteName`)을 두고 `add` 가 모든 엔트리에 `route`·`routeName`
+으로 찍는다. 찍는 지점이 한 곳이면 소스가 늘어도 빠지는 곳이 없다. 이름까지 엔트리마다 찍어야 `--since`·`-n`
+으로 자른 구간에서도 같은 화면끼리 묶을 수 있다(Q15).
 
 | kind | source | text | data |
 |---|---|---|---|
@@ -212,10 +215,10 @@ final Map<String, dynamic>? data;  // kind 별 구조화 데이터
 | 인과 추적 | 목록에서 바로 보인다 | `data.startSeq` 로 구간을 복원한다 |
 | 미완료 요청 | 보인다 | 끝날 때까지 안 보인다 |
 
-요청을 받을 때 `startSeq = logStore.lastSeq` 와 그때의 라우트를 `MockHit` 에 보관하고, 완료 엔트리에
-싣는다. **`request` 엔트리의 `route` 는 시작 시점 값으로 덮어쓴다.** "어느 화면이 이 요청을
-보냈는가" 가 질문이기 때문이다. `MockServer` 는 `LogStore` 를 모르므로 생성자에
-`({int seq, String? route}) Function() now` 를 넘긴다. seq 를 예약하지는 않는다. 번호는 계속 하나씩
+요청을 받을 때 `startSeq = logStore.lastSeq` 와 그때의 라우트(`route`·`routeName`)를 `MockHit` 에 보관하고,
+완료 엔트리에 싣는다. **`request` 엔트리의 `route`·`routeName` 은 시작 시점 값으로 덮어쓴다.** "어느 화면이
+이 요청을 보냈는가" 가 질문이기 때문이다. `MockServer` 는 `LogStore` 를 모르므로 생성자에
+`({int seq, String? route, String? routeName}) Function() now` 를 넘긴다. seq 를 예약하지는 않는다. 번호는 계속 하나씩
 증가하는 값으로 남겨 둔다. 화면 수집이 꺼져 있으면 시작 라우트도 null 이고, `startSeq` 는 그대로 채운다.
 
 **순서의 한계.** seq 는 emu 서버에 도착한 순서이고 `ts` 도 도착 시각이다. 앱 로그는 데몬·logcat 을
@@ -298,10 +301,10 @@ release 는 VM Service 가 없어 (c) 외에는 쓸 수 없다. emu 의 조작·
   세션에만 영향이 간다.
 - **상태**: `off`(옵션 꺼짐) / `connecting` / `on` / `failed` 네 가지를 서버가 들고 있다가 §8.1 처럼 응답에 싣는다.
 
-### 6.4 `Emu.Route` 이벤트 계약 (제안)
+### 6.4 `Emu.Route` 이벤트 계약 (결정, Q13)
 
 앱이 emu 의존 없이 구현할 수 있도록, 이름과 필드를 emu 가 보장하는 계약으로 둔다. 구현 시
-README 두 벌에도 같은 내용을 싣는다.
+README 두 벌에도 같은 내용을 싣는다. 이벤트 이름과 필드 이름은 아래대로 정했다(Q13).
 
 - **전달**: `dart:developer` 의 `postEvent('Emu.Route', data)`. 기본 `Extension` 스트림.
   VM 에 리스너가 없으면 no-op 이다. `flutter run` 에서는 DDS 가 늘 듣고 있어 실제로 보내지지만, 이벤트
@@ -324,8 +327,9 @@ README 두 벌에도 같은 내용을 싣는다.
 - **emu 의 처리**: `location` 이 문자열이 아니거나 비어 있으면 무시하고, 세션당 한 번 경고한다.
   모르는 필드는 무시한다(나중에 필드를 더해도 옛 emu 가 깨지지 않음). 각 값은 1KB 에서 자른다.
   값은 **받은 그대로** 저장한다. 민감한 값은 앱이 보내기 전에 거른다.
-- **표시**: `LogEntry.route` 는 `location`, `detail` 이 있으면 `location · detail`.
-  `name` 과 원래 값은 `route` 엔트리의 `data` 에 둔다. `name` 을 엔트리마다 실을지는 Q15.
+- **표시**: `LogEntry.route` 는 `location` 이고, `detail` 이 있으면 `location · detail` 이다.
+  `LogEntry.routeName` 은 `name` 이고, 없으면 null 이다. 둘 다 다음 `Emu.Route` 까지 모든 엔트리에 찍힌다(Q15).
+  원래 값은 `route` 엔트리의 `data` 에 둔다.
 
 앱 쪽 예시(`go_router` 16 기준, emu 패키지 없음):
 
@@ -379,19 +383,20 @@ reportEmuRoute(router.state.uri.toString(), name: router.state.name, detail: 'fe
 
 메인테이너 결정으로 장기 VM 연결은 `emu.yaml` 옵션으로만 켠다. 처음 추천(항상 켬)과 다르다.
 
-**키 이름 제안(Q14, 열린 질문)**: 기존 키가 `mocks:`·`pages:` 처럼 기능 이름 아래 묶이므로 같은 모양을 따른다.
+**키 이름(결정, Q14)**: 기존 키가 `mocks:`·`pages:` 처럼 기능 이름 아래 묶이므로 같은 모양을 따른다.
 
 ```yaml
 timeline:
   routes: true   # 화면 전환 수집(장기 VM Service 연결). 기본 false
 ```
 
-- `timeline:` 맵으로 두면 나중에 타임라인 관련 설정을 같은 자리에 더할 수 있다. 대안은 최상위 `routes: true`.
+- `timeline:` 맵으로 두면 나중에 타임라인 관련 설정을 같은 자리에 더할 수 있다. 대안이던 최상위
+  `routes: true` 는 쓰지 않는다.
 - 기존 키처럼 `profiles.<name>` 과 `emu.local.yaml` 에서도 덮어쓸 수 있다(`project_config.dart` 가 같은 맵
   파서로 읽음). 이 PC 에서만 켜는 경우를 위해서다.
 - 덮어쓰기는 최상위 키 단위다(`mergeConfigMaps`). 뒤 층에 `timeline:` 이 있으면 앞 층의 `timeline:` 맵을
   통째로 바꾼다. 지금은 하위 키가 `routes` 하나라 문제가 없지만, 하위 키를 더하면 `emu.local.yaml` 에서 하나만
-  바꿔도 나머지가 사라진다. 그때는 `timeline:` 만 깊게 병합하거나 이 동작을 문서에 적는다(Q14).
+  바꿔도 나머지가 사라진다. 그래서 하위 키를 더할 때 `timeline:` 만 깊게 병합한다(Q14).
 - **언제 반영되나**: `mocks:` 와 같이 `emu up` 때 읽는다. 세션 중에 바꾸면 다음 `emu up` 부터 적용한다.
   세션 중 켜도 지난 전환은 얻을 수 없으므로 실익이 작다.
 
@@ -399,7 +404,7 @@ timeline:
 
 - 장기 연결을 열지 않는다. `Flutter.Navigation` 도 `Emu.Route` 도 받지 않는다. 앱의 `postEvent` 는
   DDS 가 듣고 있어 보내지기는 하지만(§3.4) emu 는 받지 않는다.
-- 모든 엔트리의 `route` 가 null 이고 `kind: route` 엔트리가 생기지 않는다. 요청·조작·로그는 그대로 쌓인다.
+- 모든 엔트리의 `route`·`routeName` 이 null 이고 `kind: route` 엔트리가 생기지 않는다. 요청·조작·로그는 그대로 쌓인다.
 - 즉 PR 1·2 의 기능은 옵션과 무관하게 동작한다.
 
 **사용자 안내** — 앱이 `Emu.Route` 를 보내고 있어도 emu 가 조용히 버리므로, 이유를 반드시 보여 준다.
@@ -435,7 +440,7 @@ timeline:
   - CLI `emu open-url` 은 서버를 거치지 않고 CLI 가 직접 adb·simctl 을 부른다(`cli.dart` 의 `_openUrlCmd`).
     서버(`/api/open-url`)로 보내게 바꾼다. 서버의 `_openDeepLink` 는 3초에서 기다림을 멈추고 CLI 는
     `/api/settle` 로 10초까지 기다리므로, 서버 쪽 기다림을 건너뛰는 인자를 두고 기다림은 지금처럼 CLI 가 한다.
-- **민감 정보**: `emu text` 는 입력 내용을 저장하지 않고 글자 수만 남긴다. 비밀번호를 칠 수 있고
+- **민감 정보(Q7)**: `emu text` 는 입력 내용을 저장하지 않고 글자 수만 남긴다. 비밀번호를 칠 수 있고
   `run.jsonl` 은 파일로 남는다. 응답 형식은 바꾸지 않는다.
 
 ## 8. CLI·API·호환성
@@ -444,10 +449,12 @@ timeline:
 
 ```
 emu timeline [--since <seq>] [-n, --lines <N>] [--kind <list>] [-g, --grep <regex>]
-             [-f, --follow] [--json]
+             [--route <regex>] [-f, --follow] [--json]
 ```
 
 - 기본은 네 종류 전부. `--json` 은 `emu logs --json` 과 같은 JSONL 이다.
+- `--route` 는 `route`·`routeName` 중 하나라도 맞는 엔트리만 남긴다(대소문자 무시). 같은 화면의 로그·요청·조작을
+  모아 본다(Q15). `-g` 와 함께 쓰면 둘 다 맞아야 한다.
 - 서버가 없으면 `emu logs` 처럼 `run.jsonl` 에서 읽는다.
 - 텍스트 출력은 `seq 시각 [route] 내용` 한 줄.
 
@@ -459,7 +466,10 @@ API 는 새 경로 없이 `/api/logs` 에 `kinds` 파라미터를 더한다(**�
 GET /api/logs                     → kind 없음 + request (지금과 같은 결과)
 GET /api/logs?kinds=all           → 전부
 GET /api/logs?kinds=route,action  → 그 종류만
+GET /api/logs?kinds=all&route=^/user  → 그 화면만(--route, Q15)
 ```
+
+`route` 도 `kinds` 처럼 `LogStore.query` 에서 거른다.
 
 응답에는 화면 수집 상태 `routes` 필드를 더한다(§6.5). `emu timeline` 은 이 값으로 안내 여부를 정한다.
 
@@ -484,21 +494,21 @@ GET /api/logs?kinds=route,action  → 그 종류만
 | `emu report --attach logs` | `run.jsonl` 을 읽어 공개 이슈에 첨부할 수 있다 | 일반 로그만 첨부. 조작·라우트 기록은 빼서 지금과 같게 유지 |
 | `emu assert --log` | 조작 기록 오탐 위험 | 기본 필터로 차단, 테스트로 고정 |
 | `/api/errors` | `parseErrorBanners` 가 배너 구간의 줄을 합친다. 끼어든 엔트리가 본문에 섞인다 | `route`/`action` 제외하고 조회 |
-| WebSocket `log` 메시지 | 새 필드와 새 엔트리가 온다. 실시간 전송은 거르지 않는다(`logStore.stream` 을 그대로 보냄) | 대시보드 칩은 PR 5 라서, 새 kind 를 처음 만드는 PR 2·3 에 최소 처리를 함께 넣는다: Logs 탭은 지금처럼 kind 없음 + `request` 만 그린다 |
+| WebSocket `log` 메시지 | 새 필드와 새 엔트리가 온다. 실시간 전송은 거르지 않는다(`logStore.stream` 을 그대로 보냄) | 대시보드 칩은 PR 4 라서, 새 kind 를 처음 만드는 PR 2·3 에 최소 처리를 함께 넣는다: Logs 탭은 지금처럼 kind 없음 + `request` 만 그린다 |
 | WebSocket 초기 500줄 | 새 엔트리가 자리를 차지한다. 걸러 보내면 seq 가 비어, 대시보드 `replayStart`(`web/app.js`)가 첫 줄 seq 가 마지막으로 받은 seq 보다 500 넘게 앞선다고 보고 재연결 때마다 로그를 비운다 | 전부 보낸다(§8.1 표). 재연결 뒤 로그가 남는지 테스트로 고정 |
 | `mock-hit` 메시지, `/api/mock/*` | 변경 없음 | Debug → Mocks 는 그대로 |
 | `emu mock log` | 변경 없음 | |
 | 허브 | 로그를 읽지 않는다 | 변경 없음. 세션 대시보드는 그 세션 서버가 그린다 |
-| 파일 크기 | 라우트 필드만큼 줄이 는다 | 50k 링버퍼는 그대로. `run.jsonl` 은 기동 때 비워진다 |
+| 파일 크기 | 라우트 필드(`route`·`routeName`)만큼 줄이 는다 | 50k 링버퍼는 그대로. `run.jsonl` 은 기동 때 비워진다 |
 
 ## 9. 대시보드
 
-Logs 탭을 확장한다. 새 탭을 만들지 않는다. 같은 스트림과 같은 검색·접기·재생 로직을 쓰고, 탭을
+Logs 탭을 확장한다. 새 탭을 만들지 않는다(Q6). 같은 스트림과 같은 검색·접기·재생 로직을 쓰고, 탭을
 나누면 이슈가 풀려던 "따로 본다" 가 그대로 남는다.
 
 - 툴바에 종류 칩: Logs · Requests · Routes · Actions. 기본값은 지금과 같은 Logs + Requests.
   칩이 생기기 전(PR 2·3)에도 같은 기본값으로 그린다(§8.2).
-- 행 왼쪽에 route 열. 좁은 화면에서는 숨기고 행 툴팁으로 보여 준다.
+- 행 왼쪽에 route 열. 툴팁에 `routeName` 도 보여 준다. 좁은 화면에서는 숨기고 행 툴팁으로 보여 준다.
 - `route` 엔트리는 구분선처럼 그린다.
 - `request` 행을 누르면 기존 `/api/mock/hits/<id>` 상세를 연다. 200개를 넘어 지워진 히트는 "본문이 더
   이상 없음" 으로 표시한다.
@@ -508,13 +518,13 @@ Logs 탭을 확장한다. 새 탭을 만들지 않는다. 같은 스트림과 �
 
 각 PR 은 단독으로 배포 가능하다. 공통 테스트 원칙: 프로세스를 띄우는 `runSync` 를 늘리지 않고
 (Linux CI 포트 테스트 간섭), 기존 `FakeEngine` 과 순수 함수로 검증한다. 이벤트 소스는 스트림 seam 뒤에 둬서
-서버 테스트에 실제 `VmService` 가 필요 없게 한다. PR 4·5 의 순서는 열린 질문(Q16)이다.
+서버 테스트에 실제 `VmService` 가 필요 없게 한다. 대시보드(PR 4)를 1층(PR 5)보다 먼저 한다(Q16).
 
 **PR 0 — 라이브 스파이크(문서만).** 예제 앱에서 옵션을 켠 상태로 잰다. 결과를 이 문서에 반영한다.
 
 - 장기 연결과 DDS·DevTools·emu 의 짧은 연결의 공존 → **PR 3 머지 전** 확인. 기본 꺼짐이라 PR 3 을 막지는
   않지만, 켠 사용자가 처음부터 깨지지 않게 하려는 것이다.
-- §6.2 의 스냅샷 평가식 → PR 4 의 범위를 정한다.
+- §6.2 의 스냅샷 평가식 → PR 5 의 범위를 정한다.
 - 경로별 순서 편차(§5) → 문서의 "대략의 순서" 설명에 수치를 넣는다.
 - DDS 가 다시 보내는 기록(§3.4): 구독 직후 몇 개가 오는지, 첫 `Emu.Route` 가 남는지, 쌓인 것과 실시간을
   가르는 기준 → PR 3 의 처리를 정한다.
@@ -544,32 +554,36 @@ PR 1·2 는 옵션과 무관해 PR 0 을 기다리지 않는다.
 
 - `timeline.routes` 옵션 읽기(프로필·`emu.local.yaml` 포함), 옵션이 켜졌을 때만 장기 연결과 재구독,
   수집 상태(`off`/`connecting`/`on`/`failed`), `/api/logs` 의 `routes` 필드, `emu timeline` 안내.
-- `Emu.Route` 파서(§6.4 계약), `currentRoute` 찍기, 같은 값 합치기, 재시작 시 초기화, `request` 의 시작 라우트.
+- `Emu.Route` 파서(§6.4 계약), `currentRoute`·`currentRouteName` 찍기, 같은 값 합치기, 재시작 시 초기화,
+  `request` 의 시작 라우트.
+- `emu timeline --route`, `/api/logs?route=`(Q15).
 - 구독 직후 DDS 가 다시 보내는 이벤트 처리(§3.4). 대시보드 최소 처리에 route 를 더한다(§8.2).
 - 테스트: **옵션 꺼짐이면 VM 연결을 열지 않음**(가짜 연결 팩토리 호출 0회)과 응답이 `routes: "off"`,
   켜짐이면 연결과 상태 전이, 프로필 덮어쓰기, 꺼짐일 때 `emu timeline` 의 안내가 텍스트는 stdout 끝·`--json` 은
   stderr 로만 나감, 계약 표(필수 필드 누락·타입 오류·빈 값·모르는 필드·1KB 초과·`detail` 합성), 가짜
   스트림으로 찍기, URI 변경 시 재구독, 연결 실패가 세션에 영향 없음, 경고는 세션당 한 번,
-  쌓인 이벤트로는 엔트리를 만들지 않고 마지막 값만 씀, 지난 isolate 의 `Emu.Route` 로 1층을 끄지 않음.
+  쌓인 이벤트로는 엔트리를 만들지 않고 마지막 값만 씀, 지난 isolate 의 `Emu.Route` 로 1층을 끄지 않음,
+  `routeName` 찍기와 null 생략, `--route` 필터와 `limit` 순서.
 - 문서: README 두 벌에 옵션·계약·`go_router` 예시, SKILL.md(에이전트가 화면이 비었을 때 옵션을 확인하도록),
   `DESIGN.md` 변경 이력.
   `emu_hook` 헬퍼는 만들지 않는다(Q12).
 
-**PR 4 — 1층(`Flutter.Navigation` + 스냅샷).** PR 0 결과에 따라 범위를 정한다.
+**PR 4 — 대시보드.** 이슈의 첫 요구라 1층보다 먼저 한다(Q16).
+
+- 종류 칩, route 열(툴팁에 `routeName`), 구분선, 상세 연결, 수집 꺼짐·실패 안내(§6.5).
+- 테스트: `web_logs_test`/`web_render_test` 확장, `bundle_web` 재생성.
+
+**PR 5 — 1층(`Flutter.Navigation` + 스냅샷).** PR 0 결과에 따라 범위를 정한다.
 
 - `Flutter.Navigation` 파서, 디바운스 뒤 스냅샷, 두 층의 관계(§6.2).
 - 같은 `timeline.routes` 옵션 아래에서만 동작한다. 별도 옵션을 두지 않는다.
+- `route`·`routeName` 에 무엇을 찍을지는 PR 0 의 스냅샷 결과로 정한다.
 - 테스트: 파서 표(push/pop/null route/name null/이상한 payload), `Emu.Route` 를 받은 isolate 에서 1층 무시,
   hot restart 뒤 1층 재개, 평가식 빌더의 문자열 테스트.
 
-**PR 5 — 대시보드.**
+## 11. 결정
 
-- 종류 칩, route 열, 구분선, 상세 연결, 수집 꺼짐·실패 안내(§6.5).
-- 테스트: `web_logs_test`/`web_render_test` 확장, `bundle_web` 재생성.
-
-## 11. 결정과 열린 질문
-
-### 11.1 결정된 것
+### 11.1 결정된 것 (2026-11-03 까지)
 
 | # | 질문 | 선택지 | 결정 |
 |---|---|---|---|
@@ -584,18 +598,21 @@ PR 1·2 는 옵션과 무관해 PR 0 을 기다리지 않는다.
 
 Q1·Q2·Q3·Q8 은 이슈 리포터의 답을 근거로 확정 표시했다. 메인테이너가 뒤집으면 다시 연다.
 
-### 11.2 열린 질문 (PR 리뷰 때 정함)
+### 11.2 이슈 리포터 리뷰에서 정한 것 (2026-11-04)
 
-| # | 질문 | 선택지 | 추천 | 정할 때 |
-|---|---|---|---|---|
-| Q6 | 대시보드 배치 | A. Logs 탭 확장 / B. 새 Timeline 탭 | **A** | PR 5 |
-| Q7 | `emu text` 내용 저장 | A. 글자 수만 / B. 평문 / C. 설정으로 선택 | **A** | PR 2 |
-| Q10 | 타임라인 위에 판정 기능을 얹을까 | A. 조회만 / B. `emu assert --route` 추가 | **A.** 판정 추가는 B1 경계 논의가 먼저다. 실수요가 생기면 별도 이슈 | 별도 이슈 |
-| Q12 | `emu_hook` 에 `Emu.Route` 헬퍼를 둘까 | A. 두지 않음(계약 문서만) / B. 둔다 | **A.** 첫 사용자가 의존을 못 넣고, 헬퍼가 하는 일이 `postEvent` 한 줄이다. 요청이 오면 그때 추가 | PR 3 |
-| Q13 | 계약 필드 이름 | `location`/`name`/`detail` 그대로 / 다른 이름 | **그대로.** 계약 공개 뒤에는 바꾸기 어려우니 PR 3 리뷰에서 한 번 확정한다 | PR 3 |
-| Q14 | 수집 옵션 키 이름(Q9 결정에서 생김) | A. `timeline: {routes: true}` / B. 최상위 `routes: true` | **A.** 기존 `mocks:`·`pages:` 처럼 기능 이름 아래 묶고, 나중에 설정을 더할 자리를 남긴다(§6.5). 덮어쓰기가 최상위 키 단위라, 하위 키를 더할 때는 `timeline:` 만 깊게 병합한다 | PR 3 |
-| Q15 | 엔트리마다 화면 이름을 실을까(Q3 에서 생김) | A. 지금대로 `route` 엔트리의 `data` 에만 / B. 모든 엔트리에 `routeName` 을 더한다 / C. `route` 를 `{location, name, detail}` 객체로 | **B**, 그리고 `emu timeline --route <regex>`(`route`·`routeName` 대상). 리포터가 원한 "같은 화면끼리 묶어 보기" 는 일반 로그·요청에서 필요하다. `--since`·`-n` 으로 자른 구간에는 앞선 `route` 엔트리가 없을 수 있고, `-g` 는 `text` 만 본다. C 는 `route` 를 문자열로 읽는 곳을 바꿔야 한다 | PR 3 |
-| Q16 | PR 4(1층)와 PR 5(대시보드)의 순서 | A. 지금대로 4 → 5 / B. 5 → 4 | **B.** 이슈의 첫 요구는 대시보드에서 한 목록으로 보는 것이다. PR 4 는 PR 0 결과를 기다리고, `Emu.Route` 를 보내는 앱에서는 꺼지는 층이다(Q11) | PR 3 뒤 |
+PR 리뷰 때 정하기로 했던 질문과 리뷰에서 새로 나온 질문을 모두 정했다. 열린 질문은 없다. PR 0 실측이 어떤
+결정의 전제를 뒤집으면 그 질문만 다시 연다.
+
+| # | 질문 | 선택지 | 결정 |
+|---|---|---|---|
+| Q6 | 대시보드 배치 | A. Logs 탭 확장 / B. 새 Timeline 탭 | **A.** 탭을 나누면 이슈가 풀려던 "따로 본다" 가 그대로 남는다(§9) |
+| Q7 | `emu text` 내용 저장 | A. 글자 수만 / B. 평문 / C. 설정으로 선택 | **A.** 비밀번호를 칠 수 있고 `run.jsonl` 은 파일로 남는다(§7) |
+| Q10 | 타임라인 위에 판정 기능을 얹을까 | A. 조회만 / B. `emu assert --route` 추가 | **A.** 판정 추가는 B1 경계 논의가 먼저다. 실수요가 생기면 별도 이슈 |
+| Q12 | `emu_hook` 에 `Emu.Route` 헬퍼를 둘까 | A. 두지 않음(계약 문서만) / B. 둔다 | **A.** 첫 사용자가 의존을 못 넣고, 헬퍼가 하는 일이 `postEvent` 한 줄이다. 요청이 오면 그때 추가 |
+| Q13 | 계약 필드 이름 | `location`/`name`/`detail` 그대로 / 다른 이름 | **그대로.** 계약 공개 뒤에는 바꾸기 어렵다. 엔트리 쪽 이름은 `route`·`routeName` 이다(Q15) |
+| Q14 | 수집 옵션 키 이름(Q9 결정에서 생김) | A. `timeline: {routes: true}` / B. 최상위 `routes: true` | **A.** 기존 `mocks:`·`pages:` 처럼 기능 이름 아래 묶고, 나중에 설정을 더할 자리를 남긴다. 덮어쓰기가 최상위 키 단위라, 하위 키를 더할 때 `timeline:` 만 깊게 병합한다(§6.5) |
+| Q15 | 엔트리마다 화면 이름을 실을까(Q3 에서 생김) | A. `route` 엔트리의 `data` 에만 / B. 모든 엔트리에 `routeName` 을 더한다 / C. `route` 를 `{location, name, detail}` 객체로 | **B, 그리고 `emu timeline --route <regex>`.** 리포터가 원한 "같은 화면끼리 묶어 보기" 는 일반 로그·요청에서 필요하다. `--since`·`-n` 으로 자른 구간에는 앞선 `route` 엔트리가 없을 수 있고, `-g` 는 `text` 만 본다. C 는 `route` 를 문자열로 읽는 곳을 바꿔야 한다(§4.2, §6.4, §8.1) |
+| Q16 | 1층과 대시보드의 순서 | A. 1층 먼저 / B. 대시보드 먼저 | **B.** 이슈의 첫 요구는 대시보드에서 한 목록으로 보는 것이다. 1층은 PR 0 결과를 기다리고, `Emu.Route` 를 보내는 앱에서는 꺼지는 층이다(Q11). 대시보드를 PR 4, 1층을 PR 5 로 바꿨다(§10) |
 
 ## 12. `emu routes` 보류와의 관계
 
@@ -619,7 +636,7 @@ private eval 을 쓰지 않고 진행할 수 있고, 위 보류 결정을 뒤집
 
 | 받은 답 | 설계에 준 영향 |
 |---|---|
-| `go_router` 16.2.4, 주로 `goNamed`·`pushNamed`, `ShellRoute` 안에 중첩 Navigator | 1층만으로는 주요 이동을 놓친다는 스파이크 결론과 맞다. 2층(PR 3)을 1층(PR 4)보다 먼저 한다 |
+| `go_router` 16.2.4, 주로 `goNamed`·`pushNamed`, `ShellRoute` 안에 중첩 Navigator | 1층만으로는 주요 이동을 놓친다는 스파이크 결론과 맞다. 2층(PR 3)을 1층(PR 5)보다 먼저 한다 |
 | 모달·바텀시트는 `Navigator.of(context).push` 로 직접 띄움 | 1층에서는 이벤트가 오지만 2층을 쓰면 무시된다. 남기려면 앱이 보낸다(§6.2, §6.4 observer 예시, Q11 결정) |
 | 하단 탭은 라우트가 아닌 화면 내부 상태(`IndexedStack` 계열) | 라우트 기반 방법으로는 원리상 못 잡는다(§3.3). 계약에 `detail` 필드를 두었다 |
 | 디버그 전용 한 줄은 가능, emu 패키지 의존은 불가 | `Emu.Route` 를 `dart:developer` 만으로 쓰는 계약으로 문서화(§6.4). `emu_hook` 헬퍼는 두지 않는다(Q12) |
@@ -635,11 +652,11 @@ private eval 을 쓰지 않고 진행할 수 있고, 위 보류 결정을 뒤집
 | 지적 | 반영 |
 |---|---|
 | 조작 기록 위치가 입력이 들어오는 길을 다 덮지 못한다. CLI `emu open-url` 은 서버를 거치지 않고(`cli.dart:2048-2068`), replay 는 `_openDeepLink`·`runTap`·`runText` 를 직접 부르며(`server.dart:1687-1706`), 페이지 `openUrl:` 도 `_openDeepLink` 를 직접 부른다(`server.dart:297`) | §7 위치, PR 2 |
-| 대시보드가 바뀌기 전(PR 1~4)의 처리가 없다. 실시간 전송은 거르지 않고(`server.dart:287`), 초기 500줄(`server.dart:1543`)을 걸러 보내면 `replayStart`(`web/app.js:280`)가 재연결 때마다 로그를 비운다 | §8.1 호출부 표, §8.2, §9, PR 1·2·3 |
+| 대시보드가 바뀌기 전 단계의 처리가 없다. 실시간 전송은 거르지 않고(`server.dart:287`), 초기 500줄(`server.dart:1543`)을 걸러 보내면 `replayStart`(`web/app.js:280`)가 재연결 때마다 로그를 비운다 | §8.1 호출부 표, §8.2, §9, PR 1·2·3 |
 | DDS 가 `Extension` 이벤트를 쌓아 두었다가 새 구독자에게 다시 보낸다. "구독 전 이벤트는 사라진다" 와 다르다 | §3.4 신설, §3.1·§3.2·§6.2·§6.3·§6.4·§6.5, PR 0·3 |
 | 예시의 `reportCurrent(); // 시작 직후 한 번` 은 첫 경로가 정해지기 전이면 `StateError` 를 던진다. `kDebugMode` 확인 전에 `router.state` 를 읽어 release 도 같다 | §6.4 예시(조건부 호출, 등록을 `kDebugMode` 안으로)와 설명 |
-| `name` 이 `route` 엔트리에만 있어, 일반 로그·요청을 같은 화면끼리 묶지 못한다 | Q15 |
-| 이슈의 첫 요구인 대시보드가 마지막 단계다 | Q16 |
+| `name` 이 `route` 엔트리에만 있어, 일반 로그·요청을 같은 화면끼리 묶지 못한다 | Q15 — 모든 엔트리에 `routeName`, `emu timeline --route`(§4.2·§5·§6.4·§8.1·§9, PR 3) |
+| 이슈의 첫 요구인 대시보드가 마지막 단계다 | Q16 — 대시보드를 PR 4, 1층을 PR 5 로(§10) |
 | 설정 덮어쓰기가 최상위 키 단위다(`project_config.dart:105-112`) | §6.5, Q14 |
 | `Emu.Route` 를 보내면 자동 감지가 꺼진다는 것이 계약 절에 없고, 모달 observer 를 루트에만 달라고 안내한다 | §6.4 |
 | `inferLevel` 예시의 `/error` 는 실제로 info 로 판정된다 | §4.2 |
@@ -647,3 +664,5 @@ private eval 을 쓰지 않고 진행할 수 있고, 위 보류 결정을 뒤집
 맞는 것으로 확인한 것: `_afterNavigation` 호출 6곳과 행 번호, `go_router` 페이지 이름(`builder.dart:398`),
 `push` 로 올린 화면의 `state.uri`, 목 트래픽이 이미 `LogStore` 에 들어감, 기존 소비자가 모두 `LogStore.query` 나
 `run.jsonl` 을 지남, `LogEntry.fromJson` 이 모르는 키를 무시함.
+
+PR 리뷰 때 정하기로 했던 Q6·Q7·Q10·Q12·Q13·Q14 와 이 리뷰에서 나온 Q15·Q16 은 모두 이 리뷰에서 정했다(§11.2).
