@@ -400,6 +400,7 @@ emu timeline [opts]
   -n, --lines <N>      last N entries (default 200)
   --kind <list>        log, request, route, action — comma list (default: all)
   -g, --grep <regex>   case-insensitive regex over the text
+  --route <regex>      only entries on a matching screen (location or name)
   -f, --follow         live stream
   --json               one entry per line (JSONL), like `logs --json`
 ```
@@ -434,6 +435,92 @@ emu timeline -n 4
   leave out kinds other than `log` and `request` unless asked
   (`/api/logs?kinds=all`).
 - Reads offline from `.emu/run.jsonl` when the server is down.
+
+#### Screens — `timeline.routes` and the `Emu.Route` event
+
+Which screen each entry happened on comes from the app. Turn collection on in
+`emu.yaml` (or a profile, or `emu.local.yaml`); like `mocks:`, it is read at `emu up`:
+
+```yaml
+timeline:
+  routes: true   # a VM Service connection for the session (default false)
+```
+
+Then the session server keeps one VM Service connection to the app and listens
+for `Emu.Route`, an event the app posts itself with `dart:developer` — **no emu
+package**. Each one says "the screen is now this": emu writes a `route` entry and
+stamps that screen on every entry until the next one (`route`, and `routeName`
+when the app names it). `--route <regex>` then keeps one screen's logs, requests
+and inputs.
+
+| Field | Type | Required | Meaning | Example |
+|---|---|---|---|---|
+| `location` | String | yes | the real location — what reopens the screen | `/user/42?tab=posts` |
+| `name` | String | no | a name or pattern grouping the same screen | `user`, `/user/:id` |
+| `detail` | String | no | state the location doesn't show (a tab, a modal) | `feed`, `sheet:filter` |
+
+- An event reports a state, not a push or a pop: send one when the app starts and
+  whenever the screen or a tab changes, with every field each time (emu carries
+  nothing over). The same screen twice in a row is one entry.
+- An entry's `route` is `location`, or `location · detail`; `routeName` is
+  `name`. An event without a non-empty `location` string is ignored (one warning
+  a session); unknown fields are ignored; each value is cut at 1024 characters.
+  Values are kept as sent — leave sensitive ones out before sending.
+- `flutter run` goes through DDS, which keeps past events, so emu gets the app's
+  last report even when it connects later. What `main()` sends on a cold start
+  comes before DDS is up and is lost: send it again once
+  `developer.extensionStreamHasListener` turns true (below). A hot restart
+  clears the screen until the new isolate reports.
+- Off (the default) there is no connection and no screen: `emu timeline` ends
+  with `routes: off — …` (on stderr with `--json`) and `/api/logs` answers
+  `"routes": "off"` (`connecting`, `on` or `failed` otherwise; `routesError`
+  says why it failed). A failed connection is one warning; the session goes on.
+
+An app on `go_router` 16, with no emu dependency:
+
+```dart
+import 'dart:async';
+import 'dart:developer' as developer;
+import 'package:flutter/foundation.dart';
+
+void reportEmuRoute(String location, {String? name, String? detail}) {
+  if (!kDebugMode) return;
+  developer.postEvent('Emu.Route', {
+    'location': location,
+    if (name != null) 'name': name,
+    if (detail != null) 'detail': detail,
+  });
+}
+
+// go/push/pop, inside a ShellRoute too — and the first location once it is set.
+void reportCurrent() {
+  final s = router.state; // the deepest leaf
+  reportEmuRoute(s.uri.toString(), name: s.name ?? s.fullPath);
+}
+
+if (kDebugMode) {
+  router.routerDelegate.addListener(reportCurrent);
+  // Only once the location is set: router.state throws before that.
+  if (router.routerDelegate.currentConfiguration.isNotEmpty) reportCurrent();
+  // Cold start: what was sent so far predates DDS. Send again once it listens.
+  if (!developer.extensionStreamHasListener) {
+    Timer.periodic(const Duration(milliseconds: 50), (t) {
+      if (!developer.extensionStreamHasListener) return;
+      t.cancel();
+      if (router.routerDelegate.currentConfiguration.isNotEmpty) reportCurrent();
+    });
+  }
+}
+
+// A tab that isn't a route: where its index changes.
+reportEmuRoute(router.state.uri.toString(), name: router.state.name, detail: 'feed');
+```
+
+Dialogs, sheets and `Navigator.push`ed pages don't move the router: to have them
+on the timeline, give each Navigator that shows them a `NavigatorObserver` of your
+own (`ShellRoute.observers` inside a shell — `showModalBottomSheet` uses the
+nearest Navigator) that reports the modal as `detail` in `didPush` and the
+screen below, with its `detail`, in `didPop`.
 
 ### errors — structured exception banners
 

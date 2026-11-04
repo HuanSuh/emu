@@ -376,6 +376,7 @@ emu timeline [opts]
   -n, --lines <N>      마지막 N개 (기본 200)
   --kind <list>        log, request, route, action — 쉼표로 여럿 (기본: 전부)
   -g, --grep <regex>   텍스트에 대소문자 무시 정규식
+  --route <regex>      화면(위치나 이름)이 맞는 엔트리만
   -f, --follow         실시간 스트림
   --json               한 줄에 엔트리 하나(JSONL), `logs --json` 과 같다
 ```
@@ -402,6 +403,85 @@ emu timeline -n 4
 - `emu logs`·`emu assert`·`emu errors`·`/api/logs` 는 지금 그대로이고, 묻지 않으면 `log`·`request` 밖의 종류를 빼고
   답한다(`/api/logs?kinds=all`).
 - 서버가 꺼져 있으면 `.emu/run.jsonl` 에서 오프라인으로 읽는다.
+
+#### 화면 — `timeline.routes` 와 `Emu.Route` 이벤트
+
+엔트리마다 어느 화면에서 일어났는지는 앱이 알려 준다. `emu.yaml`(또는 프로필, `emu.local.yaml`)에서 켜고,
+`mocks:` 처럼 `emu up` 때 읽는다.
+
+```yaml
+timeline:
+  routes: true   # 세션 동안 VM Service 연결을 둔다 (기본 false)
+```
+
+켜면 세션 서버가 앱과 VM Service 연결 하나를 두고, 앱이 `dart:developer` 로 직접 보내는 이벤트 `Emu.Route` 를
+듣는다 — **emu 패키지는 필요 없다**. 이벤트 하나가 "지금 화면은 이것" 이다. emu 는 `route` 엔트리를 남기고 다음
+이벤트까지 모든 엔트리에 그 화면을 찍는다(`route`, 앱이 이름을 주면 `routeName`). `--route <regex>` 로 한 화면의
+로그·요청·입력만 본다.
+
+| 필드 | 타입 | 필수 | 뜻 | 예 |
+|---|---|---|---|---|
+| `location` | String | 예 | 실제 경로. 그 화면을 다시 여는 값 | `/user/42?tab=posts` |
+| `name` | String | 아니오 | 같은 화면끼리 묶는 이름이나 패턴 | `user`, `/user/:id` |
+| `detail` | String | 아니오 | 경로로 드러나지 않는 상태(탭, 모달) | `feed`, `sheet:filter` |
+
+- 이벤트는 push·pop 이 아니라 상태 보고다. 앱이 시작할 때 한 번, 화면이나 탭이 바뀔 때마다 모든 필드를 담아
+  보낸다(emu 는 앞 이벤트의 필드를 이어받지 않는다). 같은 화면이 연달아 오면 엔트리 하나다.
+- 엔트리의 `route` 는 `location`, 또는 `location · detail` 이고 `routeName` 은 `name` 이다. 비어 있지 않은
+  `location` 문자열이 없는 이벤트는 무시한다(세션당 경고 한 번). 모르는 필드는 무시하고, 값마다 1024자에서 자른다.
+  값은 받은 그대로 둔다 — 민감한 값은 보내기 전에 거른다.
+- `flutter run` 은 DDS 를 거치고 DDS 가 지난 이벤트를 쌓아 두므로, emu 가 늦게 붙어도 앱이 마지막으로 보낸 것을
+  받는다. 콜드 스타트 때 `main()` 에서 보낸 것은 DDS 가 붙기 전이라 사라진다.
+  `developer.extensionStreamHasListener` 가 참이 되면 한 번 더 보낸다(아래). hot restart 는 새 isolate 가 보낼
+  때까지 화면을 비운다.
+- 끄면(기본) 연결도 화면도 없다. `emu timeline` 끝에 `routes: off — …` 가 나오고(`--json` 이면 stderr),
+  `/api/logs` 는 `"routes": "off"` 다(그 밖에는 `connecting`·`on`·`failed`, 실패 이유는 `routesError`). 연결이
+  실패하면 경고 한 줄이고 세션은 그대로다.
+
+`go_router` 16 앱, emu 의존 없이:
+
+```dart
+import 'dart:async';
+import 'dart:developer' as developer;
+import 'package:flutter/foundation.dart';
+
+void reportEmuRoute(String location, {String? name, String? detail}) {
+  if (!kDebugMode) return;
+  developer.postEvent('Emu.Route', {
+    'location': location,
+    if (name != null) 'name': name,
+    if (detail != null) 'detail': detail,
+  });
+}
+
+// go/push/pop, ShellRoute 안의 이동까지 — 첫 경로가 정해질 때도 불린다.
+void reportCurrent() {
+  final s = router.state; // 가장 깊은 leaf
+  reportEmuRoute(s.uri.toString(), name: s.name ?? s.fullPath);
+}
+
+if (kDebugMode) {
+  router.routerDelegate.addListener(reportCurrent);
+  // 경로가 정해진 뒤에만: 그 전에 router.state 를 읽으면 StateError 다.
+  if (router.routerDelegate.currentConfiguration.isNotEmpty) reportCurrent();
+  // 콜드 스타트: 여기까지 보낸 것은 DDS 가 붙기 전이다. 리스너가 생기면 한 번 더 보낸다.
+  if (!developer.extensionStreamHasListener) {
+    Timer.periodic(const Duration(milliseconds: 50), (t) {
+      if (!developer.extensionStreamHasListener) return;
+      t.cancel();
+      if (router.routerDelegate.currentConfiguration.isNotEmpty) reportCurrent();
+    });
+  }
+}
+
+// 라우트가 아닌 탭: 탭 인덱스가 바뀌는 곳에서.
+reportEmuRoute(router.state.uri.toString(), name: router.state.name, detail: 'feed');
+```
+
+다이얼로그·시트·`Navigator.push` 로 올린 화면은 라우터 위치를 바꾸지 않는다. 타임라인에 남기려면 그것들을 띄우는
+Navigator 마다 앱 자체 `NavigatorObserver` 를 달아(셸 안이면 `ShellRoute.observers` —
+`showModalBottomSheet` 는 가장 가까운 Navigator 를 쓴다) `didPush` 에서는 모달을 `detail` 로, `didPop` 에서는 아래
+화면을 `detail` 까지 다시 보낸다.
 
 ### errors — 구조화된 예외 배너
 

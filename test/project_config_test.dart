@@ -90,6 +90,28 @@ void main() {
     });
   });
 
+  group('timeline.routes', () {
+    late Directory root;
+    setUp(() => root = Directory.systemTemp.createTempSync('emu_cfg_timeline'));
+    tearDown(() => root.deleteSync(recursive: true));
+
+    test('off unless timeline.routes is exactly true', () {
+      expect(EmuConfig.fromMap({}).timelineRoutes, isFalse);
+      expect(EmuConfig.fromMap({'timeline': {'routes': true}}).timelineRoutes, isTrue);
+      for (final odd in [true, 'routes', {'routes': 'yes'}, {'routes': false}, {'other': true}]) {
+        expect(EmuConfig.fromMap({'timeline': odd}).timelineRoutes, isFalse, reason: '$odd');
+      }
+    });
+
+    test('a profile and emu.local.yaml can turn it on or off', () {
+      File('${root.path}/emu.yaml').writeAsStringSync('profiles:\n  debug:\n    timeline:\n      routes: true\n');
+      expect(loadProjectConfig(root.path, home: '').timelineRoutes, isFalse);
+      expect(loadProjectConfig(root.path, home: '', profile: 'debug').timelineRoutes, isTrue);
+      File('${root.path}/emu.local.yaml').writeAsStringSync('timeline:\n  routes: true\n');
+      expect(loadProjectConfig(root.path, home: '').timelineRoutes, isTrue);
+    });
+  });
+
   group('loadProjectConfig profiles', () {
     late Directory root;
     setUp(() => root = Directory.systemTemp.createTempSync('emu_cfg_profiles'));

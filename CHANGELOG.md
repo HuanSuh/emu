@@ -18,6 +18,13 @@
   목 replay 의 진입 딥링크와 단계까지 모두(`data.via`: `page`, `replay`). `text` 는 길이만 남기고, 실패하면 error 레벨
   엔트리가 하나 더 생긴다. `emu logs`·`assert`·`errors`·대시보드 Logs 탭에는 나오지 않는다.
 
+- 화면 전환(`timeline.routes`): `emu.yaml` 에 `timeline: {routes: true}` 를 켜면(프로필·`emu.local.yaml` 포함, `emu up` 때
+  읽음) 세션 서버가 앱과 VM Service 연결을 두고 앱이 `dart:developer` 로 보내는 `Emu.Route` 이벤트(`location`·`name`·
+  `detail`, emu 패키지 불필요)를 받아 `route` 엔트리를 남기고 모든 엔트리에 그 화면(`route`·`routeName`)을 찍는다. DDS 가
+  쌓아 둔 지난 이벤트로는 엔트리를 만들지 않고 지금 화면만 정한다. 기본은 꺼짐이고 꺼져 있으면 연결이 없다.
+  `emu timeline --route <regex>`·`/api/logs?route=`, `/api/logs` 의 `routes`(`off`·`connecting`·`on`·`failed`)와
+  `routesError`, 꺼져 있을 때 `emu timeline` 끝의 안내(`--json` 이면 stderr). `emu config` 에 `timeline.routes`.
+
 ### Changed
 - `emu open-url` 이 adb·simctl 을 직접 부르지 않고 세션 서버(`/api/open-url`)를 거친다. 보내는 방식과 기다림(최대 10초)은
   같고, `--json` 에 `seq` 가 더해졌다.
