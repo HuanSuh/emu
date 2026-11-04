@@ -203,6 +203,19 @@ const range = (a, b) => Array.from({ length: b - a + 1 }, (_, i) => a + i);
       });
     });
 
+    test('inputs among the replayed lines keep the log: the server sends every kind', () async {
+      final r = await _js(prelude, '''
+        const kinded = (seqs) => seqs.forEach((seq, i) => {
+          if (i === 0) replayStart(seq);
+          receive({ seq, text: 'l' + seq, ...(seq % 3 ? {} : { kind: 'action' }) });
+        });
+        kinded(range(1, 700));
+        kinded(range(201, 701)); // the last 500 of every kind, then one new
+        return { n: pending.length, actions: pending.filter((e) => e.kind).length, renders };
+      ''');
+      expect(r, {'n': 701, 'actions': 233, 'renders': 0});
+    });
+
     test('a socket that starts further back than a replay is a new stream: start over', () async {
       final r = await _js(prelude, '''
         socket(range(1, 700));
@@ -216,6 +229,22 @@ const range = (a, b) => Array.from({ length: b - a + 1 }, (_, i) => a + i);
         'lastSeq': 3,
         'renders': 1,
       });
+    });
+  });
+
+  group('Logs tab kinds', skip: _node ? false : 'node is not installed', () {
+    test('draws plain lines and requests; inputs and screen changes are not rows', () async {
+      final prelude = '''
+const state = { level: 'all', search: '', regex: false };
+const LEVEL_RANK = { debug: 0, info: 1, system: 1, warn: 2, error: 3 };
+${src.split('\n').firstWhere((l) => l.startsWith('const LOG_KINDS'))}
+${_fn(src, 'matches')}
+''';
+      final r = await _js(prelude, '''
+        return [{}, { kind: 'request' }, { kind: 'action' }, { kind: 'route' }]
+          .map((o) => matches({ seq: 1, level: 'system', text: 'x', ...o }));
+      ''');
+      expect(r, [true, true, false, false]);
     });
   });
 }

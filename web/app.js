@@ -88,7 +88,13 @@ const TAG = { error: 'E', warn: 'W', debug: 'D', system: '•', info: 'I' };
 
 // ---- rendering --------------------------------------------------------------
 
+// What the Logs tab draws: plain lines and requests, as before the timeline.
+// Inputs (and later screen changes) still arrive and count for the seq a
+// reconnect is judged by; they just aren't rows here.
+const LOG_KINDS = new Set(['request']);
+
 function matches(entry) {
+  if (entry.kind && !LOG_KINDS.has(entry.kind)) return false;
   if (state.level !== 'all') {
     if ((LEVEL_RANK[entry.level] ?? 1) < LEVEL_RANK[state.level]) return false;
   }
