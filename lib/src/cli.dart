@@ -22,7 +22,6 @@ import 'launch_config.dart';
 import 'log_store.dart';
 import 'memory_diff.dart';
 import 'models.dart';
-import 'open_url.dart';
 import 'mock.dart';
 import 'mock_replay.dart';
 import 'page_ask.dart';
@@ -2138,36 +2137,24 @@ Future<int> _openUrlCmd(List<String> args) async {
     return 2;
   }
   final info = _requireServer();
-  final data = await _get(info, '/api/status');
-  final deviceId = (data?['status'] as Map?)?['deviceId'] as String?;
-  final cmd = buildOpenUrlCommand(
-    platform: platformForDeviceId(deviceId),
-    deviceId: deviceId,
-    url: url,
-  );
-  ProcessResult result;
-  try {
-    result = await Process.run(cmd.executable, cmd.arguments);
-  } catch (e) {
-    if (json) {
-      print(jsonEncode({'ok': false, 'error': '$e'}));
-    } else {
-      stderr.writeln('✗ open-url failed: $e');
-    }
-    return 1;
-  }
-  final ok = result.exitCode == 0;
+  // Through the server, as the dashboard's deep link box: it sends the link
+  // the same way and records it in the timeline. The settle stays here — the
+  // server's own is capped for buttons, this one waits the full 10s.
+  final r = await _post(info, '/api/open-url?url=${Uri.encodeQueryComponent(url)}&settle=0');
+  final ok = r?['ok'] == true;
+  final error = r == null ? 'no answer from the emu server' : '${r['error'] ?? ''}'.trim();
   if (ok && settle) await _post(info, '/api/settle');
   if (json) {
     print(jsonEncode({
       'ok': ok,
       'url': url,
-      if (!ok) 'error': '${result.stderr}'.trim(),
+      if (!ok) 'error': error,
+      if (ok) 'seq': r!['seq'],
     }));
   } else if (ok) {
     print('✓ open-url $url');
   } else {
-    stderr.writeln('✗ open-url failed: ${result.stderr}');
+    stderr.writeln('✗ open-url failed: $error');
   }
   return ok ? 0 : 1;
 }
