@@ -268,6 +268,10 @@ release 는 VM Service 가 없어 (c) 외에는 쓸 수 없다. emu 의 조작·
 - **트리거**: `Flutter.Navigation` 과, emu 가 평가식으로 단 라우터 리스너(아래)가 보내는 emu 전용 이벤트
   `Emu.RouterInformation`. 오면 150ms 디바운스한 뒤 (e) 스냅샷을 읽어 `kind: route` 엔트리를 남긴다.
   구독했을 때와 isolate 가 바뀌었을 때도 한 번 읽는다.
+- **스냅샷을 받는 법**: 평가식은 실행 중인 코드 사이, 프레임을 빌드하는 도중에도 끼어든다. 그때 요소 트리를 돌면
+  `visitChildElements() called during build` 로 실패한다(§15.4). 그래서 평가식은 순회를 `Timer.run` 으로 앱의 다음
+  차례에 미루고, 결과를 emu 전용 이벤트 `Emu.Snapshot` 으로 보낸다. 라우터 리스너를 다는 평가식은 이때 `busy` 를
+  돌려주고 다음 트리거에 다시 단다.
 - **값**: 스냅샷은 지금 보이는 라우트 사슬(바깥 Navigator → 안쪽)을 준다(§15.4). `route` 는 라우터 리스너가
   마지막으로 보낸 위치다. 리스너가 아직 아무것도 보내지 않았으면 스냅샷이 읽은 `Router` 의 위치, `Router` 가 없는
   앱(Navigator 1.0)이면 맨 위 라우트의 `settings.name`, 그것도 없으면 라우트 타입 이름이다. 맨 위 라우트가
@@ -620,8 +624,9 @@ PR 1·2 는 옵션과 무관해 PR 0 을 기다리지 않는다.
 
 - `Flutter.Navigation`·`Emu.RouterInformation` 을 트리거로 150ms 디바운스한 뒤 스냅샷. 구독했을 때와 isolate 가
   바뀌었을 때도 스냅샷.
-- 라우터 리스너 평가식(isolate 마다 한 번, `ext.emu.timelineRouter` 로 중복 방지)과 스냅샷 평가식. 둘 다 한 줄로
-  만든다. 여러 줄이면 식 컴파일이 실패한다(§15.4).
+- 라우터 리스너 평가식(isolate 마다 한 번, `ext.emu.timelineRouter` 로 중복 방지)과 스냅샷 평가식(`Timer.run` 뒤
+  `Emu.Snapshot` 으로 답한다). 둘 다 `navigator.dart` 스코프에서 한 줄로 평가한다. 여러 줄이면 식 컴파일이
+  실패한다(§15.4).
 - `route`·`routeName`·`detail` 규칙(§6.2), 두 층의 관계(Q11).
 - 같은 `timeline.routes` 옵션 아래에서만 동작한다. 별도 옵션을 두지 않는다.
 - 테스트: 스냅샷 결과 해석 표(`Router` 있음·없음, 셸 안, 다이얼로그·시트·`Navigator.push`, 이름 없음, 빈 사슬,
@@ -784,6 +789,11 @@ isolate 의 `Flutter.FrameworkInitialization`·`Emu.Route` 가 그 뒤에 왔다
   앞 위치(`/user/42`)였다. `go_router` 의 `optionURLReflectsImperativeAPIs` 기본값 때문이다(§6.2, §15.5).
 - 평가식은 한 줄이어야 한다. 여러 줄이면 "Can't find '}' to match '{'" 로 컴파일이 실패했다. flutter_tools 가
   식을 줄 단위로 넘기는 것으로 보인다.
+- PR 5 를 예제 앱에 붙여 다이얼로그·시트를 연달아 48번 열고 닫자, 스냅샷 3번이 `visitChildElements() called during
+  build` 로 실패해 화면이 바뀌지 않았다(평가 결과가 `ErrorRef`). 평가는 실행 중인 코드 사이에 끼어들 수 있고, 애니메이션
+  동안은 빌드가 잦아 부딪힌다. 순회를 `Timer.run` 으로 미루고 결과를 `Emu.Snapshot` 이벤트로 받게 하자 48번 모두
+  기록됐고 앱 로그에 예외도 없었다. PR 5 는 `WidgetsBinding`·`ModalRoute`·`Page`·`Timer`·`developer` 가 함께 보이는
+  `navigator.dart` 스코프에서 평가한다.
 
 ### 15.5 라우터 리스너 평가식
 
@@ -820,6 +830,7 @@ isolate 의 `Flutter.FrameworkInitialization`·`Emu.Route` 가 그 뒤에 왔다
 | 스냅샷 동작, `push` 뒤 `Router` 값은 앞 위치 | §6.2 1층, §12, PR 5 |
 | 평가식 리스너 동작 | §6.2 1층, PR 5 |
 | 평가식은 한 줄 | PR 5 |
+| 평가식이 빌드 도중에 끼어들어 순회가 실패함(PR 5 실측) | §6.2 1층, PR 5 — `Timer.run` 뒤 `Emu.Snapshot` |
 | 경로별 지연 | §5 |
 
 결정(§11)을 뒤집는 결과는 없었다. 기본 꺼짐(Q9)도 그대로 둔다. 켜면 연결 하나가 늘고, 구독할 때 쌓인 기록을
