@@ -368,6 +368,36 @@ emu logs [opts]
 
 서버가 꺼져 있어도 `.emu/run.jsonl` 에서 오프라인으로 읽는다.
 
+### timeline — 로그와 요청을 한 목록으로
+
+```bash
+emu timeline [opts]
+  --since <seq>        이 seq 다음 것만
+  -n, --lines <N>      마지막 N개 (기본 200)
+  --kind <list>        log, request, route, action — 쉼표로 여럿 (기본: 전부)
+  -g, --grep <regex>   텍스트에 대소문자 무시 정규식
+  -f, --follow         실시간 스트림
+  --json               한 줄에 엔트리 하나(JSONL), `logs --json` 과 같다
+```
+
+앱 로그 줄과 목 서버(`mocks:`, [API 목업](#api-목업))를 지난 요청을 seq 순서 한 목록으로 본다. 한 줄은
+`seq 시각 레벨 [화면] 내용` 이다(화면을 모르면 뺀다).
+
+```bash
+emu timeline -n 3
+#     57 16:09:18.598 I  flutter: loading cart
+#     58 16:09:18.622 I  [mock] GET https://api.example.com/v1/cart → 200 (mock: empty) · 3ms
+#     59 16:09:18.640 I  flutter: cart shown
+```
+
+- `request` 엔트리는 요청이 끝날 때 생긴다. `--json` 의 `data.startSeq` 는 요청이 들어온 때의 seq 라, 요청이 나가
+  있는 동안 앱이 남긴 로그는 둘 사이에 있다. `data.hitId` 로는 남아 있는 동안 `/api/mock/hits/<id>` 를 본다.
+- seq 는 emu 에 *도착한* 순서다. 로그 줄과 요청은 경로가 달라 몇 ms 앞뒤가 바뀔 수 있으니, 정확한 인과가 아니라
+  대략의 순서로 읽는다.
+- `emu logs`·`emu assert`·`emu errors`·`/api/logs` 는 지금 그대로이고, 묻지 않으면 `log`·`request` 밖의 종류를 빼고
+  답한다(`/api/logs?kinds=all`).
+- 서버가 꺼져 있으면 `.emu/run.jsonl` 에서 오프라인으로 읽는다.
+
 ### errors — 구조화된 예외 배너
 
 ```bash

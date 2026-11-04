@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:emu/src/device_lease.dart';
 import 'package:emu/src/engine.dart';
@@ -359,6 +360,126 @@ void main() {
       final r = await _call(s, 'POST', '/api/tap');
       expect(r.status, 400);
       expect(r.body, {'ok': false, 'error': 'x and y are required integers'});
+    });
+  });
+
+  group('timeline', () {
+    /// One entry of each kind, the action right inside an exception banner.
+    void mixed(LogStore store) {
+      store.add('app line');
+      store.add('[mock] GET /a → 200', source: 'mock', kind: LogKind.request);
+      store.add('═══╡ EXCEPTION CAUGHT BY WIDGETS LIBRARY ╞═══════════════');
+      store.add('The following StateError was thrown building Pay:');
+      store.add('[action] tap --text "Login"', level: LogLevel.system, source: 'action', kind: LogKind.action);
+      store.add('[route] /pay', level: LogLevel.system, source: 'route', kind: LogKind.route);
+      store.add('════════════════════════════════════════════════════════');
+    }
+
+    /// The kinds of the entries [mixed] added, in order — the server may log
+    /// its own lines meanwhile.
+    List<String> kindsOf(Map<String, dynamic> body) => [
+          for (final e in (body['logs'] as List).cast<Map<String, dynamic>>().map(LogEntry.fromJson))
+            if (e.source != 'system') e.kindName
+        ];
+
+    test('/api/logs answers as before unless asked: no route or action entries', () async {
+      final s = await start();
+      final from = s.logStore.lastSeq;
+      mixed(s.logStore);
+      final plain = await _call(s, 'GET', '/api/logs?sinceSeq=$from');
+      expect(kindsOf(plain.body), ['log', 'request', 'log', 'log', 'log']);
+      expect(plain.body['lastSeq'], s.logStore.lastSeq);
+      // `emu assert --expect Login` reads this: the record of the tap is no match.
+      expect((await _call(s, 'GET', '/api/logs?sinceSeq=$from&grep=Login')).body['logs'], isEmpty);
+
+      final all = await _call(s, 'GET', '/api/logs?sinceSeq=$from&kinds=all');
+      expect(kindsOf(all.body), ['log', 'request', 'log', 'log', 'action', 'route', 'log']);
+      final some = await _call(s, 'GET', '/api/logs?sinceSeq=$from&kinds=route,action');
+      expect(kindsOf(some.body), ['action', 'route']);
+      final limited = await _call(s, 'GET', '/api/logs?sinceSeq=$from&kinds=route,action&limit=1');
+      expect(kindsOf(limited.body), ['route']);
+    });
+
+    test('/api/logs refuses an unknown kind', () async {
+      final s = await start();
+      final r = await _call(s, 'GET', '/api/logs?kinds=screens');
+      expect(r.status, 400);
+      expect(r.body['error'], contains('screens'));
+    });
+
+    test('/api/errors keeps route and action entries out of a banner', () async {
+      final s = await start();
+      mixed(s.logStore);
+      final banner = ((await _call(s, 'GET', '/api/errors')).body['errors'] as List).single as Map;
+      expect(banner['raw'], isNot(contains('[action]')));
+      expect(banner['raw'], isNot(contains('[route]')));
+      expect(banner['closed'], isTrue);
+    });
+
+    test('a new dashboard socket gets the last entries of every kind', () async {
+      final s = await start();
+      mixed(s.logStore);
+      final socket = await WebSocket.connect('ws://127.0.0.1:${s.port}/api/stream?token=${s.token}');
+      addTearDown(socket.close);
+      final kinds = <String>[];
+      final sub = socket.listen((m) {
+        final msg = jsonDecode(m as String) as Map<String, dynamic>;
+        if (msg['type'] == 'log') kinds.add(LogEntry.fromJson(msg['entry'] as Map<String, dynamic>).kindName);
+      });
+      addTearDown(sub.cancel);
+      await _until(() => kinds.length >= s.logStore.lastSeq);
+      expect(kinds, containsAll(['log', 'request', 'action', 'route']));
+    });
+
+    test('a mock request is a request entry with where it started', () async {
+      File('${project.path}/emu.yaml').writeAsStringSync('''
+mocks:
+  hosts: [127.0.0.1]
+  scenarios:
+    slow:
+      - match: { path: /a }
+        respond: { status: 201, body: ok, delay: 300 }
+''');
+      final random = Random();
+      var s = await start(opts: LaunchOptions(mockPort: 20000 + random.nextInt(20000)));
+      for (var i = 0; s.mock == null && i < 10; i++) {
+        await s.dispose();
+        s = await start(opts: LaunchOptions(mockPort: 20000 + random.nextInt(20000)));
+      }
+      final mock = s.mock!..active = 'slow';
+      s.logStore
+        ..currentRoute = '/before'
+        ..currentRouteName = 'before';
+      final startSeq = s.logStore.lastSeq;
+
+      final client = HttpClient();
+      addTearDown(client.close);
+      final req = await client.open('GET', '127.0.0.1', mock.port! + 1, '/a')
+        ..headers.host = '127.0.0.1'
+        ..headers.port = 9;
+      final response = req.close();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      s.logStore
+        ..currentRoute = '/after'
+        ..currentRouteName = 'after';
+      final during = s.logStore.add('logged while the request was out');
+      expect((await response).statusCode, 201);
+      await _until(() => s.logStore.query(kinds: {LogKind.request}).isNotEmpty);
+
+      final e = s.logStore.query(kinds: {LogKind.request}).single;
+      expect(e.text, startsWith('[mock] GET http://127.0.0.1:9/a → 201'));
+      expect((e.source, e.route, e.routeName), ('mock', '/before', 'before'));
+      expect(e.data, {
+        'hitId': 1,
+        'method': 'GET',
+        'url': 'http://127.0.0.1:9/a',
+        'status': 201,
+        'mocked': 'slow',
+        'ms': e.data!['ms'],
+        'startSeq': startSeq,
+      });
+      expect(e.seq, greaterThan(during.seq), reason: 'the entry comes when the request is done');
+      expect(during.route, '/after');
     });
   });
 

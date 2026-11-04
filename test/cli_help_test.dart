@@ -20,7 +20,7 @@ Future<(int, String)> _run(List<String> argv) async {
 void main() {
   // Every ArgParser-backed subcommand must accept --help without throwing,
   // print usage, and exit 0 — see https://github.com/HuanSuh/emu/issues/2.
-  const subcommands = ['up', 'assert', 'probe', 'inspect', 'logs', 'tap', 'swipe', 'settle', 'diff', 'run', 'block'];
+  const subcommands = ['up', 'assert', 'probe', 'inspect', 'logs', 'timeline', 'tap', 'swipe', 'settle', 'diff', 'run', 'block'];
 
   group('--help never crashes and exits 0', () {
     for (final cmd in subcommands) {

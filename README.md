@@ -392,6 +392,41 @@ emu logs [opts]
 
 Reads offline from `.emu/run.jsonl` even when the server is down.
 
+### timeline — logs and requests in one list
+
+```bash
+emu timeline [opts]
+  --since <seq>        only entries after this seq
+  -n, --lines <N>      last N entries (default 200)
+  --kind <list>        log, request, route, action — comma list (default: all)
+  -g, --grep <regex>   case-insensitive regex over the text
+  -f, --follow         live stream
+  --json               one entry per line (JSONL), like `logs --json`
+```
+
+App log lines and the requests that went through the mock server (`mocks:`, see
+[API mocks](#api-mocks)) in one list, in seq order. Each line is `seq time level
+[screen] text` (the screen is left out while unknown):
+
+```bash
+emu timeline -n 3
+#     57 16:09:18.598 I  flutter: loading cart
+#     58 16:09:18.622 I  [mock] GET https://api.example.com/v1/cart → 200 (mock: empty) · 3ms
+#     59 16:09:18.640 I  flutter: cart shown
+```
+
+- A `request` entry is written when the request is done. Its `data.startSeq`
+  (in `--json`) is the seq when the request came in, so what the app logged
+  while it was out lies between the two; `data.hitId` is the request in
+  `/api/mock/hits/<id>` while it is kept.
+- seq is the order things *reached* emu. Log lines and requests travel
+  different paths a few ms apart: read it as the rough order, not exact cause
+  and effect.
+- `emu logs`, `emu assert`, `emu errors` and `/api/logs` stay as they were and
+  leave out kinds other than `log` and `request` unless asked
+  (`/api/logs?kinds=all`).
+- Reads offline from `.emu/run.jsonl` when the server is down.
+
 ### errors — structured exception banners
 
 ```bash
