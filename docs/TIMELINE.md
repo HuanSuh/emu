@@ -1,6 +1,6 @@
 # 타임라인 설계 메모
 
-> 상태: 설계 확정(구현 전). Q4·Q5·Q9·Q11 은 메인테이너가 결정했고(2026-11-03), 나머지 질문은 이슈 리포터 리뷰(2026-11-04, §14)에서 모두 정해 열린 질문이 없다(§11). PR 0 실측 결과로 PR 3·5 의 세부를 고칠 수 있다. 이슈 [#89](https://github.com/HuanSuh/emu/issues/89).
+> 상태: 설계 확정(구현 전). Q4·Q5·Q9·Q11 은 메인테이너가 결정했고(2026-11-03), 나머지 질문은 이슈 리포터 리뷰(2026-11-04, §14)에서 모두 정해 열린 질문이 없다(§11). PR 0 실측(2026-11-04, §15)으로 PR 3 의 쌓인 기록 처리, `Emu.Route` 를 보낼 때, PR 5 의 범위를 정했다. 이슈 [#89](https://github.com/HuanSuh/emu/issues/89).
 > 이 문서는 합의용이다. 여기 적힌 명령·API는 아직 없다.
 
 ## 1. 결론 요약
@@ -11,12 +11,16 @@
   `emu assert --log` 가 `emu tap --text Login` 의 기록에 걸리는 오탐을 막기 위해서다.
 - **스파이크 결과: `Flutter.Navigation` 만으로는 부족하다.** 이벤트는 있지만 선언형 Navigator
   (`go_router` 의 `go`/`push`)에서는 나가지 않고, pop 에서는 *닫힌* 라우트를 알려 준다(§3).
-- **그래서 라우트 감지는 두 층.** 앱 코드 변경 없는 층(`Flutter.Navigation` + 공개 API 스냅샷)과,
+- **그래서 라우트 감지는 두 층.** 앱 코드 변경 없는 층(`Flutter.Navigation`·라우터 리스너 + 평가식 스냅샷)과,
   앱이 `dart:developer` 로 직접 보내는 정확한 층(`Emu.Route` 이벤트)을 함께 둔다(§6).
   `Emu.Route` 는 emu 패키지 의존 없이 쓰는 **이벤트 계약**으로 문서화한다(§6.4).
 - **DDS 가 지난 이벤트를 다시 보낸다(§3.4).** `flutter run` 은 DDS 를 거치고, DDS 는 `Extension` 이벤트를
-  쌓아 두었다가 새로 구독한 클라이언트에 한꺼번에 보낸다. 첫 화면을 되살릴 수 있지만, 구독 직후 받은 것을
-  지금 일어난 일로 기록하면 순서가 틀어진다.
+  쌓아 두었다가 새로 구독한 클라이언트에 한꺼번에 보낸다. 구독 직후 받은 것을 지금 일어난 일로 기록하면
+  순서가 틀어진다. 다만 콜드 스타트 때 앱이 처음 보낸 이벤트는 DDS 가 붙기 전이라 남지 않는다(실측). 그래서
+  계약에 "리스너가 생기면 한 번 더 보낸다" 를 더했다(§6.4).
+- **PR 0 실측을 반영했다(§15).** 장기 연결은 emu 의 짧은 연결·hot reload·restart·브레이크포인트와 함께 써도
+  문제가 없었다. 평가식으로 `RouteInformationProvider` 에 리스너를 달면 앱 코드 없이 `go_router` 의
+  `go`·`push`·pop 위치를 받을 수 있어, 1층(PR 5)을 이 리스너와 스냅샷으로 짠다(§6.2).
 - **이슈 리포터 피드백을 반영했다(§13).** `go_router` 앱, emu 패키지 의존 불가, 탭이 라우트가 아님,
   실제 경로와 라우트 이름을 함께 원함. 그래서 앱이 보내는 층을 먼저 구현한다(§10).
 - **이슈 리포터 리뷰를 반영했다(§14).** 조작 기록 위치, 대시보드가 바뀌기 전 단계의 처리, DDS 기록,
@@ -92,7 +96,8 @@
 3. **어느 Navigator 인지 없다.** 중첩 Navigator 의 이벤트가 구분 없이 섞인다.
 4. **첫 화면 이벤트가 없다.** 초기 라우트는 이 6곳을 지나지 않는다. 구독 전 이벤트는 VM 에서는
    사라지지만, DDS 를 거치면 DDS 가 붙은 뒤의 것은 구독할 때 다시 온다(§3.4).
-   hot restart 뒤에도 다음 전환까지 현재 화면을 모른다.
+   hot restart 뒤에도 다음 전환까지 현재 화면을 모른다. 1층은 구독할 때와 isolate 가 바뀔 때 스냅샷을 읽어
+   이를 메운다(§6.2).
 
 다이얼로그·바텀시트도 라우트라서 이벤트가 나간다. 이름 없는 `MaterialPageRoute` 는
 `settings.name` 이 null 이고 `description` 은 타입 이름뿐이라 화면을 구분하지 못한다.
@@ -141,8 +146,9 @@
 
 타임라인에 주는 영향:
 
-- **좋은 점**: emu 가 늦게 구독해도, DDS 가 붙은 뒤 앱이 보낸 첫 `Emu.Route` 를 받을 수 있다. §3.2 의
-  4번(첫 화면)은 2층에서는 크게 줄어든다. DDS 가 붙기 전에 보낸 것은 여전히 사라진다.
+- **좋은 점**: emu 가 늦게 구독해도, DDS 가 붙은 뒤 앱이 보낸 `Emu.Route` 는 받는다. hot restart 뒤의 첫
+  화면이 그렇다. 콜드 스타트 때 `main()` 직후 보낸 것은 DDS 가 붙기 전이라 남지 않는다. 실측에서 DDS 의 첫 기록은
+  `main()` 보다 약 270ms 늦었다(§15.1). 앱이 리스너가 생긴 뒤 한 번 더 보내면 남는다(§6.4).
 - **구독 직후 받은 것은 지난 일이다.** 도착한 대로 지금 시각의 엔트리로 만들면, 그 사이 먼저 쌓인 로그보다
   뒤에 한꺼번에 찍혀 순서가 틀어진다.
 - **다시 구독하면 또 온다.** 같은 DDS 에 다시 붙을 때마다(연결이 끊겨 다시 붙는 경우 등) 같은 이벤트가 온다.
@@ -151,8 +157,9 @@
 - **얼마나 남는지는 일정하지 않다.** 애니메이션이 도는 화면이면 `Flutter.Frame` 만으로 1만 개가 몇 분 안에 찬다.
 
 처리(PR 3): 구독 직후 받은 쌓인 이벤트로는 엔트리를 만들지 않고, 지금 isolate 의 마지막 `Emu.Route` 만
-`currentRoute` 로 쓴다. 쌓인 것과 실시간을 가르는 기준(구독 응답 전에 온 것인지, 이벤트 timestamp)은
-PR 0 에서 확인한다.
+`currentRoute` 로 쓴다. 쌓인 것과 실시간은 **`streamListen` 응답보다 먼저 왔는지**로 가른다. DDS 는 구독
+요청을 처리하면서 구독자를 더하고 기록을 다 보낸 뒤에 응답한다(`stream_manager.dart:249-251`). 그 사이에
+await 가 없어 실시간 이벤트가 끼어들지 않는다. 실측도 그랬다(§15.1). 이벤트 timestamp 는 기기 시계라 쓰지 않는다.
 
 ## 4. 데이터 모델
 
@@ -222,8 +229,11 @@ final Map<String, dynamic>? data;  // kind 별 구조화 데이터
 증가하는 값으로 남겨 둔다. 화면 수집이 꺼져 있으면 시작 라우트도 null 이고, `startSeq` 는 그대로 채운다.
 
 **순서의 한계.** seq 는 emu 서버에 도착한 순서이고 `ts` 도 도착 시각이다. 앱 로그는 데몬·logcat 을
-거치고, 목 요청은 HTTP 로, 라우트는 VM Service 로 온다. 경로가 달라 수~수십 ms 앞뒤가 바뀔 수 있다
-(수치는 추정이며 PR 0 에서 잰다). 문서에 "대략의 순서이며 정확한 인과가 아니다" 라고 밝힌다.
+거치고, 목 요청은 HTTP 로, 라우트는 VM Service 로 온다. 경로마다 늦는 정도가 달라 앞뒤가 바뀐다. iOS
+시뮬레이터 실측(§15.6)에서 앱이 보낸 뒤 도착까지 로그 줄은 중앙값 2.9ms(최대 4.5ms), 확장 이벤트는 0.8ms,
+목 요청은 1.1ms(새 연결인 첫 요청만 21ms)였다. 앱이 로그 줄과 요청을 바로 이어 보내면 20번 중 19번은 요청이
+먼저 찍혔다. Android 는 logcat 을 거쳐 로그가 더 늦을 수 있다(재지 않음). 문서에 "대략의 순서이며 정확한
+인과가 아니다. 몇 ms 안의 앞뒤는 믿지 말라" 고 밝힌다.
 VM 이벤트의 기기 측 타임스탬프로 재정렬하지는 않는다. 기기·호스트 시계가 다르고 다른 소스에는
 같은 시각이 없다.
 
@@ -235,17 +245,17 @@ VM 이벤트의 기기 측 타임스탬프로 재정렬하지는 않는다. 기�
 
 | | (a) `Flutter.Navigation` | (b) `NavigatorObserver` | (c) 로그 줄 규약 | (d) private eval | (e) 공개 API eval 스냅샷 | (f) `Emu.Route` 이벤트 |
 |---|---|---|---|---|---|---|
-| 방식 | `Extension` 스트림 구독 | `emu_hook` observer 를 앱에 등록 | `[emu:route] /x` 줄 인식 | `_history` 등 접근 | `rootElement` 를 걸으며 `ModalRoute.of`·`isCurrent`, `Router.maybeOf` 읽기 | 앱이 `dart:developer` 의 `postEvent('Emu.Route', …)` 를 직접 호출 |
+| 방식 | `Extension` 스트림 구독 | `emu_hook` observer 를 앱에 등록 | `[emu:route] /x` 줄 인식 | `_history` 등 접근 | `rootElement` 를 걸으며 라우트마다 `isCurrent`, `Router` 의 위치 읽기 | 앱이 `dart:developer` 의 `postEvent('Emu.Route', …)` 를 직접 호출 |
 | 앱 코드 변경 | 없음 | 있음(Navigator 마다, emu 패키지 의존) | 있음 | 없음 | 없음 | 있음(한 곳, emu 패키지 의존 없음) |
 | Navigator 1.0 | 시점 정확, 값은 pop 에서 부정확 | 정확 | 앱 구현 나름 | 정확 | 정확(추정) | 앱 구현 나름 |
 | go_router `go`/`push` | **놓침** | 잡음(이름은 패턴) | 잡음 | 잡음 | 호출될 때만 | 잡음(실제 경로 + 이름) |
 | 탭 전환(라우트 아닌 `IndexedStack` 포함) | **놓침** | 놓침 | 앱이 찍으면 잡음 | 놓침 | 놓침 | 앱이 보내면 잡음 |
 | 스택 전체 | 불가 | 앱 쪽 추적 시 가능 | 불가 | 가능 | 불가 | 불가 |
 | 비용 | 낮음(장기 연결 1개) | `emu_hook` 에 Flutter 의존 추가 | 낮음 | 높음(버전마다 깨짐) | 호출마다 트리 순회 | 낮음(장기 연결 1개) |
-| 버전 취약성 | 낮음(비공식 이벤트) | 낮음 | 없음 | **높음** | 낮음(공개 API) | 없음(emu 소유 계약) |
+| 버전 취약성 | 낮음(비공식 이벤트) | 낮음 | 없음 | **높음** | 중간(비공개 위젯 이름 하나, §15.4) | 없음(emu 소유 계약) |
 | release 빌드 | 불가 | VM 연결 없이는 전달 불가 | 가능 | 불가 | 불가 | 불가 |
 | 다른 로그와의 순서 | 경로가 다름 | 경로가 다름 | 같은 경로 | 경로가 다름 | 경로가 다름 | 경로가 다름 |
-| 상태 | 소스로 확인 | 소스로 확인 | 자명 | 기존 보류 사유 | **미검증** | 소스로 확인 |
+| 상태 | 실측(§15.3) | 소스로 확인 | 자명 | 기존 보류 사유 | 실측(§15.4) | 실측(§15.3) |
 
 release 는 VM Service 가 없어 (c) 외에는 쓸 수 없다. emu 의 조작·조회도 VM Service 에 기대므로 큰 손실은 아니다.
 
@@ -253,10 +263,25 @@ release 는 VM Service 가 없어 (c) 외에는 쓸 수 없다. emu 의 조작·
 
 두 층 모두 장기 VM Service 연결 위에서 동작하므로 **`timeline.routes` 가 켜져 있을 때만** 쓰인다(§6.5).
 
-**1층 — 코드 변경 없음: (a)를 트리거로, (e)를 값으로.** `Flutter.Navigation` 이 오면 짧게 디바운스한 뒤
-(e) 스냅샷으로 현재 화면을 읽어 `kind: route` 엔트리를 남긴다. 이벤트의 `settings.name` 은 스냅샷이
-실패할 때의 기록용 힌트로만 쓴다. pop 의 닫힌 라우트를 현재 화면으로 착각하지 않기 위해서다.
-스냅샷이 실패하면 `currentRoute` 는 null 이다. 같은 값이면 엔트리를 만들지 않는다.
+**1층 — 코드 변경 없음: (a)와 라우터 리스너를 트리거로, (e)를 값으로(PR 0 으로 정함, §15).**
+
+- **트리거**: `Flutter.Navigation` 과, emu 가 평가식으로 단 라우터 리스너(아래)가 보내는 emu 전용 이벤트
+  `Emu.RouterInformation`. 오면 150ms 디바운스한 뒤 (e) 스냅샷을 읽어 `kind: route` 엔트리를 남긴다.
+  구독했을 때와 isolate 가 바뀌었을 때도 한 번 읽는다.
+- **값**: 스냅샷은 지금 보이는 라우트 사슬(바깥 Navigator → 안쪽)을 준다(§15.4). `route` 는 라우터 리스너가
+  마지막으로 보낸 위치다. 리스너가 아직 아무것도 보내지 않았으면 스냅샷이 읽은 `Router` 의 위치, `Router` 가 없는
+  앱(Navigator 1.0)이면 맨 위 라우트의 `settings.name`, 그것도 없으면 라우트 타입 이름이다. 맨 위 라우트가
+  라우터가 띄운 페이지가 아니면(다이얼로그·시트·`Navigator.push`, `settings` 가 `Page` 가 아님) 그 이름이나
+  타입을 `위치 · detail` 의 `detail` 로 붙인다. `routeName` 은 라우터가 띄운 페이지 중 맨 안쪽 것의
+  `settings.name`(`go_router` 는 `name ?? path`)이고, `Router` 가 없으면 맨 위 라우트의 `settings.name` 이다.
+- 이벤트의 `settings.name` 은 쓰지 않는다. pop 의 닫힌 라우트를 현재 화면으로 착각하지 않기 위해서다.
+  스냅샷이 실패하면 `currentRoute` 는 null 이다. 같은 값이면 엔트리를 만들지 않는다.
+- **라우터 리스너**: `Router` 를 찾아 `routeInformationProvider` 에 리스너를 달고, 값이 바뀔 때마다
+  `Emu.RouterInformation`(`{location}`)을 보내게 하는 평가식이다. `go_router` 는 `push` 한 위치를 리스너에 알린 뒤
+  값을 알림 없이 `push` 앞 위치로 되돌린다(`optionURLReflectsImperativeAPIs` 기본 false). 그래서 스냅샷이 나중에
+  읽는 값으로는 `push` 화면을 못 맞히고, 알림 순간의 값을 받아야 한다(§15.5). 리스너는 hot reload 뒤에도 살아
+  있고, hot restart 로 isolate 가 바뀌면 없어지므로 다시 단다. 같은 isolate 에 두 번 달지 않도록 같은 평가식이
+  서비스 확장 `ext.emu.timelineRouter` 를 등록하고, 이미 등록돼 있으면(`registerExtension` 이 던짐) 달지 않는다.
 
 **2층 — 앱이 직접 보냄: (f).** `go_router` 앱이나 라우트가 아닌 탭처럼 1층이 놓치는 경우를 위한
 경로다. 앱은 emu 패키지 없이 `dart:developer` 의 `postEvent` 로 §6.4 계약의 이벤트를 보낸다. 전달
@@ -277,10 +302,8 @@ release 는 VM Service 가 없어 (c) 외에는 쓸 수 없다. emu 의 조작·
 - observer 는 Navigator 마다 등록해야 하고, 라우트가 아닌 탭 전환은 원리상 못 잡는다.
 - `go_router` 의 페이지 이름은 패턴이지만 (f) 는 실제 경로와 이름을 함께 준다.
 
-**미검증 후보.** 평가식으로 `Router` 의 `routeInformationProvider` 에 리스너를 달아 앱 코드 없이 (f) 를
-흉내 낼 수 있을지도 모른다. `binding.dart` 스코프에 `developer` import 가 있어 조건은 맞지만, 평가식
-클로저가 살아남는지, hot restart 뒤 다시 달 수 있는지는 실행해 봐야 안다. 된다 해도 라우트가 아닌 탭은
-못 잡으므로 (f) 를 대신하지 못한다. 우선순위를 낮춰 PR 0 에서 여유가 있으면 확인한다.
+**평가식 리스너(PR 0 에서 확인).** 1층의 라우터 리스너가 이 후보다. 평가식 클로저는 살아남고, hot restart
+뒤에는 다시 달면 된다(§15.5). 그래도 라우트가 아닌 탭과 `detail` 은 못 잡으므로 (f) 를 대신하지 못한다.
 
 ### 6.3 장기 VM Service 연결
 
@@ -291,14 +314,17 @@ release 는 VM Service 가 없어 (c) 외에는 쓸 수 없다. emu 의 조작·
   멈추지 말라는 것이지 연결 수명 제약이 아니다). `vm_service` 는 이미 의존성이라 I3 도 그대로다.
 - **수명**: 옵션이 켜져 있으면 `engine.statusStream` 의 `vmServiceUri` 변화를 따른다. URI 가 바뀌면(reattach) 다시 붙고,
   사라지면 닫는다.
-- **구독 직후**: DDS 가 쌓아 둔 이벤트가 먼저 온다(§3.4). 엔트리로 만들지 않고 지금 isolate 의 마지막
-  `Emu.Route` 만 `currentRoute` 로 쓴다. 다시 붙을 때도 같다.
+- **구독 직후**: DDS 가 쌓아 둔 이벤트가 `streamListen` 응답보다 먼저 온다(§3.4). 엔트리로 만들지 않고 지금
+  isolate 의 마지막 `Emu.Route` 만 `currentRoute` 로 쓴다. 다시 붙을 때도 같다.
+- **isolate**: `Isolate` 스트림도 구독한다. hot restart 는 `IsolateExit`(옛) → `IsolateStart`·`IsolateRunnable`(새)
+  순서로 오고, 새 isolate 의 이벤트가 그 뒤에 온다(§15.2).
 - **실패**: 타임라인은 부가 기능이다. 연결 실패는 경고 한 줄로 끝내고 세션 동작에 영향을 주지 않는다.
 - **필터**: 같은 스트림으로 `Flutter.Frame` 같은 다른 이벤트도 오므로 `extensionKind` 로 거른다.
 - **hot restart/cold**: `currentRoute` 를 null 로 비운다.
 - **공존**: 앱 하나에 VM 클라이언트 여럿이 스트림을 구독하는 것은 가능하다(DevTools 가 이렇게 쓴다).
-  다만 emu 의 짧은 연결·DDS 와 함께 쓸 때를 PR 0 에서 실측한다. 기본 꺼짐이라 문제가 나와도 옵션을 켠
-  세션에만 영향이 간다.
+  PR 0 에서 장기 연결을 둔 채 `tap`·`find`·`eval`·`settle`·`probe`(브레이크포인트)·hot reload·hot restart 와
+  두 번째 구독자를 함께 써 봤고, 끊기거나 실패한 것이 없었다(§15.2). 콜드 재시작은 DDS 가 바뀌어 연결이
+  끊기므로 새 `vmServiceUri` 로 다시 붙는다(위 수명).
 - **상태**: `off`(옵션 꺼짐) / `connecting` / `on` / `failed` 네 가지를 서버가 들고 있다가 §8.1 처럼 응답에 싣는다.
 
 ### 6.4 `Emu.Route` 이벤트 계약 (결정, Q13)
@@ -315,8 +341,11 @@ README 두 벌에도 같은 내용을 싣는다. 이벤트 이름과 필드 이�
 - **보내기 시작하면 다 보낸다**: emu 는 한 isolate 에서 `Emu.Route` 를 한 번이라도 받으면 그 isolate 동안
   자동 감지(1층)를 끈다(Q11). 탭만 보내면 라우트 전환이 기록되지 않으므로, 보내는 앱은 라우트 이동·탭·모달을
   모두 보낸다.
-- **보낼 때**: 앱 시작 직후 한 번, 그리고 화면·탭이 바뀔 때마다. 시작 때 보내야 첫 화면과 hot restart
-  직후의 화면이 비지 않는다. emu 가 늦게 구독해도 DDS 가 쌓아 둔 것으로 받는다(§3.4).
+- **보낼 때**: 앱 시작 직후 한 번, 그리고 화면·탭이 바뀔 때마다. 시작 때 보내야 hot restart 직후의 화면이
+  비지 않는다. emu 가 늦게 구독해도 DDS 가 쌓아 둔 것으로 받는다(§3.4).
+- **콜드 스타트**: `main()` 직후는 DDS 가 붙기 전이라 그때 보낸 것은 남지 않는다(§15.1). 시작할 때
+  `developer.extensionStreamHasListener` 가 거짓이면 참이 될 때 한 번 더 보낸다. 참이 되는 것은 DDS 가 붙을 때이고,
+  그 뒤 보낸 것은 DDS 가 쌓아 두므로 emu 가 늦게 붙어도 받는다. 아래 예시처럼 50ms 마다 확인하면 된다.
 
 | 필드 | 타입 | 필수 | 뜻 | 예 |
 |---|---|---|---|---|
@@ -334,6 +363,7 @@ README 두 벌에도 같은 내용을 싣는다. 이벤트 이름과 필드 이�
 앱 쪽 예시(`go_router` 16 기준, emu 패키지 없음):
 
 ```dart
+import 'dart:async';
 import 'dart:developer' as developer;
 import 'package:flutter/foundation.dart';
 
@@ -357,6 +387,14 @@ if (kDebugMode) {
   // 경로가 이미 정해진 뒤에 리스너를 달았을 때만 한 번 보낸다.
   // 정해지기 전에 router.state 를 읽으면 StateError 다.
   if (router.routerDelegate.currentConfiguration.isNotEmpty) reportCurrent();
+  // 콜드 스타트: 여기까지 보낸 것은 DDS 가 붙기 전이다. 리스너가 생기면 한 번 더 보낸다.
+  if (!developer.extensionStreamHasListener) {
+    Timer.periodic(const Duration(milliseconds: 50), (t) {
+      if (!developer.extensionStreamHasListener) return;
+      t.cancel();
+      if (router.routerDelegate.currentConfiguration.isNotEmpty) reportCurrent();
+    });
+  }
 }
 
 // 라우트가 아닌 탭: 탭 인덱스가 바뀌는 곳에서
@@ -372,6 +410,7 @@ reportEmuRoute(router.state.uri.toString(), name: router.state.name, detail: 'fe
 `RouteMatchList.last` 가 `StateError` 를 던진다(`match.dart:785`). 라우터를 만드는 위젯의 `initState` 에서
 리스너를 달고 바로 `reportCurrent()` 를 부르면 앱이 시작부터 깨진다. `reportCurrent` 는 `kDebugMode` 를 확인하기
 전에 `router.state` 를 읽으므로 release 도 같다. 그래서 리스너 등록도 `kDebugMode` 안에 둔다.
+위 예시는 PR 0 의 예제 앱에서 그대로 돌려 확인했다(§15.1, §15.3).
 
 `Navigator.push` 로 띄우는 모달까지 남기려면, 모달을 띄우는 Navigator 마다 앱 자체 `NavigatorObserver` 를
 단다. `didPush` 에서는 모달을 `detail` 에 담아 보내고, `didPop` 에서는 아래 화면을 `detail` 까지 다시 보낸다.
@@ -520,15 +559,17 @@ Logs 탭을 확장한다. 새 탭을 만들지 않는다(Q6). 같은 스트림�
 (Linux CI 포트 테스트 간섭), 기존 `FakeEngine` 과 순수 함수로 검증한다. 이벤트 소스는 스트림 seam 뒤에 둬서
 서버 테스트에 실제 `VmService` 가 필요 없게 한다. 대시보드(PR 4)를 1층(PR 5)보다 먼저 한다(Q16).
 
-**PR 0 — 라이브 스파이크(문서만).** 예제 앱에서 옵션을 켠 상태로 잰다. 결과를 이 문서에 반영한다.
+**PR 0 — 라이브 스파이크(문서만, 2026-11-04 완료).** 예제 앱에 장기 연결을 붙여 쟀다. 결과는 §15 이고,
+아래 항목마다 결론을 이 문서에 반영했다.
 
 - 장기 연결과 DDS·DevTools·emu 의 짧은 연결의 공존 → **PR 3 머지 전** 확인. 기본 꺼짐이라 PR 3 을 막지는
-  않지만, 켠 사용자가 처음부터 깨지지 않게 하려는 것이다.
-- §6.2 의 스냅샷 평가식 → PR 5 의 범위를 정한다.
-- 경로별 순서 편차(§5) → 문서의 "대략의 순서" 설명에 수치를 넣는다.
+  않지만, 켠 사용자가 처음부터 깨지지 않게 하려는 것이다. → 문제없음(§6.3, §15.2). DevTools 는 브라우저로
+  열지 않고 두 번째 구독자로 대신했다.
+- §6.2 의 스냅샷 평가식 → PR 5 의 범위를 정한다. → 동작한다. PR 5 범위를 정했다(§6.2, §15.4).
+- 경로별 순서 편차(§5) → 문서의 "대략의 순서" 설명에 수치를 넣는다. → §5, §15.6.
 - DDS 가 다시 보내는 기록(§3.4): 구독 직후 몇 개가 오는지, 첫 `Emu.Route` 가 남는지, 쌓인 것과 실시간을
-  가르는 기준 → PR 3 의 처리를 정한다.
-- 평가식 리스너 후보는 여유가 있으면 본다.
+  가르는 기준 → PR 3 의 처리를 정한다. → §3.4, §6.4, §15.1.
+- 평가식 리스너 후보는 여유가 있으면 본다. → 동작한다. 1층에 넣는다(§6.2, §15.5).
 - 기본값(Q9)을 나중에 다시 논의하게 되면 이 실측이 근거 자료가 된다.
 
 PR 1·2 는 옵션과 무관해 PR 0 을 기다리지 않는다.
@@ -557,14 +598,16 @@ PR 1·2 는 옵션과 무관해 PR 0 을 기다리지 않는다.
 - `Emu.Route` 파서(§6.4 계약), `currentRoute`·`currentRouteName` 찍기, 같은 값 합치기, 재시작 시 초기화,
   `request` 의 시작 라우트.
 - `emu timeline --route`, `/api/logs?route=`(Q15).
-- 구독 직후 DDS 가 다시 보내는 이벤트 처리(§3.4). 대시보드 최소 처리에 route 를 더한다(§8.2).
+- 구독 직후 DDS 가 다시 보내는 이벤트 처리(§3.4, `streamListen` 응답 전에 온 것), `Isolate` 스트림으로 isolate
+  교체 감지(§6.3). 대시보드 최소 처리에 route 를 더한다(§8.2).
 - 테스트: **옵션 꺼짐이면 VM 연결을 열지 않음**(가짜 연결 팩토리 호출 0회)과 응답이 `routes: "off"`,
   켜짐이면 연결과 상태 전이, 프로필 덮어쓰기, 꺼짐일 때 `emu timeline` 의 안내가 텍스트는 stdout 끝·`--json` 은
   stderr 로만 나감, 계약 표(필수 필드 누락·타입 오류·빈 값·모르는 필드·1KB 초과·`detail` 합성), 가짜
   스트림으로 찍기, URI 변경 시 재구독, 연결 실패가 세션에 영향 없음, 경고는 세션당 한 번,
   쌓인 이벤트로는 엔트리를 만들지 않고 마지막 값만 씀, 지난 isolate 의 `Emu.Route` 로 1층을 끄지 않음,
   `routeName` 찍기와 null 생략, `--route` 필터와 `limit` 순서.
-- 문서: README 두 벌에 옵션·계약·`go_router` 예시, SKILL.md(에이전트가 화면이 비었을 때 옵션을 확인하도록),
+- 문서: README 두 벌에 옵션·계약·`go_router` 예시(콜드 스타트 때 다시 보내기 포함), SKILL.md(에이전트가 화면이
+  비었을 때 옵션을 확인하도록),
   `DESIGN.md` 변경 이력.
   `emu_hook` 헬퍼는 만들지 않는다(Q12).
 
@@ -573,13 +616,17 @@ PR 1·2 는 옵션과 무관해 PR 0 을 기다리지 않는다.
 - 종류 칩, route 열(툴팁에 `routeName`), 구분선, 상세 연결, 수집 꺼짐·실패 안내(§6.5).
 - 테스트: `web_logs_test`/`web_render_test` 확장, `bundle_web` 재생성.
 
-**PR 5 — 1층(`Flutter.Navigation` + 스냅샷).** PR 0 결과에 따라 범위를 정한다.
+**PR 5 — 1층(`Flutter.Navigation`·라우터 리스너 + 스냅샷).** 범위는 PR 0 결과로 정했다(§6.2, §15).
 
-- `Flutter.Navigation` 파서, 디바운스 뒤 스냅샷, 두 층의 관계(§6.2).
+- `Flutter.Navigation`·`Emu.RouterInformation` 을 트리거로 150ms 디바운스한 뒤 스냅샷. 구독했을 때와 isolate 가
+  바뀌었을 때도 스냅샷.
+- 라우터 리스너 평가식(isolate 마다 한 번, `ext.emu.timelineRouter` 로 중복 방지)과 스냅샷 평가식. 둘 다 한 줄로
+  만든다. 여러 줄이면 식 컴파일이 실패한다(§15.4).
+- `route`·`routeName`·`detail` 규칙(§6.2), 두 층의 관계(Q11).
 - 같은 `timeline.routes` 옵션 아래에서만 동작한다. 별도 옵션을 두지 않는다.
-- `route`·`routeName` 에 무엇을 찍을지는 PR 0 의 스냅샷 결과로 정한다.
-- 테스트: 파서 표(push/pop/null route/name null/이상한 payload), `Emu.Route` 를 받은 isolate 에서 1층 무시,
-  hot restart 뒤 1층 재개, 평가식 빌더의 문자열 테스트.
+- 테스트: 스냅샷 결과 해석 표(`Router` 있음·없음, 셸 안, 다이얼로그·시트·`Navigator.push`, 이름 없음, 빈 사슬,
+  이상한 응답), `Emu.Route` 를 받은 isolate 에서 1층 무시, hot restart 뒤 1층 재개(리스너 다시 달기), 디바운스로
+  합치기, 평가식 빌더의 문자열 테스트(한 줄).
 
 ## 11. 결정
 
@@ -626,9 +673,10 @@ Navigator 내부에 기대야 한다" 이다.
 **타임라인은 그 문제를 만나지 않는다.** 필요한 것은 스택이 아니라 "지금 화면 이름 하나" 다. 그래서 (d)
 private eval 을 쓰지 않고 진행할 수 있고, 위 보류 결정을 뒤집을 필요도 없다.
 
-**새로 알게 된 것.** (e) 가 PR 0 에서 검증되면 현재 화면 하나는 공개 API 로 얻을 수 있다. 그때
-`emu routes` 를 "전체 스택" 이 아니라 "현재 화면" 으로 줄여 다시 볼 여지가 있고, 재검토 조건으로
-남겨 둔다. `DESIGN.md` 의 변경 이력은 구현 시점(PR 3)에 갱신한다.
+**새로 알게 된 것.** PR 0 에서 (e) 가 동작해, 현재 화면(지금 보이는 라우트 사슬) 하나는 평가식으로 얻을 수
+있다(§15.4). 다만 부작용 없이 읽으려면 `_ModalScope` 라는 비공개 위젯의 이름에 기대야 하고, 공개 API
+(`ModalRoute.of`)만 쓰면 읽은 요소에 의존성이 등록된다. `emu routes` 를 "전체 스택" 이 아니라 "현재 화면" 으로
+줄여 다시 볼 여지가 있고, 재검토 조건으로 남겨 둔다. `DESIGN.md` 의 변경 이력은 구현 시점(PR 3)에 갱신한다.
 
 ## 13. 이슈 리포터 피드백 (2026-11-02)
 
@@ -666,3 +714,113 @@ private eval 을 쓰지 않고 진행할 수 있고, 위 보류 결정을 뒤집
 `run.jsonl` 을 지남, `LogEntry.fromJson` 이 모르는 키를 무시함.
 
 PR 리뷰 때 정하기로 했던 Q6·Q7·Q10·Q12·Q13·Q14 와 이 리뷰에서 나온 Q15·Q16 은 모두 이 리뷰에서 정했다(§11.2).
+
+## 15. PR 0 실측 (2026-11-04)
+
+예제 앱을 iOS 시뮬레이터에 띄우고, PR 3 의 장기 연결이 할 일을 대신하는 측정용 VM 클라이언트를 붙여 쟀다.
+emu 코드는 바꾸지 않았다.
+
+- 환경: Flutter 3.44.4(dds 5.3.0), `go_router` 16.2.4, iOS 26.5 시뮬레이터(`emu up --ios --temp-device`),
+  emu 0.18.0, debug 빌드. Android 는 재지 않았다.
+- 예제 앱(저장소에 넣지 않음): `go`·`push`·pop, `ShellRoute` 안의 이동, 라우트가 아닌 탭(`IndexedStack`),
+  다이얼로그·시트, `Navigator.push`(이름 있음·없음), §6.4 예시 그대로의 `Emu.Route` 보고, 로그 줄·확장 이벤트·
+  목 요청을 한 번에 보내는 버튼.
+
+### 15.1 DDS 기록
+
+| 항목 | 결과 |
+|---|---|
+| 콜드 스타트 뒤 구독 | 쌓인 것 6개(`ServiceExtensionStateChanged` 2개, `Flutter.Frame`·`Flutter.FirstFrame` 등). 시작 때 보낸 `Emu.Route` 는 없었다 |
+| 그 이유 | 앱 `main()` 18.596초 → emu 가 VM Service 주소를 받음 18.798초 → DDS 의 첫 기록 18.865초 → 첫 프레임 18.909초. 첫 경로는 `main()` 직후 정해져 DDS 가 붙기 전에 보냈다 |
+| hot restart 뒤 | 새 isolate 의 첫 `Emu.Route` 가 실시간으로 왔다 |
+| 리스너가 생긴 뒤 다시 보냄(§6.4 예시) | `main()` 때 `extensionStreamHasListener` 는 거짓, 233ms 뒤 참. 그때 다시 보낸 `Emu.Route` 가 DDS 기록의 첫 이벤트로 남아, 늦게 구독한 쪽도 받았다 |
+| 4분 쓴 뒤 두 번째 구독 | 874개를 18ms 에 받았다. hot restart 전 isolate 의 것 119개(`Emu.Route` 포함)가 섞였다 |
+| 기록과 실시간의 경계 | 쌓인 것은 모두 `streamListen` 응답보다 먼저 왔다 |
+| 차는 속도 | 애니메이션이 도는 동안 `Flutter.Frame` 이 초당 59.9개. 1만 개는 약 167초면 찬다 |
+
+### 15.2 공존
+
+장기 연결 하나를 둔 채 아래를 했고, 연결이 끊기거나 명령이 실패한 일이 없었다.
+
+- `tap`(좌표·`--text`·`--index`)·`find`·`eval`(평가식 수십 번)·`settle`·`probe`(브레이크포인트, `Debug` 스트림)
+- hot reload(바뀐 라이브러리 0개·1개), hot restart 세 번
+- 두 번째 구독자(DevTools 대신)
+- `emu cold` 는 DDS 가 바뀌어 연결이 끊겼다. 새 주소로 다시 붙으면 된다.
+
+hot restart 는 `Isolate` 스트림에 `IsolateExit`(옛) → `IsolateStart`·`IsolateRunnable`(새) 순서로 오고, 새
+isolate 의 `Flutter.FrameworkInitialization`·`Emu.Route` 가 그 뒤에 왔다.
+
+### 15.3 조작별 이벤트
+
+| 조작 | `Flutter.Navigation` | `Emu.Route`(§6.4 예시) | 스냅샷의 맨 안쪽 라우트 |
+|---|---|---|---|
+| `goNamed('user')` | 없음 | `/user/42` · `user` | `user` |
+| `pushNamed('user')` | 없음 | `/user/7` · `user` | `user` |
+| `context.pop()` | **닫힌** `user`(`{"id":"8"}`) | `/user/7` · `user` | `user` |
+| `go('/shop')`(`ShellRoute`) | 없음 | `/shop` · `shop` | 셸 페이지 > `shop` |
+| `go('/shop/item/3')` | 없음 | `/shop/item/3` · `/shop/item/:id` | 셸 페이지 > `item/:id` |
+| `Navigator.push`(이름 `plain`), pop | `plain`, pop 도 `plain` | 없음 | `plain` → 아래 화면 |
+| `Navigator.push`(이름 없음) | `MaterialPageRoute<void>(null)` | 없음 | 이름 없음 |
+| `showDialog`, 닫기 | `DialogRoute<void>`, 닫을 때도 같은 것 | 없음 | `DialogRoute<void>` → 아래 화면 |
+| `showModalBottomSheet`(셸 안) | `ModalBottomSheetRoute<void>` | 없음 | 셸 페이지 > 시트 |
+| 라우트가 아닌 탭 | 없음 | `/` · `home` · `profile` | 바뀌지 않음 |
+
+`Navigator.push`·다이얼로그·시트를 2층에 남기려면 앱이 observer 를 달아야 한다는 §6.4 와 맞다.
+
+### 15.4 스냅샷 평가식
+
+`routes.dart` 라이브러리 스코프에서 두 가지를 평가했다. 둘 다 `rootElement` 부터 요소를 돌고, 현재가 아닌
+라우트(`isCurrent` 가 거짓) 아래는 건너뛴다. 그래서 남는 사슬이 지금 보이는 라우트다.
+
+| | S1 | S2 |
+|---|---|---|
+| 라우트 찾기 | `_ModalScope` 위젯을 타입 이름으로 찾아 `route` 를 읽는다 | 공개 API 만. `InheritedModel` 요소의 자식에서 `ModalRoute.of` |
+| 결과 | §15.3 의 모든 조작에서 맞았다 | S1 과 같았다 |
+| 비용 | 요소 235~768개, 앱 안에서 0.4~2.0ms, 왕복 6~11ms | 앱 안에서 0.7~2.2ms, 조회 6~17번 |
+| 부작용 | 없다 | `ModalRoute.of` 는 `InheritedModel.inheritFrom` 이라(`routes.dart:1316-1318`) 읽은 요소에 의존성이 남는다. 라우트 상태가 바뀌면 그 요소가 다시 빌드된다(소스로 확인, 재지 않음) |
+
+- PR 5 는 S1 을 쓴다. `_ModalScope` 이름이 바뀌면 사슬이 비고, 그때는 라우터 위치만 쓴다.
+- 스냅샷이 읽은 `Router` 의 `routeInformationProvider.value.uri` 는 `go` 뒤에는 맞았지만 `push` 뒤에는 `push`
+  앞 위치(`/user/42`)였다. `go_router` 의 `optionURLReflectsImperativeAPIs` 기본값 때문이다(§6.2, §15.5).
+- 평가식은 한 줄이어야 한다. 여러 줄이면 "Can't find '}' to match '{'" 로 컴파일이 실패했다. flutter_tools 가
+  식을 줄 단위로 넘기는 것으로 보인다.
+
+### 15.5 라우터 리스너 평가식
+
+`binding.dart` 스코프에서 `Router` 를 찾아 `routeInformationProvider` 에 리스너를 다는 식을 한 번
+평가했다(왕복 7ms, 결과 `listening on GoRouteInformationProvider`).
+
+- `go`·`push`·pop 에 `Emu.Route` 와 같은 위치를 보냈다(`/user/42` → `/user/8` → `/user/42` → `/` → `/user/7` → `/`).
+  스냅샷이 놓친 `push` 위치도 맞다.
+- 바뀐 라이브러리가 있는 hot reload 뒤에도 보냈다. hot restart 뒤에는 보내지 않았다(isolate 가 새것).
+- 라우트가 아닌 탭, `Navigator.push`·다이얼로그·시트는 위치를 바꾸지 않아 보내지 않는다.
+
+### 15.6 경로별 도착 순서
+
+앱이 100ms 마다 로그 줄(`print`) → 확장 이벤트 → 목 요청(HTTP)을 바로 이어 보내기를 20번 했다. 시뮬레이터는
+호스트 시계를 쓰므로 앱이 보낸 시각과 도착 시각을 바로 뺐다.
+
+| 경로 | 중앙값 | 최소 | 최대 |
+|---|---|---|---|
+| 로그 줄(데몬 `app.log` → emu) | 2.9ms | 1.4ms | 4.5ms |
+| 확장 이벤트(DDS → 측정 클라이언트) | 0.8ms | 0.4ms | 2.3ms |
+| 목 요청(완료 엔트리) | 1.1ms | 0.6ms | 21.4ms(첫 요청, 새 연결) |
+
+- 20번 중 19번은 나중에 보낸 목 요청의 seq 가 로그 줄보다 앞섰다.
+- 확장 이벤트는 별도 측정 프로세스에서 받았다. emu 서버도 같은 방식으로 연결하므로 비슷할 것이다.
+
+### 15.7 설계에 반영한 것
+
+| 실측 | 반영 |
+|---|---|
+| 콜드 스타트의 첫 `Emu.Route` 가 남지 않음 | §3.4, §6.4 "콜드 스타트"와 예시 |
+| 쌓인 기록은 `streamListen` 응답 전에 옴 | §3.4 처리, §6.3, PR 3 |
+| hot restart 의 `Isolate` 이벤트 순서 | §6.3, PR 3 |
+| 공존 문제없음 | §6.3, PR 0 |
+| 스냅샷 동작, `push` 뒤 `Router` 값은 앞 위치 | §6.2 1층, §12, PR 5 |
+| 평가식 리스너 동작 | §6.2 1층, PR 5 |
+| 평가식은 한 줄 | PR 5 |
+| 경로별 지연 | §5 |
+
+결정(§11)을 뒤집는 결과는 없었다. 기본 꺼짐(Q9)도 그대로 둔다. 켜면 연결 하나가 늘고, 구독할 때 쌓인 기록을
+한 번 받는 데 몇~수십 ms 가 든다.
