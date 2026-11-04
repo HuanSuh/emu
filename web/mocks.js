@@ -364,9 +364,11 @@ function hitDetail(h) {
 
 async function openHit(id) {
   try {
-    const j = await (await api(`/api/mock/hits/${id}`)).json();
+    const r = await api(`/api/mock/hits/${id}`);
+    const j = await r.json();
     if (j.ok) mockState.hit = j.hit;
-    else toast(j.error);
+    // From a Logs row: a request older than the kept ones has no bodies left.
+    else toast(r.status === 404 ? 'its bodies are gone — only the last 200 requests are kept' : j.error);
   } catch (_) {}
   renderMockTraffic();
 }
