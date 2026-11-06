@@ -26,6 +26,11 @@ String appSourcesRev([Map<String, String> sources = kEmbeddedMacSources]) {
   return (h >>> 16).toRadixString(16).padLeft(12, '0');
 }
 
+/// The embedded files copied as-is into Contents/Resources: the menu bar icon masks
+/// (macos/Emu/MenuIcon*.png, from tool/menu_icon.swift). AppIcon.png becomes emu.icns instead.
+List<String> appResourceNames([Map<String, String> sources = kEmbeddedMacSources]) =>
+    [for (final name in sources.keys) if (name.endsWith('.png') && name != 'AppIcon.png') name]..sort();
+
 /// The rev recorded in an installed bundle, or null.
 String? installedAppRev([Directory? bundle]) => _appJson(bundle)['rev'] as String?;
 
@@ -110,6 +115,10 @@ Future<String?> installApp({Directory? bundle, void Function(String)? log}) asyn
       '-framework', 'Cocoa', '-framework', 'WebKit', '-framework', 'Carbon', '-framework', 'UserNotifications',
     ]);
     if (build.exitCode != 0) return 'swiftc failed:\n${build.stderr}${build.stdout}';
+    // Before the self-test, which checks the menu bar icon when it is there.
+    for (final name in appResourceNames()) {
+      File('${src.path}/$name').copySync('${res.path}/$name');
+    }
     final test = await Process.run('${macos.path}/emu', ['--self-test']);
     if (test.exitCode != 0) return 'the app self-test failed:\n${test.stdout}';
 
