@@ -11,6 +11,15 @@ void main() {
         containsAll(['main.swift', 'AppDelegate.swift', 'HubWindow.swift', 'Policy.swift', 'AppIcon.png']));
   });
 
+  test('the menu bar icon masks are embedded and go to Resources', () {
+    const masks = ['MenuIcon.png', 'MenuIcon@2x.png', 'MenuIconDark.png', 'MenuIconDark@2x.png'];
+    expect(kEmbeddedMacSources.keys, containsAll(masks));
+    expect(appResourceNames(), masks);
+    // AppIcon.png becomes emu.icns; Swift sources are compiled, not copied.
+    expect(appResourceNames({'AppIcon.png': '', 'a.swift': '', 'X.png': ''}), ['X.png']);
+    expect(appResourceNames({'AppIcon.png': '', 'a.swift': ''}), isEmpty);
+  });
+
   test('rev changes with the sources, not their order', () {
     final a = appSourcesRev({'a.swift': 'x', 'b.swift': 'y'});
     expect(a, matches(RegExp(r'^[0-9a-f]{12}$')));
