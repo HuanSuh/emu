@@ -3,7 +3,7 @@
 import Cocoa
 
 if CommandLine.arguments.contains("--self-test") {
-    exit(Policy.selfTest() == 0 ? 0 : 1)
+    exit(Policy.selfTest() + MenuIcon.selfTest() == 0 ? 0 : 1)
 }
 
 let app = NSApplication.shared
