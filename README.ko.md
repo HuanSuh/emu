@@ -368,6 +368,129 @@ emu logs [opts]
 
 서버가 꺼져 있어도 `.emu/run.jsonl` 에서 오프라인으로 읽는다.
 
+### timeline — 로그·요청·입력을 한 목록으로
+
+```bash
+emu timeline [opts]
+  --since <seq>        이 seq 다음 것만
+  -n, --lines <N>      마지막 N개 (기본 200)
+  --kind <list>        log, request, route, action — 쉼표로 여럿 (기본: 전부)
+  -g, --grep <regex>   텍스트에 대소문자 무시 정규식
+  --route <regex>      화면(위치나 이름)이 맞는 엔트리만
+  -f, --follow         실시간 스트림
+  --json               한 줄에 엔트리 하나(JSONL), `logs --json` 과 같다
+```
+
+앱 로그 줄, 목 서버(`mocks:`, [API 목업](#api-목업))를 지난 요청, emu 가 넣은 입력을 seq 순서 한 목록으로 본다.
+한 줄은 `seq 시각 레벨 [화면] 내용` 이다(화면을 모르면 뺀다).
+
+```bash
+emu timeline -n 4
+#     56 16:09:18.590 •  [action] tap --text "Cart"
+#     57 16:09:18.598 I  flutter: loading cart
+#     58 16:09:18.622 I  [mock] GET https://api.example.com/v1/cart → 200 (mock: empty) · 3ms
+#     59 16:09:18.640 I  flutter: cart shown
+```
+
+- `action` 엔트리는 emu 가 보낸 입력이다. CLI·대시보드·페이지 `openUrl:`·목 replay(`data.via`: `page`, `replay`)의
+  `tap`·`swipe`·`text`·`open-url` 을 넣기 직전에 남긴다. `data` 에는 명령과 기준(`x`/`y`, `text`/`key` 와 맞은
+  `widgetType`, `url`)이 있고, 입력한 글자는 `length` 로만 남는다. 실패하면 error 레벨 엔트리가 하나 더 생긴다.
+
+- `request` 엔트리는 요청이 끝날 때 생긴다. `--json` 의 `data.startSeq` 는 요청이 들어온 때의 seq 라, 요청이 나가
+  있는 동안 앱이 남긴 로그는 둘 사이에 있다. `data.hitId` 로는 남아 있는 동안 `/api/mock/hits/<id>` 를 본다.
+- seq 는 emu 에 *도착한* 순서다. 로그 줄과 요청은 경로가 달라 몇 ms 앞뒤가 바뀔 수 있으니, 정확한 인과가 아니라
+  대략의 순서로 읽는다.
+- `emu logs`·`emu assert`·`emu errors`·`/api/logs` 는 지금 그대로이고, 묻지 않으면 `log`·`request` 밖의 종류를 빼고
+  답한다(`/api/logs?kinds=all`).
+- 서버가 꺼져 있으면 `.emu/run.jsonl` 에서 오프라인으로 읽는다.
+
+#### 화면 — `timeline.routes` 와 `Emu.Route` 이벤트
+
+엔트리마다 어느 화면에서 일어났는지는 앱이 알려 준다. `emu.yaml`(또는 프로필, `emu.local.yaml`)에서 켜고,
+`mocks:` 처럼 `emu up` 때 읽는다.
+
+```yaml
+timeline:
+  routes: true   # 세션 동안 VM Service 연결을 둔다 (기본 false)
+```
+
+켜면 세션 서버가 앱과 VM Service 연결 하나를 두고, 앱이 `dart:developer` 로 직접 보내는 이벤트 `Emu.Route` 를
+듣는다 — **emu 패키지는 필요 없다**. 이벤트 하나가 "지금 화면은 이것" 이다. emu 는 `route` 엔트리를 남기고 다음
+이벤트까지 모든 엔트리에 그 화면을 찍는다(`route`, 앱이 이름을 주면 `routeName`). `--route <regex>` 로 한 화면의
+로그·요청·입력만 본다.
+
+| 필드 | 타입 | 필수 | 뜻 | 예 |
+|---|---|---|---|---|
+| `location` | String | 예 | 실제 경로. 그 화면을 다시 여는 값 | `/user/42?tab=posts` |
+| `name` | String | 아니오 | 같은 화면끼리 묶는 이름이나 패턴 | `user`, `/user/:id` |
+| `detail` | String | 아니오 | 경로로 드러나지 않는 상태(탭, 모달) | `feed`, `sheet:filter` |
+
+- 이벤트는 push·pop 이 아니라 상태 보고다. 앱이 시작할 때 한 번, 화면이나 탭이 바뀔 때마다 모든 필드를 담아
+  보낸다(emu 는 앞 이벤트의 필드를 이어받지 않는다). 같은 화면이 연달아 오면 엔트리 하나다.
+- 엔트리의 `route` 는 `location`, 또는 `location · detail` 이고 `routeName` 은 `name` 이다. 비어 있지 않은
+  `location` 문자열이 없는 이벤트는 무시한다(세션당 경고 한 번). 모르는 필드는 무시하고, 값마다 1024자에서 자른다.
+  값은 받은 그대로 둔다 — 민감한 값은 보내기 전에 거른다.
+- `flutter run` 은 DDS 를 거치고 DDS 가 지난 이벤트를 쌓아 두므로, emu 가 늦게 붙어도 앱이 마지막으로 보낸 것을
+  받는다. 콜드 스타트 때 `main()` 에서 보낸 것은 DDS 가 붙기 전이라 사라진다.
+  `developer.extensionStreamHasListener` 가 참이 되면 한 번 더 보낸다(아래). hot restart 는 새 isolate 가 보낼
+  때까지 화면을 비운다.
+- 끄면(기본) 연결도 화면도 없다. `emu timeline` 끝에 `routes: off — …` 가 나오고(`--json` 이면 stderr),
+  `/api/logs` 는 `"routes": "off"` 다(그 밖에는 `connecting`·`on`·`failed`, 실패 이유는 `routesError`). 연결이
+  실패하면 경고 한 줄이고 세션은 그대로다.
+- `Emu.Route` 가 없으면 emu 가 앱 코드 없이 스스로 화면을 알아낸다(`data.via: framework`). 프레임워크의 이동
+  이벤트(`Navigator.push`, 뒤로 가기 버튼을 포함한 모든 pop)가 오거나, 앱의 `RouteInformationProvider` 에 단
+  리스너로 새 위치가 오면(`go_router` 의 `go`·`push`) 지금 보이는 라우트를 읽는다. `route` 는 라우터의 위치(`go_router`
+  가 push 한 페이지는 라우터의 위치가 그대로라 push 한 위치, 라우터가 없는 Navigator 1.0 앱이면 맨 위 라우트의 이름이나
+  타입)이고, 다이얼로그·시트·`Navigator.push` 로 올린 화면이 위에 있으면 `· <이름이나 타입>` 을 붙인다. `routeName`
+  은 라우터 페이지의 이름이다(`go_router` 는 라우트의 name 이나 path 패턴). 라우트가 아닌 탭과 앱 자체의 이름은 알 수
+  없다. 앱 isolate 가 `Emu.Route` 를 한 번이라도 보내면 hot restart 전까지는 앱이 보낸 것만 쓴다. emu 의 평가식이
+  앱에서 컴파일되지 않으면 경고를 한 번 남긴다.
+
+`go_router` 16 앱, emu 의존 없이:
+
+```dart
+import 'dart:async';
+import 'dart:developer' as developer;
+import 'package:flutter/foundation.dart';
+
+void reportEmuRoute(String location, {String? name, String? detail}) {
+  if (!kDebugMode) return;
+  developer.postEvent('Emu.Route', {
+    'location': location,
+    if (name != null) 'name': name,
+    if (detail != null) 'detail': detail,
+  });
+}
+
+// go/push/pop, ShellRoute 안의 이동까지 — 첫 경로가 정해질 때도 불린다.
+void reportCurrent() {
+  final s = router.state; // 가장 깊은 leaf
+  reportEmuRoute(s.uri.toString(), name: s.name ?? s.fullPath);
+}
+
+if (kDebugMode) {
+  router.routerDelegate.addListener(reportCurrent);
+  // 경로가 정해진 뒤에만: 그 전에 router.state 를 읽으면 StateError 다.
+  if (router.routerDelegate.currentConfiguration.isNotEmpty) reportCurrent();
+  // 콜드 스타트: 여기까지 보낸 것은 DDS 가 붙기 전이다. 리스너가 생기면 한 번 더 보낸다.
+  if (!developer.extensionStreamHasListener) {
+    Timer.periodic(const Duration(milliseconds: 50), (t) {
+      if (!developer.extensionStreamHasListener) return;
+      t.cancel();
+      if (router.routerDelegate.currentConfiguration.isNotEmpty) reportCurrent();
+    });
+  }
+}
+
+// 라우트가 아닌 탭: 탭 인덱스가 바뀌는 곳에서.
+reportEmuRoute(router.state.uri.toString(), name: router.state.name, detail: 'feed');
+```
+
+다이얼로그·시트·`Navigator.push` 로 올린 화면은 라우터 위치를 바꾸지 않는다. 타임라인에 남기려면 그것들을 띄우는
+Navigator 마다 앱 자체 `NavigatorObserver` 를 달아(셸 안이면 `ShellRoute.observers` —
+`showModalBottomSheet` 는 가장 가까운 Navigator 를 쓴다) `didPush` 에서는 모달을 `detail` 로, `didPop` 에서는 아래
+화면을 `detail` 까지 다시 보낸다.
+
 ### errors — 구조화된 예외 배너
 
 ```bash
@@ -430,6 +553,10 @@ emu text "hello world"               # 포커스된 필드에 입력 — 필드�
 > **구현**: 입력은 `adb`/`simctl` 이 아니라 **실행 중인 앱의 VM Service** 로 넣는다 — 프레임워크에
 > 합성 포인터 이벤트를 dispatch하고 포커스된 텍스트 필드를 직접 갱신한다(`probe` 와 같은 인프라).
 > 그래서 **Android·iOS가 동일 경로**로 동작하고, `text` 가 **유니코드**(한글·이모지)를 넣을 수 있다.
+
+CLI·대시보드 클릭·목 replay 어디서 온 입력이든 넣기 직전에 [타임라인](#timeline--로그요청입력을-한-목록으로)에
+`action` 엔트리로 남아, 그 입력이 일으킨 일은 그 뒤에 온다. `text` 는 길이만 남긴다(비밀번호일 수 있다). 응답에는
+지금처럼 입력한 글자가 그대로 온다.
 
 > ⚠️ **에이전트 주의**: 스크린샷이 축소되어 전달되면(예: 1344×2992 → 898×2000) 이미지에서 읽은
 > 좌표에 **축소 배율을 곱해야** 물리 좌표가 된다. 탭이 엉뚱한 곳에 꽂히는 원인 대부분이 이것이다.
@@ -502,7 +629,7 @@ android.intent.action.VIEW -d <url>`, iOS는 `xcrun simctl openurl <udid>
 <url>` — 실행 중인 세션에 붙은 기기를 보고 자동으로 분기한다. 쿼리스트링의
 `&`/`;` 등을 직접 이스케이프할 필요는 없다 — emu가 처리한다. `tap`/`shot`
 과 같이 기본적으로 전환이 settle될 때까지 기다렸다가 반환한다(`--no-settle`
-로 건너뛸 수 있음).
+로 건너뛸 수 있음). 딥링크는 대시보드의 딥링크 칸처럼 세션 서버를 거쳐 보내고, 타임라인에 남는다.
 
 > **구현 참고**: `xcrun simctl openurl` 은 URL을 그대로 exec하므로 iOS
 > 경로는 URL을 손대지 않고 넘긴다. `adb shell` 은 다르다 — 인자를 공백으로
@@ -714,6 +841,11 @@ emu report --mine                               # 내가 보낸 리포트와 상
   묶음을 펴고 접고, `expand all`/`collapse all` 은 모든 묶음을(그 뒤 생기는 묶음도 그대로) 편다/접는다. 직전
   묶음을 잇는 새 줄은 그 묶음에 더해지고 펴진 상태는 그대로다. 검색 중에는 접혀 있어도 맞는 줄을 모두 보인다.
   `bulk`·`fold` 는 브라우저에 기억.
+  검색창 왼쪽의 **Logs · Requests · Routes · Actions** 로 [타임라인](#timeline--로그요청입력을-한-목록으로)의 어떤
+  엔트리를 줄로 그릴지 고른다. 기본은 지금까지처럼 Logs·Requests 이고 브라우저에 기억한다. 화면 수집(`timeline.routes`)을
+  켜면 줄마다 그 순간의 화면이 보이고(이름은 툴팁, 좁은 창에서는 시각의 툴팁으로 옮긴다) 화면 전환은 목록을 가로지르는
+  선으로 그린다. 수집이 꺼졌거나 실패했으면 Routes 는 비활성이고 툴팁에 이유가 있다. 요청 줄을 누르면 **Mocks** 에서 그
+  요청의 본문을 연다.
 - 버튼: **Hot reload / Hot restart / Cold restart / Stop** (`r` / `R` 키도 지원)
 - **인터랙티브 스크린샷 패널** — 기기 화면을 표시하고 **클릭=탭 / 드래그=스와이프**로 직접 몬다.
   하단 입력창으로 포커스된 필드에 텍스트 입력(유니코드). 좌표 변환은 대시보드가 알아서 한다

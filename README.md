@@ -392,6 +392,149 @@ emu logs [opts]
 
 Reads offline from `.emu/run.jsonl` even when the server is down.
 
+### timeline — logs, requests and inputs in one list
+
+```bash
+emu timeline [opts]
+  --since <seq>        only entries after this seq
+  -n, --lines <N>      last N entries (default 200)
+  --kind <list>        log, request, route, action — comma list (default: all)
+  -g, --grep <regex>   case-insensitive regex over the text
+  --route <regex>      only entries on a matching screen (location or name)
+  -f, --follow         live stream
+  --json               one entry per line (JSONL), like `logs --json`
+```
+
+App log lines, the requests that went through the mock server (`mocks:`, see
+[API mocks](#api-mocks)) and emu's own inputs in one list, in seq order. Each
+line is `seq time level [screen] text` (the screen is left out while unknown):
+
+```bash
+emu timeline -n 4
+#     56 16:09:18.590 •  [action] tap --text "Cart"
+#     57 16:09:18.598 I  flutter: loading cart
+#     58 16:09:18.622 I  [mock] GET https://api.example.com/v1/cart → 200 (mock: empty) · 3ms
+#     59 16:09:18.640 I  flutter: cart shown
+```
+
+- An `action` entry is an input emu sent — `tap`, `swipe`, `text`, `open-url`,
+  from the CLI, the dashboard, a page's `openUrl:` or a mock replay
+  (`data.via`: `page`, `replay`) — written just before it fires. Its `data`
+  has the command and what it went by (`x`/`y`, `text`/`key` and the
+  `widgetType` it hit, the `url`); a typed text only by its `length`. An input
+  that fails gets a second entry at error level.
+
+- A `request` entry is written when the request is done. Its `data.startSeq`
+  (in `--json`) is the seq when the request came in, so what the app logged
+  while it was out lies between the two; `data.hitId` is the request in
+  `/api/mock/hits/<id>` while it is kept.
+- seq is the order things *reached* emu. Log lines and requests travel
+  different paths a few ms apart: read it as the rough order, not exact cause
+  and effect.
+- `emu logs`, `emu assert`, `emu errors` and `/api/logs` stay as they were and
+  leave out kinds other than `log` and `request` unless asked
+  (`/api/logs?kinds=all`).
+- Reads offline from `.emu/run.jsonl` when the server is down.
+
+#### Screens — `timeline.routes` and the `Emu.Route` event
+
+Which screen each entry happened on comes from the app. Turn collection on in
+`emu.yaml` (or a profile, or `emu.local.yaml`); like `mocks:`, it is read at `emu up`:
+
+```yaml
+timeline:
+  routes: true   # a VM Service connection for the session (default false)
+```
+
+Then the session server keeps one VM Service connection to the app and listens
+for `Emu.Route`, an event the app posts itself with `dart:developer` — **no emu
+package**. Each one says "the screen is now this": emu writes a `route` entry and
+stamps that screen on every entry until the next one (`route`, and `routeName`
+when the app names it). `--route <regex>` then keeps one screen's logs, requests
+and inputs.
+
+| Field | Type | Required | Meaning | Example |
+|---|---|---|---|---|
+| `location` | String | yes | the real location — what reopens the screen | `/user/42?tab=posts` |
+| `name` | String | no | a name or pattern grouping the same screen | `user`, `/user/:id` |
+| `detail` | String | no | state the location doesn't show (a tab, a modal) | `feed`, `sheet:filter` |
+
+- An event reports a state, not a push or a pop: send one when the app starts and
+  whenever the screen or a tab changes, with every field each time (emu carries
+  nothing over). The same screen twice in a row is one entry.
+- An entry's `route` is `location`, or `location · detail`; `routeName` is
+  `name`. An event without a non-empty `location` string is ignored (one warning
+  a session); unknown fields are ignored; each value is cut at 1024 characters.
+  Values are kept as sent — leave sensitive ones out before sending.
+- `flutter run` goes through DDS, which keeps past events, so emu gets the app's
+  last report even when it connects later. What `main()` sends on a cold start
+  comes before DDS is up and is lost: send it again once
+  `developer.extensionStreamHasListener` turns true (below). A hot restart
+  clears the screen until the new isolate reports.
+- Off (the default) there is no connection and no screen: `emu timeline` ends
+  with `routes: off — …` (on stderr with `--json`) and `/api/logs` answers
+  `"routes": "off"` (`connecting`, `on` or `failed` otherwise; `routesError`
+  says why it failed). A failed connection is one warning; the session goes on.
+- Without `Emu.Route`, emu works the screen out itself, with no app code
+  (`data.via: framework`): after the framework's navigation event (a
+  `Navigator.push`, any pop — the back button included), or a new location
+  from a listener it puts on the app's `RouteInformationProvider`
+  (`go_router`'s `go` and `push`), it reads the routes on screen. `route` is
+  the router's location — for a page `go_router` pushed, where it was pushed
+  to, as the router's own location stays put; without a router (Navigator
+  1.0), the top route's name or type — plus `· <name or type>` when a dialog,
+  a sheet or a `Navigator.push`ed page is on top; `routeName` is the router
+  page's name (`go_router`: the route's name or path pattern). It can't see
+  tabs that aren't routes or the app's own names: once the app's isolate
+  sends an `Emu.Route`, only what the app sends counts, until a hot restart.
+  If emu's expression doesn't compile in the app, a warning says so once.
+
+An app on `go_router` 16, with no emu dependency:
+
+```dart
+import 'dart:async';
+import 'dart:developer' as developer;
+import 'package:flutter/foundation.dart';
+
+void reportEmuRoute(String location, {String? name, String? detail}) {
+  if (!kDebugMode) return;
+  developer.postEvent('Emu.Route', {
+    'location': location,
+    if (name != null) 'name': name,
+    if (detail != null) 'detail': detail,
+  });
+}
+
+// go/push/pop, inside a ShellRoute too — and the first location once it is set.
+void reportCurrent() {
+  final s = router.state; // the deepest leaf
+  reportEmuRoute(s.uri.toString(), name: s.name ?? s.fullPath);
+}
+
+if (kDebugMode) {
+  router.routerDelegate.addListener(reportCurrent);
+  // Only once the location is set: router.state throws before that.
+  if (router.routerDelegate.currentConfiguration.isNotEmpty) reportCurrent();
+  // Cold start: what was sent so far predates DDS. Send again once it listens.
+  if (!developer.extensionStreamHasListener) {
+    Timer.periodic(const Duration(milliseconds: 50), (t) {
+      if (!developer.extensionStreamHasListener) return;
+      t.cancel();
+      if (router.routerDelegate.currentConfiguration.isNotEmpty) reportCurrent();
+    });
+  }
+}
+
+// A tab that isn't a route: where its index changes.
+reportEmuRoute(router.state.uri.toString(), name: router.state.name, detail: 'feed');
+```
+
+Dialogs, sheets and `Navigator.push`ed pages don't move the router: to have them
+on the timeline, give each Navigator that shows them a `NavigatorObserver` of your
+own (`ShellRoute.observers` inside a shell — `showModalBottomSheet` uses the
+nearest Navigator) that reports the modal as `detail` in `didPush` and the
+screen below, with its `detail`, in `didPop`.
+
 ### errors — structured exception banners
 
 ```bash
@@ -460,6 +603,11 @@ image directly.
 > updates the focused text field directly (the same infrastructure as `probe`).
 > That's why **Android and iOS use the same path**, and why `text` can enter
 > **unicode** (Korean, emoji).
+
+Every input — from the CLI, a dashboard click, a mock replay — is written to the
+[timeline](#timeline--logs-requests-and-inputs-in-one-list) as an `action` entry
+just before it fires, so what it causes comes after it. `text` is recorded by its
+length only (it may be a password); its answer still echoes the text.
 
 > ⚠️ **Agent caution**: if a screenshot reaches you downscaled (e.g. 1344×2992 →
 > 898×2000), you must **multiply the coordinates you read off the image by the
@@ -540,7 +688,8 @@ android.intent.action.VIEW -d <url>` on Android, `xcrun simctl openurl <udid>
 <url>` on iOS — chosen automatically from the device attached to the running
 session. `&`/`;`/etc. in a query string need no escaping on your end; emu
 handles it. Waits for the resulting navigation to settle by default (skip
-with `--no-settle`), same as `tap`/`shot`.
+with `--no-settle`), same as `tap`/`shot`. The link goes through the session
+server, as the dashboard's deep link box does, and is recorded in the timeline.
 
 > **Implementation note**: `xcrun simctl openurl` execs the URL directly, so
 > the iOS path passes it through as-is. `adb shell` does not — it joins its
@@ -773,6 +922,13 @@ emu report --mine                               # your reports and their status 
   fold that run; `expand all` / `collapse all` does every run, and runs that form afterwards
   follow it. A line that continues the last run joins it, open or folded as it is. While a search
   is on, every matching line shows, folded or not. `bulk` and `fold` are kept per browser.
+  The toggles left of the search — **Logs · Requests · Routes · Actions** — pick which of the
+  [timeline](#timeline--logs-requests-and-inputs-in-one-list)'s entries are rows: Logs and Requests
+  by default, as the tab always showed (kept per browser). With screen collection on
+  (`timeline.routes`) each row shows the screen it happened on (hover for its name; in a narrow
+  window it moves to the time's tooltip) and a screen change draws a line across the list; while
+  collection is off or failed, Routes is disabled and its tooltip says why. A request row opens
+  its bodies in **Mocks**.
 - Buttons: **Hot reload / Hot restart / Cold restart / Stop** (`r` / `R` keys too).
 - **Interactive screenshot panel** — shows the device screen and drives it directly
   with **click = tap / drag = swipe**. The input box at the bottom types into the

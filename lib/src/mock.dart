@@ -469,6 +469,25 @@ class MockHit {
   String? responseType;
   String? responseBody;
 
+  /// The session log's last seq when the request came in (the timeline's
+  /// "what came before it"), and the screen then. Null without [MockServer.now].
+  int? startSeq;
+  String? startRoute;
+  String? startRouteName;
+
+  /// The `data` of this request's `request` entry in the session log —
+  /// [hitId] leads to the bodies (`/api/mock/hits/<id>`) while kept.
+  Map<String, dynamic> timelineData() => {
+        'hitId': id,
+        'method': method,
+        'url': url,
+        'status': status,
+        'mocked': ?scenario,
+        'error': ?error,
+        'ms': elapsed.inMilliseconds,
+        'startSeq': ?startSeq,
+      };
+
   Map<String, dynamic> toJson({bool bodies = false}) => {
         'id': id,
         'at': at.toIso8601String(),
@@ -488,7 +507,7 @@ class MockHit {
 
 /// Answers the app's routed requests; see the library docs.
 class MockServer {
-  MockServer({required this.projectRoot, this.profile, this.home, required this.log});
+  MockServer({required this.projectRoot, this.profile, this.home, required this.log, this.now});
 
   final String projectRoot;
   final String? profile;
@@ -496,6 +515,10 @@ class MockServer {
 
   /// A finished request, for the session log.
   final void Function(MockHit hit) log;
+
+  /// The session log's position and screen, read when a request comes in
+  /// ([MockHit.startSeq]). Nothing is reserved: seqs stay one per entry.
+  final ({int seq, String? route, String? routeName}) Function()? now;
 
   HttpServer? _https, _http;
   final _upstream = HttpClient()..autoUncompress = false;
@@ -609,6 +632,12 @@ class MockServer {
       origin = upstream.replace(path: '$base${req.uri.path}', query: req.uri.hasQuery ? req.uri.query : null);
     }
     final hit = MockHit(id: ++_seq, at: DateTime.now(), method: req.method, url: '$origin');
+    if (now?.call() case final at?) {
+      hit
+        ..startSeq = at.seq
+        ..startRoute = at.route
+        ..startRouteName = at.routeName;
+    }
     final res = req.response;
     try {
       if (direct ? upstream == null : !mockHostMatches(origin.host, config.hosts)) {

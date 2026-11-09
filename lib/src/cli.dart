@@ -19,9 +19,9 @@ import 'device_setup.dart';
 import 'diff.dart';
 import 'hub.dart';
 import 'launch_config.dart';
+import 'log_store.dart';
 import 'memory_diff.dart';
 import 'models.dart';
-import 'open_url.dart';
 import 'mock.dart';
 import 'mock_replay.dart';
 import 'page_ask.dart';
@@ -79,6 +79,8 @@ Future<int> runCli(List<String> argv) async {
         return await _attach(rest);
       case 'logs':
         return await _logs(rest);
+      case 'timeline':
+        return await _timeline(rest);
       case 'errors':
         return await _errors(rest);
       case 'memory':
@@ -562,6 +564,7 @@ Future<int> _config(List<String> args) async {
         'onDeviceReady': pc.onDeviceReady,
         'onAppStarted': pc.onAppStarted,
         'pages': [for (final page in parsePages(pc.pages).pages) page.id],
+        'timeline': {'routes': pc.timelineRoutes},
       },
       'availableProfiles': names.toList()..sort(),
       'memory': mem.toJson(),
@@ -591,6 +594,7 @@ Future<int> _config(List<String> args) async {
   row('onAppStarted', pc.onAppStarted.isEmpty ? null : pc.onAppStarted.join(' ; '));
   final pages = parsePages(pc.pages);
   row('pages', pages.pages.isEmpty ? null : pages.pages.map((p) => p.id).join(', '));
+  row('timeline.routes', pc.timelineRoutes ? true : null);
   warnings.addAll(pages.problems.map((p) => 'pages: $p'));
   if ([pc.deviceId, pc.flavor, pc.target, pc.timeoutSec, pc.port, pc.platform]
           .every((v) => v == null) &&
@@ -941,6 +945,7 @@ Future<int> _up(List<String> args) async {
     if (target != null) '--target=$target',
     for (final d in dartDefines) '--dart-define=$d',
     if (mockPort != null) '--mock-port=$mockPort',
+    if (pc.timelineRoutes) '--timeline-routes',
     if (mockPort != null && mocks.hook) ...['--dart-define=EMU_MOCK=127.0.0.1:$mockPort',
         '--dart-define=EMU_MOCK_HOSTS=${mocks.hosts.join(',')}'],
     if (mockPort != null && mocks.define != null) '--dart-define=${mocks.define}=http://127.0.0.1:$mockPort',
@@ -1582,23 +1587,119 @@ int _logsFromFile(Session session, ArgResults res, Map<String, String> query) {
     stderr.writeln('no logs (no session has run). Start one with `emu up`.');
     return 1;
   }
-  final lines = session.logFile.readAsLinesSync();
-  RegExp? re = query['grep'] != null ? RegExp(query['grep']!, caseSensitive: false) : null;
-  final level = query['level'] != null ? LogLevel.fromName(query['level']) : null;
-  final limit = int.tryParse(query['limit'] ?? '') ?? 200;
-  final matched = <LogEntry>[];
-  for (final line in lines) {
-    if (line.trim().isEmpty) continue;
-    try {
-      final e = LogEntry.fromJson(jsonDecode(line) as Map<String, dynamic>);
-      if (level != null && e.level.rank < level.rank) continue;
-      if (re != null && !re.hasMatch(e.text)) continue;
-      matched.add(e);
-    } catch (_) {}
-  }
-  final shown = matched.length > limit ? matched.sublist(matched.length - limit) : matched;
+  // What `/api/logs` answers without `kinds`: the file has screens and
+  // inputs too, but `emu logs` stays the log it always was.
+  final shown = readLogFile(
+    session.logFile,
+    LogFilter(
+      grep: query['grep'],
+      level: query['level'] != null ? LogLevel.fromName(query['level']) : null,
+      kinds: LogKind.legacy,
+    ),
+    limit: int.tryParse(query['limit'] ?? '') ?? 200,
+  );
   for (final e in shown) {
     print(res.flag('json') ? jsonEncode(e.toJson()) : _formatLine(e));
+  }
+  return 0;
+}
+
+// --------------------------------------------------------------------------
+// timeline — logs, requests, screens and inputs in one list
+// --------------------------------------------------------------------------
+Future<int> _timeline(List<String> args) async {
+  final parser = ArgParser()
+    ..addOption('since')
+    ..addOption('lines', abbr: 'n', defaultsTo: '200')
+    ..addOption('kind')
+    ..addOption('grep', abbr: 'g')
+    ..addOption('route')
+    ..addFlag('follow', abbr: 'f', negatable: false)
+    ..addFlag('json', negatable: false)
+    ..addFlag('help', abbr: 'h', negatable: false);
+  const usage = 'usage: emu timeline [--since <seq>] [-n, --lines <N>] [--kind <list>] [-g, --grep <regex>]\n'
+      '                      [--route <regex>] [-f, --follow] [--json]\n'
+      '   App logs, mock requests, screen changes and emu\'s inputs in one list, in seq order.\n'
+      '   --kind    log, request, route, action — a comma list (default: all)\n'
+      '   --route   only entries on a matching screen (its location or name, case-insensitive)\n'
+      '   --json    one entry per line, as `emu logs --json`';
+  final (res, code) = _parseOrUsage(parser, args, usage);
+  if (res == null) return code!;
+  final Set<String> kinds;
+  try {
+    kinds = LogKind.parse(res.option('kind')) ?? LogKind.all;
+  } on FormatException catch (e) {
+    stderr.writeln('✗ --kind: ${e.message}');
+    return 2;
+  }
+  final since = res.option('since');
+  if (since != null && int.tryParse(since) == null) {
+    stderr.writeln('✗ --since takes a seq number');
+    return 2;
+  }
+  final lines = int.tryParse(res.option('lines')!);
+  if (lines == null) {
+    stderr.writeln('✗ --lines takes a number');
+    return 2;
+  }
+  final json = res.flag('json');
+  final route = res.option('route');
+  for (final (flag, value) in [('grep', res.option('grep')), ('route', route)]) {
+    try {
+      if (value != null) RegExp(value);
+    } on FormatException catch (e) {
+      stderr.writeln('✗ --$flag: bad regular expression: ${e.message}');
+      return 2;
+    }
+  }
+  void show(LogEntry e) => print(json ? jsonEncode(e.toJson()) : formatTimelineLine(e));
+
+  final session = Session.require();
+  final info = session.readServerInfo();
+  if (info == null || !await _ping(info)) {
+    if (!session.logFile.existsSync()) {
+      stderr.writeln('no timeline (no session has run). Start one with `emu up`.');
+      return 1;
+    }
+    // No notice about screen collection: offline, its state is unknown.
+    readLogFile(
+      session.logFile,
+      LogFilter(grep: res.option('grep'), sinceSeq: int.tryParse(since ?? ''), kinds: kinds, route: route),
+      limit: lines,
+    ).forEach(show);
+    return 0;
+  }
+
+  final query = {
+    'kinds': kinds.join(','),
+    'limit': '$lines',
+    if (res.option('grep') != null) 'grep': res.option('grep')!,
+    'route': ?route,
+  };
+  String qs([int? sinceSeq]) => {...query, if (sinceSeq != null) 'sinceSeq': '$sinceSeq'}
+      .entries
+      .map((e) => '${e.key}=${Uri.encodeQueryComponent(e.value)}')
+      .join('&');
+  final data = await _get(info, '/api/logs?${qs(int.tryParse(since ?? ''))}');
+  if (data == null || data['logs'] is! List) {
+    stderr.writeln('✗ failed to read the timeline${data?['error'] != null ? ': ${data!['error']}' : ''}');
+    return 1;
+  }
+  (data['logs'] as List).cast<Map<String, dynamic>>().map(LogEntry.fromJson).forEach(show);
+  // Why there are no screens, when that is why: an app may be reporting
+  // them while emu isn't listening. Off the JSONL stream with --json.
+  final notice = _routesNotice(data['routes'] as String?, error: data['routesError'] as String?);
+  if (notice != null) json ? stderr.writeln(notice) : print(notice);
+  if (!res.flag('follow')) return 0;
+
+  var lastSeq = (data['lastSeq'] as int?) ?? 0;
+  while (true) {
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    if (!await _ping(info)) break;
+    final more = await _get(info, '/api/logs?${qs(lastSeq)}');
+    if (more == null || more['logs'] is! List) continue;
+    (more['logs'] as List).cast<Map<String, dynamic>>().map(LogEntry.fromJson).forEach(show);
+    lastSeq = (more['lastSeq'] as int?) ?? lastSeq;
   }
   return 0;
 }
@@ -2056,36 +2157,24 @@ Future<int> _openUrlCmd(List<String> args) async {
     return 2;
   }
   final info = _requireServer();
-  final data = await _get(info, '/api/status');
-  final deviceId = (data?['status'] as Map?)?['deviceId'] as String?;
-  final cmd = buildOpenUrlCommand(
-    platform: platformForDeviceId(deviceId),
-    deviceId: deviceId,
-    url: url,
-  );
-  ProcessResult result;
-  try {
-    result = await Process.run(cmd.executable, cmd.arguments);
-  } catch (e) {
-    if (json) {
-      print(jsonEncode({'ok': false, 'error': '$e'}));
-    } else {
-      stderr.writeln('✗ open-url failed: $e');
-    }
-    return 1;
-  }
-  final ok = result.exitCode == 0;
+  // Through the server, as the dashboard's deep link box: it sends the link
+  // the same way and records it in the timeline. The settle stays here — the
+  // server's own is capped for buttons, this one waits the full 10s.
+  final r = await _post(info, '/api/open-url?url=${Uri.encodeQueryComponent(url)}&settle=0');
+  final ok = r?['ok'] == true;
+  final error = r == null ? 'no answer from the emu server' : '${r['error'] ?? ''}'.trim();
   if (ok && settle) await _post(info, '/api/settle');
   if (json) {
     print(jsonEncode({
       'ok': ok,
       'url': url,
-      if (!ok) 'error': '${result.stderr}'.trim(),
+      if (!ok) 'error': error,
+      if (ok) 'seq': r!['seq'],
     }));
   } else if (ok) {
     print('✓ open-url $url');
   } else {
-    stderr.writeln('✗ open-url failed: ${result.stderr}');
+    stderr.writeln('✗ open-url failed: $error');
   }
   return ok ? 0 : 1;
 }
@@ -3388,11 +3477,10 @@ Future<int> _reportCmd(List<String> args) async {
     final live = info != null && await _ping(info);
     final attachments = <ReportAttachment>[];
     List<LogEntry>? entries;
-    List<LogEntry> logEntries() => entries ??= [
-          if (session != null && session.logFile.existsSync())
-            for (final line in session.logFile.readAsLinesSync())
-              if (line.trim().isNotEmpty) ?_tryLogEntry(line),
-        ];
+    // What `emu logs` shows: the record of inputs and screens stays out of
+    // an issue anyone can read.
+    List<LogEntry> logEntries() => entries ??=
+        session == null ? const [] : readLogFile(session.logFile, LogFilter(kinds: LogKind.legacy));
     for (final a in res.multiOption('attach')) {
       final m = RegExp(r'^logs(?::(\d+))?$').firstMatch(a);
       if (m != null) {
@@ -3504,14 +3592,6 @@ Future<int> _reportCmd(List<String> args) async {
   final open = result.via == 'browser' || built.images.isNotEmpty;
   if (open && result.url != null && !json) await _openUrl(result.url!);
   return 0;
-}
-
-LogEntry? _tryLogEntry(String line) {
-  try {
-    return LogEntry.fromJson(jsonDecode(line) as Map<String, dynamic>);
-  } catch (_) {
-    return null;
-  }
 }
 
 void _printReport(BuiltReport r, {required bool gh, required bool labeled}) {
@@ -3666,14 +3746,34 @@ String _formatLine(LogEntry e) {
   final hh = t.hour.toString().padLeft(2, '0');
   final mm = t.minute.toString().padLeft(2, '0');
   final ss = t.second.toString().padLeft(2, '0');
-  final tag = switch (e.level) {
-    LogLevel.error => 'E',
-    LogLevel.warn => 'W',
-    LogLevel.debug => 'D',
-    LogLevel.system => '•',
-    LogLevel.info => 'I',
-  };
-  return '$hh:$mm:$ss $tag  ${e.text}';
+  return '$hh:$mm:$ss ${_levelTag(e.level)}  ${e.text}';
+}
+
+String _levelTag(LogLevel level) => switch (level) {
+      LogLevel.error => 'E',
+      LogLevel.warn => 'W',
+      LogLevel.debug => 'D',
+      LogLevel.system => '•',
+      LogLevel.info => 'I',
+    };
+
+/// The line `emu timeline` adds when screens can't show up (`/api/logs`
+/// `routes`); null while collection is on or connecting.
+String? _routesNotice(String? routes, {String? error}) => switch (routes) {
+      'off' => 'routes: off — set timeline.routes: true in emu.yaml and run emu up again',
+      'failed' => 'routes: failed — ${error ?? 'could not connect to the app'}. '
+          'Logs, requests and inputs are still recorded; run emu up again to retry',
+      _ => null,
+    };
+
+/// One `emu timeline` line: seq, time to the millisecond, level, the screen
+/// (left out while unknown) and the text.
+String formatTimelineLine(LogEntry e) {
+  final t = e.timestamp;
+  String two(int v) => v.toString().padLeft(2, '0');
+  final time = '${two(t.hour)}:${two(t.minute)}:${two(t.second)}.${t.millisecond.toString().padLeft(3, '0')}';
+  final route = e.route != null ? '[${e.route}] ' : '';
+  return '${'${e.seq}'.padLeft(6)} $time ${_levelTag(e.level)}  $route${e.text}';
 }
 
 /// Parse the hidden `__serve` subcommand and run the server (blocking).
@@ -3700,7 +3800,8 @@ Future<int> runServe(List<String> args) async {
     ..addMultiOption('forward-port', splitCommas: false)
     ..addMultiOption('on-device-ready', splitCommas: false)
     ..addMultiOption('on-app-started', splitCommas: false)
-    ..addOption('mock-port');
+    ..addOption('mock-port')
+    ..addFlag('timeline-routes', negatable: false);
   final res = parser.parse(args);
   final session = Session.require(start: res.option('project'));
   final server = EmuServer(session: session);
@@ -3731,6 +3832,7 @@ Future<int> runServe(List<String> args) async {
         onAppStarted: res.multiOption('on-app-started'),
         profile: res.option('profile'),
         mockPort: int.tryParse(res.option('mock-port') ?? ''),
+        timelineRoutes: res.flag('timeline-routes'),
       ),
     );
   } catch (e, st) {
@@ -3792,6 +3894,14 @@ COMMANDS
      -n, --lines <N>       Last N lines (default 200)
      -f, --follow          Stream live
      --clear               Clear the log buffer
+  timeline [opts]        Logs, mock requests, screen changes and emu's inputs in
+                         one list, in seq order
+     --since <seq>         only entries after this seq
+     -n, --lines <N>       Last N entries (default 200)
+     --kind <list>         log, request, route, action (comma list; default all)
+     -g, --grep <regex>    Filter the text (case-insensitive)
+     --route <regex>       Only entries on a matching screen (location or name)
+     -f, --follow          Stream live
   errors [opts]          Structured exception banners parsed from the log stream
      --since <seq>         only banners after this seq (default: all buffered)
   memory --diff-across "<cmd>" [opts]

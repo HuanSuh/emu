@@ -203,6 +203,19 @@ const range = (a, b) => Array.from({ length: b - a + 1 }, (_, i) => a + i);
       });
     });
 
+    test('inputs among the replayed lines keep the log: the server sends every kind', () async {
+      final r = await _js(prelude, '''
+        const kinded = (seqs) => seqs.forEach((seq, i) => {
+          if (i === 0) replayStart(seq);
+          receive({ seq, text: 'l' + seq, ...(seq % 3 ? {} : { kind: 'action' }) });
+        });
+        kinded(range(1, 700));
+        kinded(range(201, 701)); // the last 500 of every kind, then one new
+        return { n: pending.length, actions: pending.filter((e) => e.kind).length, renders };
+      ''');
+      expect(r, {'n': 701, 'actions': 233, 'renders': 0});
+    });
+
     test('a socket that starts further back than a replay is a new stream: start over', () async {
       final r = await _js(prelude, '''
         socket(range(1, 700));
@@ -216,6 +229,49 @@ const range = (a, b) => Array.from({ length: b - a + 1 }, (_, i) => a + i);
         'lastSeq': 3,
         'renders': 1,
       });
+    });
+  });
+
+  group('Logs tab kinds', skip: _node ? false : 'node is not installed', () {
+    test('by default plain lines and requests, as before; the chips add or drop kinds', () async {
+      final prelude = '''
+const state = { level: 'all', search: '', regex: false, kinds: new Set(['log', 'request']) };
+const LEVEL_RANK = { debug: 0, info: 1, system: 1, warn: 2, error: 3 };
+${_fn(src, 'matches')}
+const each = () => [{}, { kind: 'request' }, { kind: 'action' }, { kind: 'route' }]
+  .map((o) => matches({ seq: 1, level: 'system', text: 'x', ...o }));
+''';
+      final r = await _js(prelude, '''
+        const out = [each()];
+        state.kinds.add('route'); state.kinds.add('action'); out.push(each());
+        state.kinds.delete('log'); out.push(each());
+        return out;
+      ''');
+      expect(r, [
+        [true, true, false, false],
+        [true, true, true, true],
+        [false, true, true, true],
+      ]);
+    });
+
+    test('rows: a screen change is a divider, a request links its bodies, the screen sits in its column', () async {
+      final prelude = '''
+const state = { search: '', regex: false, fold: false };
+const TAG = { error: 'E', warn: 'W', debug: 'D', system: '•', info: 'I' };
+const URL_RE = /https?:\\/\\/[^\\s<>"'`]+/g;
+${['escapeHtml', 'escapeRe', 'highlight', 'linkify', 'clock', 'rowHtml'].map((n) => _fn(src, n)).join('\n')}
+const at = { ts: '2026-11-04T10:00:00.100Z', level: 'system' };
+''';
+      final r = await _js(prelude, '''
+        return [
+          rowHtml({ seq: 1, ...at, source: 'route', kind: 'route', text: '[route] /a<b>', route: '/a<b>', routeName: 'a' }),
+          rowHtml({ seq: 2, ...at, level: 'info', source: 'mock', kind: 'request', text: '[mock] GET /x', route: '/a<b>', data: { hitId: 7 } }),
+          rowHtml({ seq: 3, ...at, level: 'info', source: 'app', text: 'plain' }),
+        ];
+      ''') as List;
+      expect(r[0], allOf(startsWith('<div class="row system sep">'), contains('<span class="rt" title="/a&lt;b&gt; (a)">/a&lt;b&gt;</span>')));
+      expect(r[1], allOf(startsWith('<div class="row info req" data-hit="7">'), contains('title="/a&lt;b&gt;"')));
+      expect(r[2], allOf(startsWith('<div class="row info">'), contains('<span class="ts">10:00:00</span><span class="rt"></span>')));
     });
   });
 }

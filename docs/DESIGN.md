@@ -176,6 +176,7 @@ flutter run --machine  ◄─JSON-RPC─►  engine  ──►  server (127.0.0.
 | 대시보드 페이지(`pages:`) — 프로젝트 도구를 「명령 + 출력」 블록으로, `emu run`·`emu block` 으로도 | I1(대시보드·CLI 같은 API), B5 | ✅ |
 | 커스텀 화면 인터페이스(`window.emu`) — 값·결과 주고받기, 대시보드가 그리는 확인·입력·선택 창, 행 고르기·다시 받기, 확인 창 합치기 | B5 | ✅ 1·2단계(#49) |
 | 실행 중에 묻기(`interactive: true`, `::emu-ask`) — 실행을 시작한 탭·터미널에만, 답할 곳 없으면 `null`, 기다리는 동안 timeout 정지 | B5, I1(대시보드·`emu run` 같은 API) | ✅ 3단계(#49) |
+| 타임라인(`emu timeline`) — 로그·목 요청·조작·화면 전환을 한 seq 로. 화면은 `timeline.routes` 로 켠 세션에서만, 서버가 장기 VM Service 연결로 앱의 `Emu.Route` 이벤트(emu 의존 없는 계약)를 받고, 보내지 않는 앱은 평가식으로 지금 보이는 라우트를 읽는다 | I1(연결은 서버가 소유), I4(앱을 멈추지 않는다 — 연결이 길어도 명령 사이에 앱을 세우지 않고, 평가식도 앱을 멈추지 않고 읽는다), B1(조회만, 판정 없음) | ✅ (#89) |
 
 보류 항목(전부 근거 있는 보류)도 불변식으로 설명된다:
 - 🚫 `emu e2e`(외부 e2e 엔진 구동) — 입력 수단 확보로 전제 소멸(B1과 중복).
@@ -184,7 +185,10 @@ flutter run --machine  ◄─JSON-RPC─►  engine  ──►  server (127.0.0.
 - 🚫 `emu routes`(네비게이션 스택 덤프) — 공개 API로는 전체 스택을 못 얻고 Flutter의 private
   Navigator 내부 구현(`_ModalScope` 등, 릴리스마다 리팩터링 대상)에 기대야 한다. I1~I5/B1~B4를
   직접 어기진 않지만, 버전 fragility가 커서 capability-probe(런타임에 존재를 직접 확인하고 실패
-  시 정직하게 보고) 설계로 재검토 중 — BACKLOG 참고.
+  시 정직하게 보고) 설계로 재검토 중 — BACKLOG 참고. 타임라인(#89)은 스택이 아니라 지금 화면 하나만 쓴다.
+  앱이 `Emu.Route` 를 보내지 않으면 `_ModalScope`·`Router` 를 타입 이름으로 찾아 지금 보이는 라우트를 읽어 같은
+  private 구현에 기대지만, 이름이 바뀌면 화면이 틀리지 않고 비고 평가식이 컴파일되지 않으면 경고를 남겨
+  capability-probe 를 따른다.
 
 ---
 

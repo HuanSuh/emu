@@ -456,3 +456,5 @@ private 구현(`_ModalScope` 등, 릴리스마다 리팩터링 대상)에 evalua
 `getAllocationProfile`) 또는 이미 캡처된 로그 재가공이라 버전 fragility가 낮았던 것과 대조적.
 런타임에 실제 존재를 확인하고 실패 시 정직하게 보고하는 capability-probe 방식으로 재검토
 여지는 남겨둠 — 실수요가 생기면 그때 다시 판단([`DESIGN.md`](DESIGN.md) 보류 항목 참고).
+화면 전환 타임라인(이슈 #89)은 전체 스택이 필요 없어 이 보류와 별개로 진행한다 —
+[`TIMELINE.md`](TIMELINE.md) 12절 참고.

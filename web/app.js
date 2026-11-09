@@ -15,6 +15,9 @@ const state = {
   fold: false,        // fold runs of lines with the same second, level and source
   foldOpenAll: false, // what a run opens as: the last expand all / collapse all
   shown: 0,           // entries that pass the filter — the count, kept as lines come
+  kinds: new Set(['log', 'request']), // the Logs kinds shown: what the tab always showed
+  routes: 'off',      // screen collection (the server's `routes` message): off|connecting|on|failed
+  routesError: null,  // why it failed
   lastSeq: 0,         // the newest line this tab has taken
   shotLoaded: false,  // first screenshot of the current `running` session fetched
   lastRunState: null, // previous app state, to spot the edge into `starting`
@@ -88,7 +91,10 @@ const TAG = { error: 'E', warn: 'W', debug: 'D', system: '•', info: 'I' };
 
 // ---- rendering --------------------------------------------------------------
 
+// Entries of every kind arrive and count for the seq a reconnect is judged
+// by; the kinds toggled off just aren't rows.
 function matches(entry) {
+  if (!state.kinds.has(entry.kind || 'log')) return false;
   if (state.level !== 'all') {
     if ((LEVEL_RANK[entry.level] ?? 1) < LEVEL_RANK[state.level]) return false;
   }
@@ -159,7 +165,14 @@ function rowHtml(e, run) {
     cls = head ? ' head' : run.open ? ' cont' : ' cont shut';
     if (head) fold = `<span class="fold" title="Fold or unfold this run"${run.n < 2 ? ' hidden' : ''}>${foldLabel(run)}</span>`;
   }
-  return `<div class="row ${e.level}${cls}"${run ? ` data-g="${run.gid}"` : ''}><span class="ts">${clock(e)}</span>`
+  // A screen change is a divider; a request leads to its bodies.
+  const hit = e.kind === 'request' && Number.isInteger(e.data?.hitId) ? e.data.hitId : null;
+  if (e.kind === 'route') cls += ' sep';
+  else if (hit != null) cls += ' req';
+  const screen = e.route == null ? '' : escapeHtml(e.routeName ? `${e.route} (${e.routeName})` : e.route);
+  return `<div class="row ${e.level}${cls}"${run ? ` data-g="${run.gid}"` : ''}${hit != null ? ` data-hit="${hit}"` : ''}>`
+       + `<span class="ts"${screen ? ` title="${screen}"` : ''}>${clock(e)}</span>`
+       + `<span class="rt"${screen ? ` title="${screen}"` : ''}>${e.route == null ? '' : escapeHtml(e.route)}</span>`
        + `<span class="tag">${TAG[e.level] || 'I'}</span>`
        + `<span class="txt">${linkify(e.text, highlight)}</span>${fold}</div>`;
 }
@@ -373,6 +386,7 @@ function connect() {
       receive(msg.entry);
     }
     else if (msg.type === 'status') setStatus(msg.status);
+    else if (msg.type === 'routes') setRoutes(msg);  // screen collection's state
     else if (msg.type === 'diff') onDiffChanged(); // files edited, or a launch/reload snapshotted the tree
     else if (msg.type === 'ext') onPageRun(msg);   // a page item started/finished (here, another tab or the CLI), or asks this tab
     else if (msg.type === 'pages') loadPages();    // emu.yaml changed
@@ -848,19 +862,69 @@ els.autoscroll.addEventListener('click', () => {
   setMenuChecked(els.autoscroll, state.autoscroll);
 });
 
-// bulk and fold, kept per browser.
+// bulk, fold and the kinds shown, kept per browser.
 const LOG_PREFS_KEY = 'emu.logPrefs';
+const LOG_KINDS = ['log', 'request', 'route', 'action'];
 try {
   const p = JSON.parse(localStorage.getItem(LOG_PREFS_KEY)) || {};
   if (typeof p.bulk === 'boolean') state.bulk = p.bulk;
   if (typeof p.fold === 'boolean') state.fold = p.fold;
+  if (Array.isArray(p.kinds)) state.kinds = new Set(p.kinds.filter(k => LOG_KINDS.includes(k)));
 } catch (_) {}
 setMenuChecked(els.bulk, state.bulk);
 setMenuChecked(els.fold, state.fold);
 els.foldAll.hidden = !state.fold;
 function saveLogPrefs() {
-  try { localStorage.setItem(LOG_PREFS_KEY, JSON.stringify({ bulk: state.bulk, fold: state.fold })); } catch (_) {}
+  try {
+    localStorage.setItem(LOG_PREFS_KEY, JSON.stringify({ bulk: state.bulk, fold: state.fold, kinds: [...state.kinds] }));
+  } catch (_) {}
 }
+
+// ---- kinds and screens ----------------------------------------------------------
+// The toolbar's Logs · Requests · Routes · Actions pick which of the timeline's
+// entries are rows. Routes depends on screen collection (`timeline.routes`):
+// off or failed, it is disabled and its tooltip says why.
+
+const kindButtons = [...document.querySelectorAll('#log-kinds .kind')];
+
+function routesTitle(routes, error) {
+  switch (routes) {
+    case 'on': return 'Screen changes the app reports (Emu.Route)';
+    case 'connecting': return 'Screen changes: connecting to the app…';
+    case 'failed': return `Screen changes failed${error ? `: ${error}` : ''} — run emu up again to retry`;
+    default: return 'Screen changes are off — set timeline.routes: true in emu.yaml and run emu up again';
+  }
+}
+
+function renderKinds() {
+  for (const b of kindButtons) {
+    b.setAttribute('aria-pressed', String(state.kinds.has(b.dataset.kind)));
+    if (b.dataset.kind !== 'route') continue;
+    b.disabled = state.routes === 'off' || state.routes === 'failed';
+    b.title = routesTitle(state.routes, state.routesError);
+  }
+  // The screen column only once screens can come.
+  els.log.classList.toggle('routes', state.routes !== 'off');
+}
+
+function setRoutes(msg) {
+  state.routes = msg.state || 'off';
+  state.routesError = msg.error || null;
+  renderKinds();
+}
+
+for (const b of kindButtons) {
+  b.addEventListener('click', () => {
+    const k = b.dataset.kind;
+    if (state.kinds.has(k)) state.kinds.delete(k);
+    else state.kinds.add(k);
+    saveLogPrefs();
+    renderKinds();
+    flush();
+    render();
+  });
+}
+renderKinds();
 els.bulk.addEventListener('click', () => {
   state.bulk = !isMenuChecked(els.bulk);
   setMenuChecked(els.bulk, state.bulk);
@@ -879,7 +943,12 @@ els.foldAll.onclick = () => { closeLogMenu(true); setAllFolds(!state.foldOpenAll
 els.log.addEventListener('click', (ev) => {
   const badge = ev.target.closest('.fold');
   const run = badge && folds.get(Number(badge.parentElement.dataset.g));
-  if (run) toggleRun(run, !run.open);
+  if (run) { toggleRun(run, !run.open); return; }
+  // A request row opens its bodies in Mocks — not while selecting text or on a link.
+  const req = ev.target.closest('.row.req');
+  if (!req || ev.target.closest('a') || String(window.getSelection?.() || '')) return;
+  showTab('mocks');
+  openHit(Number(req.dataset.hit));
 });
 
 els.level.value = state.level; // not one the browser restored on reload

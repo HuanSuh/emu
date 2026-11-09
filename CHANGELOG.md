@@ -6,6 +6,40 @@
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-09
+
+### Added
+- `emu timeline`: 앱 로그와 목 서버를 지난 요청을 seq 순서 한 목록으로 본다(`--since`·`-n`·`--kind`·`-g`·`-f`·`--json`,
+  서버가 없으면 `.emu/run.jsonl`). 로그 엔트리에 선택 필드 `kind`·`route`·`routeName`·`data` 가 생겼고, 목 요청은
+  `kind: request` 와 `data`(`hitId`·`method`·`url`·`status`·`mocked`·`error`·`ms`·`startSeq`)를 싣는다. `startSeq` 는
+  요청이 들어온 때의 seq 다. 일반 로그 줄의 JSON 은 전과 같고, 옛 emu 도 새 `run.jsonl` 을 읽는다.
+- `/api/logs?kinds=`: `all` 이나 `log,request,route,action` 의 일부. 빼면 전과 같은 결과(`log`·`request`)를 준다.
+  `/api/errors`·`emu logs`(오프라인 포함)·`emu report --attach logs` 도 전과 같은 범위만 읽고, 대시보드 WebSocket 은
+  모든 종류를 보낸다.
+- 타임라인의 `action` 엔트리: `tap`·`swipe`·`text`·`open-url` 을 넣기 직전에 남긴다. CLI·대시보드 클릭·페이지 `openUrl:`·
+  목 replay 의 진입 딥링크와 단계까지 모두(`data.via`: `page`, `replay`). `text` 는 길이만 남기고, 실패하면 error 레벨
+  엔트리가 하나 더 생긴다. `emu logs`·`assert`·`errors`·대시보드 Logs 탭에는 나오지 않는다.
+- 화면 전환(`timeline.routes`): `emu.yaml` 에 `timeline: {routes: true}` 를 켜면(프로필·`emu.local.yaml` 포함, `emu up` 때
+  읽음) 세션 서버가 앱과 VM Service 연결을 두고 앱이 `dart:developer` 로 보내는 `Emu.Route` 이벤트(`location`·`name`·
+  `detail`, emu 패키지 불필요)를 받아 `route` 엔트리를 남기고 모든 엔트리에 그 화면(`route`·`routeName`)을 찍는다. DDS 가
+  쌓아 둔 지난 이벤트로는 엔트리를 만들지 않고 지금 화면만 정한다. 기본은 꺼짐이고 꺼져 있으면 연결이 없다.
+  `emu timeline --route <regex>`·`/api/logs?route=`, `/api/logs` 의 `routes`(`off`·`connecting`·`on`·`failed`)와
+  `routesError`, 꺼져 있을 때 `emu timeline` 끝의 안내(`--json` 이면 stderr). `emu config` 에 `timeline.routes`.
+- 앱이 `Emu.Route` 를 보내지 않아도 화면을 찍는다(같은 `timeline.routes` 아래, `data.via: framework`). 프레임워크의
+  `Flutter.Navigation` 이나, emu 가 평가식으로 앱의 `RouteInformationProvider` 에 단 리스너가 알린 새 위치(`go_router`
+  의 `go`·`push`)가 오면 150ms 뒤 지금 보이는 라우트를 읽어, 라우터 위치(`go_router` 가 push 한 페이지는 push 한 위치,
+  라우터가 없으면 맨 위 라우트의 이름이나 타입)에 다이얼로그·시트·`Navigator.push` 화면을 `· detail` 로 붙인다. 뒤로 가기
+  버튼이나 `Navigator.pop` 으로 닫으면 아래 화면의 위치로 돌아간다. 평가식이 앱에서 컴파일되지 않으면 경고를 한 번 남긴다.
+  앱 isolate 가 `Emu.Route` 를 보내면 hot restart 전까지 꺼진다.
+- 대시보드 Logs 탭의 **Logs · Requests · Routes · Actions** 토글: 타임라인의 어떤 엔트리를 줄로 그릴지 고른다(기본은 전과 같은
+  Logs·Requests, 브라우저에 기억). 화면 수집이 켜져 있으면 줄마다 화면 칸(툴팁에 이름)과 화면 전환 구분선이 생기고, 꺼졌거나
+  실패하면 Routes 가 비활성이며 툴팁에 이유가 있다. 요청 줄을 누르면 Mocks 에서 본문을 연다(200개를 넘어 지워진 요청은
+  그렇다고 알린다). 서버는 수집 상태를 WebSocket `routes` 메시지로 보낸다.
+
+### Changed
+- `emu open-url` 이 adb·simctl 을 직접 부르지 않고 세션 서버(`/api/open-url`)를 거친다. 보내는 방식과 기다림(최대 10초)은
+  같고, `--json` 에 `seq` 가 더해졌다.
+
 ## [0.18.1] - 2026-11-08
 
 ### Changed
@@ -544,7 +578,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.18.1...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/HuanSuh/emu/compare/v0.18.1...v0.19.0
 [0.18.1]: https://github.com/HuanSuh/emu/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/HuanSuh/emu/compare/v0.17.4...v0.18.0
 [0.17.4]: https://github.com/HuanSuh/emu/compare/v0.17.3...v0.17.4

@@ -106,6 +106,16 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
    - `emu logs [opts]` — 앱 로그.
      - `-g/--grep <regex>`, `-l/--level <e|w|i>`, `-n/--lines <N>`(기본 200),
        `-f/--follow`(스트리밍), `--clear`(버퍼 비우기).
+   - `emu timeline [--since <seq>] [-n N] [--kind log,request,route,action] [-g <regex>] [-f] [--json]` — 앱 로그,
+     목 서버를 지난 요청, emu 가 넣은 입력(`action`: tap·swipe·text·open-url, replay 포함)을 seq 순서 한 목록으로.
+     `tap` 이 돌려준 `seq` 를 `--since` 에 넘기면 그 입력부터 무엇이 일어났는지 본다. `request` 엔트리의 `data.startSeq`
+     는 그 요청이 들어온 때의 seq 다. seq 는 emu 에 도착한 순서라 몇 ms 안의 앞뒤는 믿지 않는다. `text` 는 길이만 남는다.
+     `emu logs`·`assert` 는 전처럼 `log`·`request` 만 본다.
+     - 화면(`[screen]` 칸, `--route <regex>`)은 `emu.yaml` 의 `timeline: {routes: true}` 를 켜고 `emu up` 한 세션에서만
+       찍힌다(README 「Screens」). 화면이 비어 있으면 출력 끝의 `routes: off|failed — …` 안내부터 본다. 앱이
+       `dart:developer` 로 `Emu.Route` 이벤트를 보내면 그것을, 보내지 않으면 emu 가 프레임워크에서 읽은 화면
+       (`data.via: framework`, 라우터 위치 + 모달)을 찍는다 — 라우트가 아닌 탭은 못 본다. 앱 코드에 `Emu.Route` 를
+       더하기 전에 사용자에게 묻는다.
    - `emu assert [opts]` — e2e/CI 오라클(로그 단언).
      - `--expect <regex>`(반드시 나타나야 함, 반복 가능),
        `--deny <regex>`(나타나면 안 됨, 반복 가능), `--since <seq>`(기본: 지금),
