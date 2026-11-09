@@ -161,6 +161,8 @@ class _Source implements VmEventSource {
   @override
   Stream<VmEvent> get events => controller.stream;
   @override
+  Future<String?> evaluate(String isolate, String libraryUri, String expression) async => null;
+  @override
   Future<void> close() async {
     closed = true;
     if (!controller.isClosed) unawaited(controller.close()); // as the real one: nobody may listen
