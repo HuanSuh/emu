@@ -182,6 +182,21 @@ button:disabled { opacity: .5; cursor: default; pointer-events: none; }
 .row.cont .ts { visibility: hidden; }
 #log:not(.searching) .row.shut { display: none; }
 #log.searching .row .fold { pointer-events: none; opacity: .5; }
+/* Logs kinds: which of the timeline's entries the list shows. A disabled one
+   (Routes while screen collection is off) still takes the pointer, for its tooltip. */
+.kinds { display: flex; gap: 2px; flex: none; }
+.kinds .kind { padding: 3px 8px; font-size: 11.5px; color: var(--muted); }
+.kinds .kind[aria-pressed="true"] { color: var(--fg); border-color: var(--accent); background: #2f81f726; }
+.kinds .kind:disabled { pointer-events: auto; cursor: help; }
+/* The screen a line happened on, while screens are collected; narrow, it moves to the time's tooltip. */
+.row .rt { flex: 0 0 auto; max-width: 24ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #a5c8ff; }
+#log:not(.routes) .row .rt { display: none; }
+@media (max-width: 720px) { #log .row .rt { display: none; } }
+/* A screen change: a line across the list. A request opens its bodies (Mocks). */
+.row.sep { border-top: 1px solid #2f81f766; }
+.row.sep .txt { color: #a5c8ff; }
+.row.req { cursor: pointer; }
+.row.req:hover .txt { text-decoration: underline dotted; text-underline-offset: 2px; }
 
 .actionbar {
   position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);

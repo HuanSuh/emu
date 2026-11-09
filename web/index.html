@@ -38,6 +38,12 @@
           <button class="tab" data-tab="mocks" id="tab-mocks" hidden>Mocks<span class="badge" id="mock-badge"></span></button>
         </div>
         <div class="tool-group" id="log-tools">
+          <div class="kinds" id="log-kinds" role="group" aria-label="What the list shows">
+            <button class="kind" data-kind="log" aria-pressed="true" title="App and emu log lines">Logs</button>
+            <button class="kind" data-kind="request" aria-pressed="true" title="Requests through the mock server (mocks:)">Requests</button>
+            <button class="kind" data-kind="route" aria-pressed="false">Routes</button>
+            <button class="kind" data-kind="action" aria-pressed="false" title="What emu sent the app: taps, swipes, text, deep links">Actions</button>
+          </div>
           <input id="search" type="text" placeholder="search logs (regex)…" autocomplete="off" />
           <label class="chk"><input type="checkbox" id="regex" /> regex</label>
           <select id="log-level" title="Show lines of this level" aria-label="Level">

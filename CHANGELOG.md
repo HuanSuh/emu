@@ -25,6 +25,11 @@
   `emu timeline --route <regex>`·`/api/logs?route=`, `/api/logs` 의 `routes`(`off`·`connecting`·`on`·`failed`)와
   `routesError`, 꺼져 있을 때 `emu timeline` 끝의 안내(`--json` 이면 stderr). `emu config` 에 `timeline.routes`.
 
+- 대시보드 Logs 탭의 **Logs · Requests · Routes · Actions** 토글: 타임라인의 어떤 엔트리를 줄로 그릴지 고른다(기본은 전과 같은
+  Logs·Requests, 브라우저에 기억). 화면 수집이 켜져 있으면 줄마다 화면 칸(툴팁에 이름)과 화면 전환 구분선이 생기고, 꺼졌거나
+  실패하면 Routes 가 비활성이며 툴팁에 이유가 있다. 요청 줄을 누르면 Mocks 에서 본문을 연다(200개를 넘어 지워진 요청은
+  그렇다고 알린다). 서버는 수집 상태를 WebSocket `routes` 메시지로 보낸다.
+
 ### Changed
 - `emu open-url` 이 adb·simctl 을 직접 부르지 않고 세션 서버(`/api/open-url`)를 거친다. 보내는 방식과 기다림(최대 10초)은
   같고, `--json` 에 `seq` 가 더해졌다.
