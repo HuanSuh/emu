@@ -20,7 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMainMenu()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem?.button?.image = NSImage(systemSymbolName: "iphone.gen3", accessibilityDescription: "emu")
+        statusItem?.button?.image = MenuIcon.image()
         statusItem?.button?.imagePosition = .imageLeading
         let menu = NSMenu()
         menu.delegate = self
