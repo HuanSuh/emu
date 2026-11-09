@@ -1,7 +1,7 @@
 # 타임라인 설계 메모
 
-> 상태: 설계 확정(구현 전). Q4·Q5·Q9·Q11 은 메인테이너가 결정했고(2026-11-03), 나머지 질문은 이슈 리포터 리뷰(2026-11-04, §14)에서 모두 정해 열린 질문이 없다(§11). PR 0 실측(2026-11-04, §15)으로 PR 3 의 쌓인 기록 처리, `Emu.Route` 를 보낼 때, PR 5 의 범위를 정했다. 이슈 [#89](https://github.com/HuanSuh/emu/issues/89).
-> 이 문서는 합의용이다. 여기 적힌 명령·API는 아직 없다.
+> 상태: 구현됨(§10 의 PR 1~5 = #97~#101, develop). Q4·Q5·Q9·Q11 은 메인테이너가 결정했고(2026-11-03), 나머지 질문은 이슈 리포터 리뷰(2026-11-04, §14)에서 모두 정해 열린 질문이 없다(§11). PR 0 실측(2026-11-04, §15)으로 PR 3 의 쌓인 기록 처리, `Emu.Route` 를 보낼 때, PR 5 의 범위를 정했다. 이슈 [#89](https://github.com/HuanSuh/emu/issues/89).
+> 이 문서는 구현 전에 합의한 기록이다. 명령·API 의 지금 동작은 README 와 `docs/DESIGN.md` 를 따른다.
 
 ## 1. 결론 요약
 
@@ -20,7 +20,8 @@
   계약에 "리스너가 생기면 한 번 더 보낸다" 를 더했다(§6.4).
 - **PR 0 실측을 반영했다(§15).** 장기 연결은 emu 의 짧은 연결·hot reload·restart·브레이크포인트와 함께 써도
   문제가 없었다. 평가식으로 `RouteInformationProvider` 에 리스너를 달면 앱 코드 없이 `go_router` 의
-  `go`·`push`·pop 위치를 받을 수 있어, 1층(PR 5)을 이 리스너와 스냅샷으로 짠다(§6.2).
+  `go`·`push`·`context.pop()` 위치를 받을 수 있어, 1층(PR 5)을 이 리스너와 스냅샷으로 짠다(§6.2). 뒤로 가기
+  버튼·`Navigator.pop` 은 리스너에 알리지 않는다(§15.5).
 - **이슈 리포터 피드백을 반영했다(§13).** `go_router` 앱, emu 패키지 의존 불가, 탭이 라우트가 아님,
   실제 경로와 라우트 이름을 함께 원함. 그래서 앱이 보내는 층을 먼저 구현한다(§10).
 - **이슈 리포터 리뷰를 반영했다(§14).** 조작 기록 위치, 대시보드가 바뀌기 전 단계의 처리, DDS 기록,
@@ -800,8 +801,12 @@ isolate 의 `Flutter.FrameworkInitialization`·`Emu.Route` 가 그 뒤에 왔다
 `binding.dart` 스코프에서 `Router` 를 찾아 `routeInformationProvider` 에 리스너를 다는 식을 한 번
 평가했다(왕복 7ms, 결과 `listening on GoRouteInformationProvider`).
 
-- `go`·`push`·pop 에 `Emu.Route` 와 같은 위치를 보냈다(`/user/42` → `/user/8` → `/user/42` → `/` → `/user/7` → `/`).
-  스냅샷이 놓친 `push` 위치도 맞다.
+- `go`·`push`·`context.pop()` 에 `Emu.Route` 와 같은 위치를 보냈다(`/user/42` → `/user/8` → `/user/42` → `/` →
+  `/user/7` → `/`). 스냅샷이 놓친 `push` 위치도 맞다.
+- (2026-11-09 추가) pop 은 `context.pop()` 으로만 쟀다. `context.pop()` 은 `GoRouter.pop` 이 `restore` 로 위치를
+  다시 알려서 리스너에 오지만, 뒤로 가기 버튼·시스템 뒤로·`Navigator.pop` 처럼 Navigator 가 직접 닫는 pop 은 리스너에
+  알리지 않는다(`go_router` 16.2.4 소스로 확인, 재지 않음). 그래서 PR 5 는 리스너가 알린 위치를 그 뒤 맨 위에 처음 온
+  페이지에 묶어 두고, 전에 본 페이지가 다시 맨 위에 오면 그 페이지의 위치를 쓴다(#101).
 - 바뀐 라이브러리가 있는 hot reload 뒤에도 보냈다. hot restart 뒤에는 보내지 않았다(isolate 가 새것).
 - 라우트가 아닌 탭, `Navigator.push`·다이얼로그·시트는 위치를 바꾸지 않아 보내지 않는다.
 
