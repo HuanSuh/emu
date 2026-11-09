@@ -38,6 +38,7 @@ class EmuConfig {
     this.onAppStarted = const [],
     this.pages,
     this.mocks,
+    this.timelineRoutes = false,
   });
 
   final String? deviceId;
@@ -67,6 +68,10 @@ class EmuConfig {
   /// API mocks, raw — `parseMocks` in `mock.dart` reads them.
   final Object? mocks;
 
+  /// `timeline: {routes: true}`: record the screens the app reports
+  /// (`route_watch.dart`). Off unless set; read at `emu up`.
+  final bool timelineRoutes;
+
   static const empty = EmuConfig();
 
   factory EmuConfig.fromMap(Map<String, dynamic> m) {
@@ -94,6 +99,7 @@ class EmuConfig {
       onAppStarted: stringList(m['onAppStarted']),
       pages: m['pages'],
       mocks: m['mocks'],
+      timelineRoutes: switch (m['timeline']) { {'routes': true} => true, _ => false },
     );
   }
 }

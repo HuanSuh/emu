@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:emu/src/app_input.dart';
+import 'package:emu/src/cli.dart' show runCli;
 import 'package:emu/src/device_lease.dart';
 import 'package:emu/src/engine.dart';
 import 'package:emu/src/locate.dart';
@@ -13,6 +14,7 @@ import 'package:emu/src/mock_replay.dart';
 import 'package:emu/src/models.dart';
 import 'package:emu/src/open_url.dart';
 import 'package:emu/src/registry.dart';
+import 'package:emu/src/route_watch.dart';
 import 'package:emu/src/server.dart';
 import 'package:emu/src/session.dart';
 import 'package:test/test.dart';
@@ -150,6 +152,48 @@ class _Input implements AppInput {
   }
 }
 
+/// A screen-collection connection the test feeds by hand.
+class _Source implements VmEventSource {
+  @override
+  String? get isolate => 'isolates/1';
+  final controller = StreamController<VmEvent>();
+  bool closed = false;
+  @override
+  Stream<VmEvent> get events => controller.stream;
+  @override
+  Future<void> close() async {
+    closed = true;
+    if (!controller.isClosed) unawaited(controller.close()); // as the real one: nobody may listen
+  }
+}
+
+/// stderr for a CLI run in the test: what was written, as text.
+class _Err implements Stdout {
+  final buf = StringBuffer();
+  @override
+  void write(Object? object) => buf.write(object);
+  @override
+  void writeln([Object? object = '']) => buf.writeln(object);
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
+}
+
+/// `emu <argv>` run in [dir] against whatever server it finds there: exit
+/// code, stdout and stderr.
+Future<(int, String, String)> _cli(Directory dir, List<String> argv) async {
+  final out = StringBuffer();
+  final err = _Err();
+  final code = await IOOverrides.runZoned(
+    () => runZoned(
+      () => runCli(argv),
+      zoneSpecification: ZoneSpecification(print: (self, parent, zone, line) => out.writeln(line)),
+    ),
+    getCurrentDirectory: () => dir,
+    stderr: () => err,
+  );
+  return (code, '$out', '${err.buf}');
+}
+
 /// One keep-alive client per test, and waits that look at the server in
 /// process: a new connection per call or poll churns through ephemeral
 /// ports, which other test files bind (port 0) and expect free once closed.
@@ -181,6 +225,7 @@ void main() {
   late Directory project;
   late FakeEngine engine;
   late _Input input;
+  VmEventSourceFactory? routeSource;
   EmuServer? server;
 
   setUp(() {
@@ -190,6 +235,7 @@ void main() {
     File('${project.path}/pubspec.yaml').writeAsStringSync('name: app\n');
     engine = FakeEngine();
     input = _Input();
+    routeSource = null;
   });
 
   tearDown(() async {
@@ -215,6 +261,7 @@ void main() {
       },
       replayDevice: (_) => device!,
       input: input,
+      routeSource: routeSource,
     );
     await s.start(0, opts ?? LaunchOptions());
     input.store = s.logStore; // set in start
@@ -610,6 +657,112 @@ pages:
       expect(r.status, 200, reason: '${r.body}');
       await _until(() => s.logStore.query(kinds: {LogKind.action}).isNotEmpty);
       expect(s.logStore.query(kinds: {LogKind.action}).first.data, {'cmd': 'open-url', 'url': 'myapp://promo', 'via': 'page'});
+    });
+  });
+
+  group('screens (timeline.routes)', () {
+    late List<String> connects;
+    late List<_Source> sources;
+    Object? failWith;
+    setUp(() {
+      connects = [];
+      sources = [];
+      failWith = null;
+      routeSource = (uri) async {
+        connects.add(uri);
+        if (failWith != null) throw failWith!;
+        return (sources..add(_Source())).last;
+      };
+    });
+
+    Future<Map<String, dynamic>> logsApi(EmuServer s, [String query = '']) async =>
+        (await _call(s, 'GET', '/api/logs?$query')).body;
+
+    test('off: no connection is ever made, and /api/logs says so', () async {
+      final s = await start();
+      engine.appRunning();
+      await _settle();
+      expect(connects, isEmpty);
+      expect((await logsApi(s))['routes'], 'off');
+      expect(logs(s).where((l) => l.startsWith('timeline:')), isEmpty);
+    });
+
+    test('on: connects to the VM Service and follows it; what the app reports is stamped', () async {
+      final s = await start(opts: LaunchOptions(timelineRoutes: true));
+      expect([connects, (await logsApi(s))['routes']], [<String>[], 'connecting']);
+      engine.appRunning();
+      await _until(() => connects.isNotEmpty);
+      await _settle();
+      expect([connects, (await logsApi(s))['routes']], [['ws://127.0.0.1:1/x=/ws'], 'on']);
+
+      sources.single.controller.add(VmExtensionEvent('Emu.Route', 'isolates/1', {'location': '/user/42', 'name': 'user'}));
+      await _settle();
+      final line = s.logStore.add('loaded profile');
+      expect((line.route, line.routeName), ('/user/42', 'user'));
+      // The default answer has no route entry, but its lines carry the screen.
+      final plain = await logsApi(s, 'sinceSeq=${line.seq - 1}');
+      expect((plain['logs'] as List).single, containsPair('route', '/user/42'));
+      final screen = await logsApi(s, 'kinds=all&route=${Uri.encodeQueryComponent('^/USER')}');
+      expect([for (final e in (screen['logs'] as List).cast<Map<String, dynamic>>()) e['text']],
+          ['[route] /user/42', 'loaded profile']);
+
+      engine.emit(engine.status.copyWith(vmServiceUri: 'ws://127.0.0.1:2/y=/ws')); // a cold restart's new DDS
+      await _until(() => connects.length == 2);
+      await _settle();
+      expect([sources.first.closed, s.logStore.currentRoute], [true, isNull]);
+      engine.lost();
+      await _settle();
+      expect((sources.last.closed, (await logsApi(s))['routes']), (true, 'connecting'));
+    });
+
+    test('a failed connection is one warning and routes: failed; the session goes on', () async {
+      failWith = StateError('refused');
+      final s = await start(opts: LaunchOptions(timelineRoutes: true));
+      engine.appRunning();
+      await _until(() => connects.isNotEmpty);
+      await _settle();
+      final body = await logsApi(s);
+      expect((body['routes'], body['routesError']), ('failed', 'Bad state: refused'));
+      expect(logs(s).where((l) => l.startsWith('timeline: no screen changes')), hasLength(1));
+      expect((await _call(s, 'POST', '/api/tap?x=1&y=2')).status, 200);
+    });
+
+    test('a bad --route regex is refused', () async {
+      final s = await start();
+      expect((await _call(s, 'GET', '/api/logs?route=(')).status, 400);
+    });
+
+    test('emu timeline: the off notice ends the text, and goes to stderr with --json', () async {
+      final s = await start();
+      s.logStore.add('one');
+      var (code, out, err) = await _cli(project, ['timeline', '-n', '3']);
+      expect(code, 0, reason: err);
+      expect(out.trim().split('\n').last, 'routes: off — set timeline.routes: true in emu.yaml and run emu up again');
+      expect(err, isEmpty);
+      (code, out, err) = await _cli(project, ['timeline', '-n', '3', '--json']);
+      expect(code, 0, reason: err);
+      for (final l in out.trim().split('\n')) {
+        expect(jsonDecode(l), isA<Map<String, dynamic>>());
+      }
+      expect(err.trim(), 'routes: off — set timeline.routes: true in emu.yaml and run emu up again');
+    });
+
+    test('emu timeline --route keeps one screen; no notice while collecting', () async {
+      final s = await start(opts: LaunchOptions(timelineRoutes: true));
+      engine.appRunning();
+      await _until(() => connects.isNotEmpty);
+      await _settle();
+      final src = sources.single.controller;
+      src.add(VmExtensionEvent('Emu.Route', 'isolates/1', {'location': '/cart'}));
+      await _settle();
+      s.logStore.add('cart line');
+      src.add(VmExtensionEvent('Emu.Route', 'isolates/1', {'location': '/pay', 'name': 'payment'}));
+      await _settle();
+      s.logStore.add('pay line');
+      final (code, out, err) = await _cli(project, ['timeline', '--route', 'payment']);
+      expect(code, 0, reason: err);
+      expect(out, allOf(contains('[/pay] [route] /pay'), contains('[/pay] pay line'), isNot(contains('cart line'))));
+      expect(out, isNot(contains('routes:')));
     });
   });
 
