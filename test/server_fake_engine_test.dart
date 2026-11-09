@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:emu/src/app_input.dart';
 import 'package:emu/src/device_lease.dart';
 import 'package:emu/src/engine.dart';
 import 'package:emu/src/locate.dart';
@@ -10,6 +11,7 @@ import 'package:emu/src/log_store.dart';
 import 'package:emu/src/mock.dart';
 import 'package:emu/src/mock_replay.dart';
 import 'package:emu/src/models.dart';
+import 'package:emu/src/open_url.dart';
 import 'package:emu/src/registry.dart';
 import 'package:emu/src/server.dart';
 import 'package:emu/src/session.dart';
@@ -117,6 +119,37 @@ class FakeEngine implements AppEngine {
   }
 }
 
+/// Input that never reaches a device: each call is noted and, standing in for
+/// the app reacting to it, logs a line — so a test sees what came after the
+/// input's `action` entry. [fail] makes the next call throw.
+class _Input implements AppInput {
+  LogStore? store;
+  final List<String> calls = [];
+  Object? fail;
+  ProcessResult openResult = ProcessResult(0, 0, '', '');
+
+  Future<void> _did(String call) async {
+    calls.add(call);
+    final error = fail;
+    fail = null;
+    if (error != null) throw error;
+    store?.add('app saw $call');
+  }
+
+  @override
+  Future<void> tap(String wsUri, int x, int y) => _did('tap $x,$y');
+  @override
+  Future<void> swipe(String wsUri, int x1, int y1, int x2, int y2, {required int durationMs}) =>
+      _did('swipe $x1,$y1 $x2,$y2 ${durationMs}ms');
+  @override
+  Future<void> text(String wsUri, String text, {required bool append}) => _did('text'); // what was typed stays out of the log
+  @override
+  Future<ProcessResult> openUrl(OpenUrlCommand cmd) async {
+    await _did('open ${cmd.arguments.last}');
+    return openResult;
+  }
+}
+
 /// One keep-alive client per test, and waits that look at the server in
 /// process: a new connection per call or poll churns through ephemeral
 /// ports, which other test files bind (port 0) and expect free once closed.
@@ -147,6 +180,7 @@ void main() {
   late Directory tmp;
   late Directory project;
   late FakeEngine engine;
+  late _Input input;
   EmuServer? server;
 
   setUp(() {
@@ -155,6 +189,7 @@ void main() {
     project = Directory('${tmp.path}/app')..createSync();
     File('${project.path}/pubspec.yaml').writeAsStringSync('name: app\n');
     engine = FakeEngine();
+    input = _Input();
   });
 
   tearDown(() async {
@@ -179,8 +214,10 @@ void main() {
         return engine;
       },
       replayDevice: (_) => device!,
+      input: input,
     );
     await s.start(0, opts ?? LaunchOptions());
+    input.store = s.logStore; // set in start
     return s;
   }
 
@@ -483,6 +520,99 @@ mocks:
     });
   });
 
+  group('actions', () {
+    /// A running app on [_udid], what input needs.
+    Future<EmuServer> running() async {
+      final s = await start();
+      engine.appRunning();
+      await _settle();
+      return s;
+    }
+
+    /// The entries after [seq], as `<kind> <text>`.
+    List<String> after(EmuServer s, int seq) =>
+        [for (final e in s.logStore.query(sinceSeq: seq)) if (e.source != 'system') '${e.kindName} ${e.text}'];
+
+    test('a tap is recorded just before it fires; the seq it answers comes before the record', () async {
+      final s = await running();
+      final r = await _call(s, 'POST', '/api/tap?x=10&y=20');
+      expect(r.status, 200);
+      expect(after(s, r.body['seq'] as int), ['action [action] tap 10 20', 'log app saw tap 10,20']);
+      final e = s.logStore.query(kinds: {LogKind.action}).single;
+      expect([e.level, e.source, e.data], [LogLevel.system, 'action', {'cmd': 'tap', 'x': 10, 'y': 20}]);
+      // `emu assert --since <seq>` reads /api/logs: the record is not a match.
+      expect((await _call(s, 'GET', '/api/logs?sinceSeq=${r.body['seq']}&grep=tap')).body['logs'],
+          [isA<Map>().having((l) => l['text'], 'text', 'app saw tap 10,20')]);
+    });
+
+    test('a swipe, with its points and duration', () async {
+      final s = await running();
+      final r = await _call(s, 'POST', '/api/swipe?x1=1&y1=2&x2=3&y2=400&durationMs=250');
+      expect(after(s, r.body['seq'] as int).first, 'action [action] swipe 1,2 → 3,400 (250ms)');
+      expect(s.logStore.query(kinds: {LogKind.action}).single.data,
+          {'cmd': 'swipe', 'x1': 1, 'y1': 2, 'x2': 3, 'y2': 400, 'durationMs': 250});
+    });
+
+    test('typed text is recorded by its length only; the answer is unchanged', () async {
+      final s = await running();
+      final r = await _call(s, 'POST', '/api/text?text=${Uri.encodeQueryComponent('hunter2한글')}&append=true');
+      expect((r.status, r.body['text'], r.body['append']), (200, 'hunter2한글', true));
+      final e = s.logStore.query(kinds: {LogKind.action}).single;
+      expect([e.text, e.data], ['[action] text --append (9 characters)', {'cmd': 'text', 'length': 9, 'append': true}]);
+      await s.logStore.close();
+      expect(s.session.logFile.readAsStringSync(), isNot(contains('hunter2')));
+    });
+
+    test('a failed input gets a second entry at error level', () async {
+      final s = await running();
+      input.fail = StateError('device gone');
+      final r = await _call(s, 'POST', '/api/tap?x=1&y=2');
+      expect(r.status, 500);
+      final actions = s.logStore.query(kinds: {LogKind.action});
+      expect([for (final e in actions) (e.text, e.level)], [
+        ('[action] tap 1 2', LogLevel.system),
+        ('[action] tap 1 2 failed: Bad state: device gone', LogLevel.error),
+      ]);
+      expect(actions.last.data, {'cmd': 'tap', 'x': 1, 'y': 2, 'error': 'Bad state: device gone'});
+    });
+
+    test('an input whose text looks like an error is not an error line', () async {
+      final s = await running();
+      await _call(s, 'POST', '/api/swipe?x1=1&y1=2&x2=3&y2=4');
+      s.logStore.add('ok');
+      expect(s.logStore.query(kinds: {LogKind.action}, level: LogLevel.error), isEmpty);
+    });
+
+    test('a deep link from the box or emu open-url (settle=0), and its failure', () async {
+      final s = await running();
+      final r = await _call(s, 'POST', '/api/open-url?url=${Uri.encodeQueryComponent('myapp://promo?id=3')}&settle=0');
+      expect((r.status, r.body['ok']), (200, true));
+      expect(after(s, r.body['seq'] as int), ['action [action] open-url myapp://promo?id=3', 'log app saw open myapp://promo?id=3']);
+      expect(s.logStore.query(kinds: {LogKind.action}).single.data, {'cmd': 'open-url', 'url': 'myapp://promo?id=3'});
+
+      input.openResult = ProcessResult(0, 1, '', 'no such app\nUnderlying error: 115\n');
+      final bad = await _call(s, 'POST', '/api/open-url?url=x://y&settle=0');
+      expect((bad.status, bad.body['error']), (500, 'no such app\nUnderlying error: 115'));
+      final failed = s.logStore.query(kinds: {LogKind.action}).last;
+      expect((failed.text, failed.data!['error']),
+          ('[action] open-url x://y failed: no such app', 'no such app\nUnderlying error: 115'));
+    });
+
+    test("a page's openUrl: action is recorded as via page", () async {
+      File('${project.path}/emu.yaml').writeAsStringSync('''
+pages:
+  - id: tools
+    toolbar:
+      - action: { id: promo, openUrl: "myapp://promo" }
+''');
+      final s = await running();
+      final r = await _call(s, 'POST', '/api/pages/tools/run/promo');
+      expect(r.status, 200, reason: '${r.body}');
+      await _until(() => s.logStore.query(kinds: {LogKind.action}).isNotEmpty);
+      expect(s.logStore.query(kinds: {LogKind.action}).first.data, {'cmd': 'open-url', 'url': 'myapp://promo', 'via': 'page'});
+    });
+  });
+
   group('mock scenarios', () {
     const rule = {'match': {'path': '/a'}, 'respond': {'status': 200}};
 
@@ -522,6 +652,27 @@ mocks:
         await _settle();
         return s;
       }
+
+      test("the replay's link, taps and text are action entries, via replay", () async {
+        final s = await ready(replay: {
+          'entry': {'url': 'a://b'},
+          'steps': [
+            {'tap': {'text': 'Pay'}},
+            {'text': 'secret'},
+          ],
+        });
+        fake.found = [LocateMatch(1, 2, 10, 10, 'Text')];
+        final r = await _call(s, 'POST', '/api/mock/replay/x');
+        expect(r.status, 200, reason: '${r.body}');
+        final actions = s.logStore.query(kinds: {LogKind.action});
+        expect([for (final e in actions) e.text],
+            ['[action] open-url a://b', '[action] tap --text "Pay"', '[action] text (6 characters)']);
+        expect([for (final e in actions) e.data], [
+          {'cmd': 'open-url', 'url': 'a://b', 'via': 'replay'},
+          {'cmd': 'tap', 'text': 'Pay', 'x': 1, 'y': 2, 'widgetType': 'Text', 'via': 'replay'},
+          {'cmd': 'text', 'length': 6, 'append': false, 'via': 'replay'},
+        ]);
+      });
 
       test('turns the scenario on before opening the link, then runs the steps', () async {
         final s = await ready();

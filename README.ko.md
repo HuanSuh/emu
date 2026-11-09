@@ -368,7 +368,7 @@ emu logs [opts]
 
 서버가 꺼져 있어도 `.emu/run.jsonl` 에서 오프라인으로 읽는다.
 
-### timeline — 로그와 요청을 한 목록으로
+### timeline — 로그·요청·입력을 한 목록으로
 
 ```bash
 emu timeline [opts]
@@ -380,15 +380,20 @@ emu timeline [opts]
   --json               한 줄에 엔트리 하나(JSONL), `logs --json` 과 같다
 ```
 
-앱 로그 줄과 목 서버(`mocks:`, [API 목업](#api-목업))를 지난 요청을 seq 순서 한 목록으로 본다. 한 줄은
-`seq 시각 레벨 [화면] 내용` 이다(화면을 모르면 뺀다).
+앱 로그 줄, 목 서버(`mocks:`, [API 목업](#api-목업))를 지난 요청, emu 가 넣은 입력을 seq 순서 한 목록으로 본다.
+한 줄은 `seq 시각 레벨 [화면] 내용` 이다(화면을 모르면 뺀다).
 
 ```bash
-emu timeline -n 3
+emu timeline -n 4
+#     56 16:09:18.590 •  [action] tap --text "Cart"
 #     57 16:09:18.598 I  flutter: loading cart
 #     58 16:09:18.622 I  [mock] GET https://api.example.com/v1/cart → 200 (mock: empty) · 3ms
 #     59 16:09:18.640 I  flutter: cart shown
 ```
+
+- `action` 엔트리는 emu 가 보낸 입력이다. CLI·대시보드·페이지 `openUrl:`·목 replay(`data.via`: `page`, `replay`)의
+  `tap`·`swipe`·`text`·`open-url` 을 넣기 직전에 남긴다. `data` 에는 명령과 기준(`x`/`y`, `text`/`key` 와 맞은
+  `widgetType`, `url`)이 있고, 입력한 글자는 `length` 로만 남는다. 실패하면 error 레벨 엔트리가 하나 더 생긴다.
 
 - `request` 엔트리는 요청이 끝날 때 생긴다. `--json` 의 `data.startSeq` 는 요청이 들어온 때의 seq 라, 요청이 나가
   있는 동안 앱이 남긴 로그는 둘 사이에 있다. `data.hitId` 로는 남아 있는 동안 `/api/mock/hits/<id>` 를 본다.
@@ -461,6 +466,10 @@ emu text "hello world"               # 포커스된 필드에 입력 — 필드�
 > 합성 포인터 이벤트를 dispatch하고 포커스된 텍스트 필드를 직접 갱신한다(`probe` 와 같은 인프라).
 > 그래서 **Android·iOS가 동일 경로**로 동작하고, `text` 가 **유니코드**(한글·이모지)를 넣을 수 있다.
 
+CLI·대시보드 클릭·목 replay 어디서 온 입력이든 넣기 직전에 [타임라인](#timeline--로그요청입력을-한-목록으로)에
+`action` 엔트리로 남아, 그 입력이 일으킨 일은 그 뒤에 온다. `text` 는 길이만 남긴다(비밀번호일 수 있다). 응답에는
+지금처럼 입력한 글자가 그대로 온다.
+
 > ⚠️ **에이전트 주의**: 스크린샷이 축소되어 전달되면(예: 1344×2992 → 898×2000) 이미지에서 읽은
 > 좌표에 **축소 배율을 곱해야** 물리 좌표가 된다. 탭이 엉뚱한 곳에 꽂히는 원인 대부분이 이것이다.
 
@@ -532,7 +541,7 @@ android.intent.action.VIEW -d <url>`, iOS는 `xcrun simctl openurl <udid>
 <url>` — 실행 중인 세션에 붙은 기기를 보고 자동으로 분기한다. 쿼리스트링의
 `&`/`;` 등을 직접 이스케이프할 필요는 없다 — emu가 처리한다. `tap`/`shot`
 과 같이 기본적으로 전환이 settle될 때까지 기다렸다가 반환한다(`--no-settle`
-로 건너뛸 수 있음).
+로 건너뛸 수 있음). 딥링크는 대시보드의 딥링크 칸처럼 세션 서버를 거쳐 보내고, 타임라인에 남는다.
 
 > **구현 참고**: `xcrun simctl openurl` 은 URL을 그대로 exec하므로 iOS
 > 경로는 URL을 손대지 않고 넘긴다. `adb shell` 은 다르다 — 인자를 공백으로

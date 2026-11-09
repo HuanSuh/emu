@@ -14,6 +14,13 @@
 - `/api/logs?kinds=`: `all` 이나 `log,request,route,action` 의 일부. 빼면 전과 같은 결과(`log`·`request`)를 준다.
   `/api/errors`·`emu logs`(오프라인 포함)·`emu report --attach logs` 도 전과 같은 범위만 읽고, 대시보드 WebSocket 은
   모든 종류를 보낸다.
+- 타임라인의 `action` 엔트리: `tap`·`swipe`·`text`·`open-url` 을 넣기 직전에 남긴다. CLI·대시보드 클릭·페이지 `openUrl:`·
+  목 replay 의 진입 딥링크와 단계까지 모두(`data.via`: `page`, `replay`). `text` 는 길이만 남기고, 실패하면 error 레벨
+  엔트리가 하나 더 생긴다. `emu logs`·`assert`·`errors`·대시보드 Logs 탭에는 나오지 않는다.
+
+### Changed
+- `emu open-url` 이 adb·simctl 을 직접 부르지 않고 세션 서버(`/api/open-url`)를 거친다. 보내는 방식과 기다림(최대 10초)은
+  같고, `--json` 에 `seq` 가 더해졌다.
 
 ## [0.18.1] - 2026-11-08
 

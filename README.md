@@ -392,7 +392,7 @@ emu logs [opts]
 
 Reads offline from `.emu/run.jsonl` even when the server is down.
 
-### timeline — logs and requests in one list
+### timeline — logs, requests and inputs in one list
 
 ```bash
 emu timeline [opts]
@@ -404,16 +404,24 @@ emu timeline [opts]
   --json               one entry per line (JSONL), like `logs --json`
 ```
 
-App log lines and the requests that went through the mock server (`mocks:`, see
-[API mocks](#api-mocks)) in one list, in seq order. Each line is `seq time level
-[screen] text` (the screen is left out while unknown):
+App log lines, the requests that went through the mock server (`mocks:`, see
+[API mocks](#api-mocks)) and emu's own inputs in one list, in seq order. Each
+line is `seq time level [screen] text` (the screen is left out while unknown):
 
 ```bash
-emu timeline -n 3
+emu timeline -n 4
+#     56 16:09:18.590 •  [action] tap --text "Cart"
 #     57 16:09:18.598 I  flutter: loading cart
 #     58 16:09:18.622 I  [mock] GET https://api.example.com/v1/cart → 200 (mock: empty) · 3ms
 #     59 16:09:18.640 I  flutter: cart shown
 ```
+
+- An `action` entry is an input emu sent — `tap`, `swipe`, `text`, `open-url`,
+  from the CLI, the dashboard, a page's `openUrl:` or a mock replay
+  (`data.via`: `page`, `replay`) — written just before it fires. Its `data`
+  has the command and what it went by (`x`/`y`, `text`/`key` and the
+  `widgetType` it hit, the `url`); a typed text only by its `length`. An input
+  that fails gets a second entry at error level.
 
 - A `request` entry is written when the request is done. Its `data.startSeq`
   (in `--json`) is the seq when the request came in, so what the app logged
@@ -496,6 +504,11 @@ image directly.
 > That's why **Android and iOS use the same path**, and why `text` can enter
 > **unicode** (Korean, emoji).
 
+Every input — from the CLI, a dashboard click, a mock replay — is written to the
+[timeline](#timeline--logs-requests-and-inputs-in-one-list) as an `action` entry
+just before it fires, so what it causes comes after it. `text` is recorded by its
+length only (it may be a password); its answer still echoes the text.
+
 > ⚠️ **Agent caution**: if a screenshot reaches you downscaled (e.g. 1344×2992 →
 > 898×2000), you must **multiply the coordinates you read off the image by the
 > downscale ratio** to get physical coordinates. This is the most common cause of
@@ -575,7 +588,8 @@ android.intent.action.VIEW -d <url>` on Android, `xcrun simctl openurl <udid>
 <url>` on iOS — chosen automatically from the device attached to the running
 session. `&`/`;`/etc. in a query string need no escaping on your end; emu
 handles it. Waits for the resulting navigation to settle by default (skip
-with `--no-settle`), same as `tap`/`shot`.
+with `--no-settle`), same as `tap`/`shot`. The link goes through the session
+server, as the dashboard's deep link box does, and is recorded in the timeline.
 
 > **Implementation note**: `xcrun simctl openurl` execs the URL directly, so
 > the iOS path passes it through as-is. `adb shell` does not — it joins its

@@ -14,6 +14,7 @@ import 'package:shelf_web_socket/shelf_web_socket.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'api_guard.dart';
+import 'app_input.dart';
 import 'device_lease.dart';
 import 'device_manager.dart';
 import 'device_setup.dart';
@@ -23,7 +24,6 @@ import 'error_parser.dart';
 import 'eval.dart';
 import 'frame.dart';
 import 'hub.dart' show hubFrameAncestors;
-import 'input.dart';
 import 'locate.dart';
 import 'locate.dart' as loc show locate;
 import 'log_store.dart';
@@ -129,13 +129,15 @@ class EmuServer {
     void Function(int code)? exitProcess,
     AppEngine Function(String projectRoot, LogStore logStore)? engineFactory,
     ReplayDevice Function(String vmServiceUri)? replayDevice,
+    AppInput? input,
   })  : leases = leases ?? DeviceLeases(),
         registry = registry ?? SessionRegistry(),
         recent = recent ?? RecentProjects(),
         devices = DeviceManager(flutterExecutable: flutterExecutable),
         _exit = exitProcess ?? exit,
         _engineFactory = engineFactory,
-        _replayDevice = replayDevice;
+        _replayDevice = replayDevice,
+        input = input ?? const DeviceInput();
 
   final Session session;
 
@@ -151,6 +153,10 @@ class EmuServer {
 
   /// What `/api/mock/replay` drives; null is the app itself — a seam for tests.
   final ReplayDevice Function(String vmServiceUri)? _replayDevice;
+
+  /// Every tap, swipe, text and deep link goes through this, after its
+  /// `action` entry is written ([_recordAction]) — a seam for tests.
+  final AppInput input;
 
   /// A replay is running: a second one would tap over it.
   bool _replaying = false;
@@ -294,7 +300,7 @@ class EmuServer {
       profile: opts.profile,
       environment: _pageEnvironment,
       followUp: _pageFollowUp,
-      openUrl: (url) async => (await _openDeepLink(url)).$2,
+      openUrl: (url) async => (await _openDeepLink(url, via: 'page')).$2,
       broadcast: _broadcast,
       log: (text, level) => logStore.add(text, level: level, source: 'ext'),
       autoStateFile: File('${session.stateDir.path}/pages_auto.json'),
@@ -835,7 +841,8 @@ class EmuServer {
       server.active = name;
       logStore.system('mock: replaying "$name"');
       _broadcast({'type': 'mock', 'active': name});
-      final results = await runReplay(replay, _replayDevice?.call(uri) ?? _AppReplayDevice(this, uri));
+      final device = _replayDevice?.call(uri) ?? _AppReplayDevice(this, uri);
+      final results = await runReplay(replay, _RecordingReplayDevice(this, device));
       final failure = replayFailure(results);
       if (failure != null) logStore.add('mock: replay of "$name" stopped — $failure', level: LogLevel.error, source: 'system');
       return _json({
@@ -1115,9 +1122,20 @@ class EmuServer {
       try {
         final matches = await locate(uri, text: text, key: key);
         final m = pickMatch(matches, index, query: query);
-        return await _inject(() => runTap(uri, m.x, m.y),
-            {'x': m.x, 'y': m.y, 'widgetType': m.widgetType, 'matchCount': matches.length,
-              if (m.partial) 'partial': true});
+        return await _inject(
+          () => input.tap(uri, m.x, m.y),
+          {'x': m.x, 'y': m.y, 'widgetType': m.widgetType, 'matchCount': matches.length, if (m.partial) 'partial': true},
+          label: 'tap $query${index != null ? ' --index $index' : ''}',
+          data: {
+            'cmd': 'tap',
+            'text': ?text,
+            'key': ?key,
+            'index': ?index,
+            'x': m.x,
+            'y': m.y,
+            'widgetType': m.widgetType,
+          },
+        );
       } on LocateException catch (e) {
         return _json({'ok': false, 'error': e.message}, status: 422);
       }
@@ -1128,7 +1146,8 @@ class EmuServer {
     if (x == null || y == null) {
       return _json({'ok': false, 'error': 'x and y are required integers'}, status: 400);
     }
-    return _inject(() => runTap(uri, x, y), {'x': x, 'y': y});
+    return _inject(() => input.tap(uri, x, y), {'x': x, 'y': y},
+        label: 'tap $x $y', data: {'cmd': 'tap', 'x': x, 'y': y});
   }
 
   /// `find` — the same on-device widget query `tap --text/--key` runs, but
@@ -1203,8 +1222,10 @@ class EmuServer {
     final uri = _vmOr409((r) => early = r);
     if (uri == null) return early!;
     return _inject(
-      () => runSwipe(uri, c[0]!, c[1]!, c[2]!, c[3]!, durationMs: ms),
+      () => input.swipe(uri, c[0]!, c[1]!, c[2]!, c[3]!, durationMs: ms),
       {'x1': c[0], 'y1': c[1], 'x2': c[2], 'y2': c[3], 'durationMs': ms},
+      label: 'swipe ${c[0]},${c[1]} → ${c[2]},${c[3]} (${ms}ms)',
+      data: {'cmd': 'swipe', 'x1': c[0], 'y1': c[1], 'x2': c[2], 'y2': c[3], 'durationMs': ms},
     );
   }
 
@@ -1217,9 +1238,13 @@ class EmuServer {
     Response? early;
     final uri = _vmOr409((r) => early = r);
     if (uri == null) return early!;
+    // The record keeps how much was typed, never what: it may be a password,
+    // and run.jsonl stays on disk.
     return _inject(
-      () => runText(uri, text, append: append),
+      () => input.text(uri, text, append: append),
       {'text': text, 'append': append},
+      label: textActionLabel(text, append: append),
+      data: {'cmd': 'text', 'length': text.runes.length, 'append': append},
     );
   }
 
@@ -1340,44 +1365,52 @@ class EmuServer {
     }
   }
 
-  /// The dashboard's deep link box.
+  /// The dashboard's deep link box, and `emu open-url` (`settle=0`: it waits
+  /// for the app to settle itself).
   Future<Response> _openUrl(Request req) async {
     final url = req.url.queryParameters['url'];
     if (url == null || url.isEmpty) {
       return _json({'ok': false, 'error': 'url is required'}, status: 400);
     }
-    final (status, body) = await _openDeepLink(url);
+    final (status, body) = await _openDeepLink(url, settle: req.url.queryParameters['settle'] != '0');
     return _json(body, status: status);
   }
 
-  /// Deep link from the dashboard's box or a page's `openUrl:` action — same
-  /// argv-only invocation as `emu open-url` (see [buildOpenUrlCommand]), then
-  /// a best-effort settle so the caller's next screenshot shows the
-  /// destination rather than the transition. The settle is capped well below
-  /// the CLI's 10s: an app that never goes quiet (looping animation, streaming
-  /// list) would otherwise stall the button. The outer timeout matters too —
-  /// `timeout` only bounds the poll loop, and right after launch the first VM
-  /// `evaluate` alone can take 10s+. Returns the HTTP status and body.
-  Future<(int, Map<String, dynamic>)> _openDeepLink(String url) async {
+  /// Deep link from the dashboard's box, a page's `openUrl:` action ([via]
+  /// `page`), a replay's entry link or `emu open-url` — argv only (see
+  /// [buildOpenUrlCommand]), then a best-effort settle so the caller's next
+  /// screenshot shows the destination rather than the transition. The settle
+  /// is capped well below the CLI's 10s: an app that never goes quiet
+  /// (looping animation, streaming list) would otherwise stall the button.
+  /// The outer timeout matters too — `timeout` only bounds the poll loop, and
+  /// right after launch the first VM `evaluate` alone can take 10s+. Without
+  /// [settle] it returns as soon as the link is sent (`emu open-url` waits
+  /// itself, longer). [record] false leaves the `action` entry to the caller
+  /// (a replay records its own). Returns the HTTP status and body.
+  Future<(int, Map<String, dynamic>)> _openDeepLink(String url,
+      {bool settle = true, String? via, bool record = true}) async {
     final deviceId = engine.status.deviceId;
     if (deviceId == null) {
       return (409, {'ok': false, 'error': 'no device connected'});
     }
     final cmd = buildOpenUrlCommand(platform: _platform, deviceId: deviceId, url: url);
     final seq = logStore.lastSeq;
+    final action = (label: 'open-url $url', data: <String, dynamic>{'cmd': 'open-url', 'url': url, 'via': ?via});
+    if (record) _recordAction(action.label, action.data);
     final ProcessResult result;
     try {
-      // Bounded: an offline/unauthorized device can hang adb, and with it the
-      // dashboard's request.
-      result = await runWithTimeout(cmd.executable, cmd.arguments);
+      result = await input.openUrl(cmd);
     } catch (e) {
+      if (record) _recordActionFailed(action.label, action.data, e);
       return (500, {'ok': false, 'url': url, 'error': '$e'});
     }
     if (result.exitCode != 0) {
-      return (500, {'ok': false, 'url': url, 'error': '${result.stderr}'.trim()});
+      final error = '${result.stderr}'.trim();
+      if (record) _recordActionFailed(action.label, action.data, error);
+      return (500, {'ok': false, 'url': url, 'error': error});
     }
     final uri = engine.status.vmServiceUri;
-    if (uri != null) {
+    if (settle && uri != null) {
       await waitForSettle(uri, timeout: const Duration(seconds: 3))
           .timeout(const Duration(seconds: 4), onTimeout: () => false);
     }
@@ -1418,15 +1451,34 @@ class EmuServer {
   /// `assert --since <seq>` then sees exactly what the input caused — without
   /// this, the natural `tap` then `assert` order races, because assert's
   /// default window only opens once the effect has already been logged.
-  Future<Response> _inject(
-      Future<void> Function() action, Map<String, dynamic> detail) async {
+  /// The input is recorded first ([label], [data]), so a timeline from that
+  /// cursor starts with it, and what it causes comes after.
+  Future<Response> _inject(Future<void> Function() action, Map<String, dynamic> detail,
+      {required String label, required Map<String, dynamic> data}) async {
     final seq = logStore.lastSeq;
+    _recordAction(label, data);
     try {
       await action();
       return _json({'ok': true, ...detail, 'seq': seq});
     } catch (e) {
+      _recordActionFailed(label, data, e);
       return _json({'ok': false, 'error': '$e'}, status: 500);
     }
+  }
+
+  /// The timeline's record of an input, written just before it is injected.
+  /// The level is set: left to [inferLevel], `tap --text "Error: retry"`
+  /// would read as an error line.
+  LogEntry _recordAction(String label, Map<String, dynamic> data) =>
+      logStore.add('[action] $label', level: LogLevel.system, source: 'action', kind: LogKind.action, data: data);
+
+  /// A second entry when the input failed, at error level: the error's first
+  /// line in the text (a timeline line is one line — simctl's errors are
+  /// several), all of it in `data.error`.
+  void _recordActionFailed(String label, Map<String, dynamic> data, Object error) {
+    final text = '$error'.trim();
+    logStore.add('[action] $label failed: ${text.split('\n').first.trim()}',
+        level: LogLevel.error, source: 'action', kind: LogKind.action, data: {...data, 'error': text});
   }
 
   Future<Response> _probe(Request req) async {
@@ -1704,7 +1756,7 @@ String contentTypeFor(String path) {
 }
 
 /// A replay on the running app, through what `tap`, `text`, `settle` and
-/// `/api/open-url` use.
+/// `/api/open-url` use. [_RecordingReplayDevice] records its inputs.
 class _AppReplayDevice implements ReplayDevice {
   _AppReplayDevice(this.server, this.uri);
   final EmuServer server;
@@ -1712,16 +1764,83 @@ class _AppReplayDevice implements ReplayDevice {
 
   @override
   Future<String?> openUrl(String url) async {
-    final (_, body) = await server._openDeepLink(url);
+    final (_, body) = await server._openDeepLink(url, record: false);
     return body['ok'] == true ? null : '${body['error']}';
   }
 
   @override
   Future<List<LocateMatch>> locate({String? text, String? key}) => loc.locate(uri, text: text, key: key);
   @override
-  Future<void> tap(int x, int y) => runTap(uri, x, y);
+  Future<void> tap(int x, int y) => server.input.tap(uri, x, y);
   @override
-  Future<void> enterText(String text, {required bool append}) => runText(uri, text, append: append);
+  Future<void> enterText(String text, {required bool append}) => server.input.text(uri, text, append: append);
   @override
   Future<bool> settle(Duration timeout) => waitForSettle(uri, timeout: timeout);
+}
+
+/// A replay's entry link, taps and text as `action` entries (`via: replay`),
+/// the way `open-url`, `tap` and `text` record theirs. A tap at a point the
+/// last [locate] found is recorded as that query (`tap --text "Pay"`).
+class _RecordingReplayDevice implements ReplayDevice {
+  _RecordingReplayDevice(this.server, this.inner);
+  final EmuServer server;
+  final ReplayDevice inner;
+  ({String? text, String? key, List<LocateMatch> found})? _located;
+
+  Future<T> _record<T>(String label, Map<String, dynamic> data, Future<T> Function() run) async {
+    final full = {...data, 'via': 'replay'};
+    server._recordAction(label, full);
+    try {
+      return await run();
+    } catch (e) {
+      server._recordActionFailed(label, full, e);
+      rethrow;
+    }
+  }
+
+  @override
+  Future<String?> openUrl(String url) async {
+    final data = {'cmd': 'open-url', 'url': url, 'via': 'replay'};
+    server._recordAction('open-url $url', data);
+    final error = await inner.openUrl(url);
+    if (error != null) server._recordActionFailed('open-url $url', data, error);
+    return error;
+  }
+
+  @override
+  Future<List<LocateMatch>> locate({String? text, String? key}) async {
+    final found = await inner.locate(text: text, key: key);
+    _located = (text: text, key: key, found: found);
+    return found;
+  }
+
+  @override
+  Future<void> tap(int x, int y) {
+    final at = _located;
+    final hit = at?.found.where((f) => f.x == x && f.y == y).firstOrNull;
+    if (at == null || hit == null) {
+      return _record('tap $x $y', {'cmd': 'tap', 'x': x, 'y': y}, () => inner.tap(x, y));
+    }
+    final query = at.text != null ? '--text "${at.text}"' : '--key "${at.key}"';
+    return _record(
+      'tap $query',
+      {'cmd': 'tap', 'text': ?at.text, 'key': ?at.key, 'x': x, 'y': y, 'widgetType': hit.widgetType},
+      () => inner.tap(x, y),
+    );
+  }
+
+  @override
+  Future<void> enterText(String text, {required bool append}) => _record(
+      textActionLabel(text, append: append),
+      {'cmd': 'text', 'length': text.runes.length, 'append': append},
+      () => inner.enterText(text, append: append));
+
+  @override
+  Future<bool> settle(Duration timeout) => inner.settle(timeout);
+}
+
+/// How an `action` entry names typed text: its length, never its content.
+String textActionLabel(String text, {required bool append}) {
+  final n = text.runes.length;
+  return '${append ? 'text --append' : 'text'} ($n character${n == 1 ? '' : 's'})';
 }
