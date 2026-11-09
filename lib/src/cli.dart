@@ -19,6 +19,7 @@ import 'device_setup.dart';
 import 'diff.dart';
 import 'hub.dart';
 import 'launch_config.dart';
+import 'log_store.dart';
 import 'memory_diff.dart';
 import 'models.dart';
 import 'open_url.dart';
@@ -79,6 +80,8 @@ Future<int> runCli(List<String> argv) async {
         return await _attach(rest);
       case 'logs':
         return await _logs(rest);
+      case 'timeline':
+        return await _timeline(rest);
       case 'errors':
         return await _errors(rest);
       case 'memory':
@@ -1582,23 +1585,102 @@ int _logsFromFile(Session session, ArgResults res, Map<String, String> query) {
     stderr.writeln('no logs (no session has run). Start one with `emu up`.');
     return 1;
   }
-  final lines = session.logFile.readAsLinesSync();
-  RegExp? re = query['grep'] != null ? RegExp(query['grep']!, caseSensitive: false) : null;
-  final level = query['level'] != null ? LogLevel.fromName(query['level']) : null;
-  final limit = int.tryParse(query['limit'] ?? '') ?? 200;
-  final matched = <LogEntry>[];
-  for (final line in lines) {
-    if (line.trim().isEmpty) continue;
-    try {
-      final e = LogEntry.fromJson(jsonDecode(line) as Map<String, dynamic>);
-      if (level != null && e.level.rank < level.rank) continue;
-      if (re != null && !re.hasMatch(e.text)) continue;
-      matched.add(e);
-    } catch (_) {}
-  }
-  final shown = matched.length > limit ? matched.sublist(matched.length - limit) : matched;
+  // What `/api/logs` answers without `kinds`: the file has screens and
+  // inputs too, but `emu logs` stays the log it always was.
+  final shown = readLogFile(
+    session.logFile,
+    LogFilter(
+      grep: query['grep'],
+      level: query['level'] != null ? LogLevel.fromName(query['level']) : null,
+      kinds: LogKind.legacy,
+    ),
+    limit: int.tryParse(query['limit'] ?? '') ?? 200,
+  );
   for (final e in shown) {
     print(res.flag('json') ? jsonEncode(e.toJson()) : _formatLine(e));
+  }
+  return 0;
+}
+
+// --------------------------------------------------------------------------
+// timeline — logs, requests, screens and inputs in one list
+// --------------------------------------------------------------------------
+Future<int> _timeline(List<String> args) async {
+  final parser = ArgParser()
+    ..addOption('since')
+    ..addOption('lines', abbr: 'n', defaultsTo: '200')
+    ..addOption('kind')
+    ..addOption('grep', abbr: 'g')
+    ..addFlag('follow', abbr: 'f', negatable: false)
+    ..addFlag('json', negatable: false)
+    ..addFlag('help', abbr: 'h', negatable: false);
+  const usage = 'usage: emu timeline [--since <seq>] [-n, --lines <N>] [--kind <list>] [-g, --grep <regex>]\n'
+      '                      [-f, --follow] [--json]\n'
+      '   App logs, mock requests, screen changes and emu\'s inputs in one list, in seq order.\n'
+      '   --kind   log, request, route, action — a comma list (default: all)\n'
+      '   --json   one entry per line, as `emu logs --json`';
+  final (res, code) = _parseOrUsage(parser, args, usage);
+  if (res == null) return code!;
+  final Set<String> kinds;
+  try {
+    kinds = LogKind.parse(res.option('kind')) ?? LogKind.all;
+  } on FormatException catch (e) {
+    stderr.writeln('✗ --kind: ${e.message}');
+    return 2;
+  }
+  final since = res.option('since');
+  if (since != null && int.tryParse(since) == null) {
+    stderr.writeln('✗ --since takes a seq number');
+    return 2;
+  }
+  final lines = int.tryParse(res.option('lines')!);
+  if (lines == null) {
+    stderr.writeln('✗ --lines takes a number');
+    return 2;
+  }
+  final json = res.flag('json');
+  void show(LogEntry e) => print(json ? jsonEncode(e.toJson()) : formatTimelineLine(e));
+
+  final session = Session.require();
+  final info = session.readServerInfo();
+  if (info == null || !await _ping(info)) {
+    if (!session.logFile.existsSync()) {
+      stderr.writeln('no timeline (no session has run). Start one with `emu up`.');
+      return 1;
+    }
+    readLogFile(
+      session.logFile,
+      LogFilter(grep: res.option('grep'), sinceSeq: int.tryParse(since ?? ''), kinds: kinds),
+      limit: lines,
+    ).forEach(show);
+    return 0;
+  }
+
+  final query = {
+    'kinds': kinds.join(','),
+    'limit': '$lines',
+    if (res.option('grep') != null) 'grep': res.option('grep')!,
+  };
+  String qs([int? sinceSeq]) => {...query, if (sinceSeq != null) 'sinceSeq': '$sinceSeq'}
+      .entries
+      .map((e) => '${e.key}=${Uri.encodeQueryComponent(e.value)}')
+      .join('&');
+  final data = await _get(info, '/api/logs?${qs(int.tryParse(since ?? ''))}');
+  if (data == null || data['logs'] is! List) {
+    stderr.writeln('✗ failed to read the timeline${data?['error'] != null ? ': ${data!['error']}' : ''}');
+    return 1;
+  }
+  (data['logs'] as List).cast<Map<String, dynamic>>().map(LogEntry.fromJson).forEach(show);
+  if (!res.flag('follow')) return 0;
+
+  var lastSeq = (data['lastSeq'] as int?) ?? 0;
+  while (true) {
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    if (!await _ping(info)) break;
+    final more = await _get(info, '/api/logs?${qs(lastSeq)}');
+    if (more == null || more['logs'] is! List) continue;
+    (more['logs'] as List).cast<Map<String, dynamic>>().map(LogEntry.fromJson).forEach(show);
+    lastSeq = (more['lastSeq'] as int?) ?? lastSeq;
   }
   return 0;
 }
@@ -3388,11 +3470,10 @@ Future<int> _reportCmd(List<String> args) async {
     final live = info != null && await _ping(info);
     final attachments = <ReportAttachment>[];
     List<LogEntry>? entries;
-    List<LogEntry> logEntries() => entries ??= [
-          if (session != null && session.logFile.existsSync())
-            for (final line in session.logFile.readAsLinesSync())
-              if (line.trim().isNotEmpty) ?_tryLogEntry(line),
-        ];
+    // What `emu logs` shows: the record of inputs and screens stays out of
+    // an issue anyone can read.
+    List<LogEntry> logEntries() => entries ??=
+        session == null ? const [] : readLogFile(session.logFile, LogFilter(kinds: LogKind.legacy));
     for (final a in res.multiOption('attach')) {
       final m = RegExp(r'^logs(?::(\d+))?$').firstMatch(a);
       if (m != null) {
@@ -3504,14 +3585,6 @@ Future<int> _reportCmd(List<String> args) async {
   final open = result.via == 'browser' || built.images.isNotEmpty;
   if (open && result.url != null && !json) await _openUrl(result.url!);
   return 0;
-}
-
-LogEntry? _tryLogEntry(String line) {
-  try {
-    return LogEntry.fromJson(jsonDecode(line) as Map<String, dynamic>);
-  } catch (_) {
-    return null;
-  }
 }
 
 void _printReport(BuiltReport r, {required bool gh, required bool labeled}) {
@@ -3666,14 +3739,25 @@ String _formatLine(LogEntry e) {
   final hh = t.hour.toString().padLeft(2, '0');
   final mm = t.minute.toString().padLeft(2, '0');
   final ss = t.second.toString().padLeft(2, '0');
-  final tag = switch (e.level) {
-    LogLevel.error => 'E',
-    LogLevel.warn => 'W',
-    LogLevel.debug => 'D',
-    LogLevel.system => '•',
-    LogLevel.info => 'I',
-  };
-  return '$hh:$mm:$ss $tag  ${e.text}';
+  return '$hh:$mm:$ss ${_levelTag(e.level)}  ${e.text}';
+}
+
+String _levelTag(LogLevel level) => switch (level) {
+      LogLevel.error => 'E',
+      LogLevel.warn => 'W',
+      LogLevel.debug => 'D',
+      LogLevel.system => '•',
+      LogLevel.info => 'I',
+    };
+
+/// One `emu timeline` line: seq, time to the millisecond, level, the screen
+/// (left out while unknown) and the text.
+String formatTimelineLine(LogEntry e) {
+  final t = e.timestamp;
+  String two(int v) => v.toString().padLeft(2, '0');
+  final time = '${two(t.hour)}:${two(t.minute)}:${two(t.second)}.${t.millisecond.toString().padLeft(3, '0')}';
+  final route = e.route != null ? '[${e.route}] ' : '';
+  return '${'${e.seq}'.padLeft(6)} $time ${_levelTag(e.level)}  $route${e.text}';
 }
 
 /// Parse the hidden `__serve` subcommand and run the server (blocking).
@@ -3792,6 +3876,13 @@ COMMANDS
      -n, --lines <N>       Last N lines (default 200)
      -f, --follow          Stream live
      --clear               Clear the log buffer
+  timeline [opts]        Logs, mock requests, screen changes and emu's inputs in
+                         one list, in seq order
+     --since <seq>         only entries after this seq
+     -n, --lines <N>       Last N entries (default 200)
+     --kind <list>         log, request, route, action (comma list; default all)
+     -g, --grep <regex>    Filter the text (case-insensitive)
+     -f, --follow          Stream live
   errors [opts]          Structured exception banners parsed from the log stream
      --since <seq>         only banners after this seq (default: all buffered)
   memory --diff-across "<cmd>" [opts]

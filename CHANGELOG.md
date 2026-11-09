@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+### Added
+- `emu timeline`: 앱 로그와 목 서버를 지난 요청을 seq 순서 한 목록으로 본다(`--since`·`-n`·`--kind`·`-g`·`-f`·`--json`,
+  서버가 없으면 `.emu/run.jsonl`). 로그 엔트리에 선택 필드 `kind`·`route`·`routeName`·`data` 가 생겼고, 목 요청은
+  `kind: request` 와 `data`(`hitId`·`method`·`url`·`status`·`mocked`·`error`·`ms`·`startSeq`)를 싣는다. `startSeq` 는
+  요청이 들어온 때의 seq 다. 일반 로그 줄의 JSON 은 전과 같고, 옛 emu 도 새 `run.jsonl` 을 읽는다.
+- `/api/logs?kinds=`: `all` 이나 `log,request,route,action` 의 일부. 빼면 전과 같은 결과(`log`·`request`)를 준다.
+  `/api/errors`·`emu logs`(오프라인 포함)·`emu report --attach logs` 도 전과 같은 범위만 읽고, 대시보드 WebSocket 은
+  모든 종류를 보낸다.
+
 ## [0.18.1] - 2026-11-08
 
 ### Changed
