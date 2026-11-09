@@ -438,11 +438,13 @@ timeline:
   `/api/logs` 는 `"routes": "off"` 다(그 밖에는 `connecting`·`on`·`failed`, 실패 이유는 `routesError`). 연결이
   실패하면 경고 한 줄이고 세션은 그대로다.
 - `Emu.Route` 가 없으면 emu 가 앱 코드 없이 스스로 화면을 알아낸다(`data.via: framework`). 프레임워크의 이동
-  이벤트가 오거나, 앱의 `RouteInformationProvider` 에 단 리스너로 새 위치가 오면(`go_router` 의 `go`·`push`·pop)
-  지금 보이는 라우트를 읽는다. `route` 는 라우터의 위치(라우터가 없는 Navigator 1.0 앱이면 맨 위 라우트의 이름이나
+  이벤트(`Navigator.push`, 뒤로 가기 버튼을 포함한 모든 pop)가 오거나, 앱의 `RouteInformationProvider` 에 단
+  리스너로 새 위치가 오면(`go_router` 의 `go`·`push`) 지금 보이는 라우트를 읽는다. `route` 는 라우터의 위치(`go_router`
+  가 push 한 페이지는 라우터의 위치가 그대로라 push 한 위치, 라우터가 없는 Navigator 1.0 앱이면 맨 위 라우트의 이름이나
   타입)이고, 다이얼로그·시트·`Navigator.push` 로 올린 화면이 위에 있으면 `· <이름이나 타입>` 을 붙인다. `routeName`
   은 라우터 페이지의 이름이다(`go_router` 는 라우트의 name 이나 path 패턴). 라우트가 아닌 탭과 앱 자체의 이름은 알 수
-  없다. 앱 isolate 가 `Emu.Route` 를 한 번이라도 보내면 hot restart 전까지는 앱이 보낸 것만 쓴다.
+  없다. 앱 isolate 가 `Emu.Route` 를 한 번이라도 보내면 hot restart 전까지는 앱이 보낸 것만 쓴다. emu 의 평가식이
+  앱에서 컴파일되지 않으면 경고를 한 번 남긴다.
 
 `go_router` 16 앱, emu 의존 없이:
 

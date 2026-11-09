@@ -5,6 +5,7 @@ import 'package:emu/src/log_store.dart';
 import 'package:emu/src/models.dart';
 import 'package:emu/src/route_watch.dart';
 import 'package:test/test.dart';
+import 'package:vm_service/vm_service.dart' show RPCError, RPCErrorKind;
 
 /// A connection the test feeds by hand.
 class FakeSource implements VmEventSource {
@@ -202,6 +203,8 @@ void main() {
       for (final s in <Map<String, dynamic>?>[null, {}, snap(null, []), {'chain': 'x'}, {'error': 'Bad state: boom'}]) {
         expect(frameworkRoute(s), isNull, reason: '$s');
       }
+      // A location from the listener doesn't make a failed snapshot a screen.
+      expect(frameworkRoute({'error': 'Bad state: boom'}, routerLocation: '/user/8'), isNull);
     });
 
     test('the expressions are one line each, with no comment to swallow the rest', () {
@@ -234,12 +237,16 @@ void main() {
     }
 
     Future<void> settle() => Future<void>.delayed(const Duration(milliseconds: 30));
-    Map<String, dynamic> snap(String? location, String name) => {
+    Map<String, dynamic> snap(String? location, String name, {int? id}) => {
           'location': location,
           'chain': [
-            {'name': name, 'type': 'MaterialPageRoute<void>', 'page': location != null, 'popup': false}
+            {'name': name, 'type': 'MaterialPageRoute<void>', 'page': location != null, 'popup': false, 'id': ?id}
           ],
         };
+    void routerSays(String location) =>
+        tracker.onEvent(VmExtensionEvent('Emu.RouterInformation', 'isolates/1', {'location': location}));
+    void navigated() => tracker.onEvent(VmExtensionEvent('Flutter.Navigation', 'isolates/1', const {}));
+    List<String?> screens() => [for (final e in store.query(kinds: {LogKind.route})) e.route];
 
     setUp(() {
       store = LogStore();
@@ -288,6 +295,132 @@ void main() {
       tracker.onEvent(VmExtensionEvent('Emu.RouterInformation', 'isolates/1', const {'location': '/user/8'}));
       await settle();
       expect((store.currentRoute, store.currentRouteName), ('/user/8', 'user'));
+    });
+
+    test('a pushed page keeps its location; a pop the listener does not hear of shows the page under it', () async {
+      snapshot = snap('/user/42', 'user', id: 1);
+      tracker.connected('isolates/1', evaluate: evaluate);
+      await settle();
+      // go_router tells the listener where the push goes, then puts its location back.
+      snapshot = snap('/user/42', 'user', id: 2);
+      routerSays('/user/8');
+      await settle();
+      expect(store.currentRoute, '/user/8');
+      // The back button: the Navigator pops; the listener hears nothing.
+      snapshot = snap('/user/42', 'user', id: 1);
+      navigated();
+      await settle();
+      expect(screens(), ['/user/42', '/user/8', '/user/42']);
+    });
+
+    test('pops walk back through pushed pages; go_router restoring its location on pop is not a push', () async {
+      snapshot = snap('/', 'home', id: 1);
+      tracker.connected('isolates/1', evaluate: evaluate);
+      await settle();
+      for (final (id, location) in [(2, '/a'), (3, '/b')]) {
+        snapshot = snap('/', location, id: id);
+        routerSays(location);
+        await settle();
+      }
+      // context.pop(): the Navigator pops, then the listener hears the router's location — '/', not '/a'.
+      snapshot = snap('/', '/a', id: 2);
+      navigated();
+      routerSays('/');
+      await settle();
+      snapshot = snap('/', 'home', id: 1);
+      navigated();
+      await settle();
+      expect(screens(), ['/', '/a', '/b', '/a', '/']);
+    });
+
+    test('a replace that keeps the page: its new location, also when the page is on top again', () async {
+      snapshot = snap('/', 'home', id: 1);
+      tracker.connected('isolates/1', evaluate: evaluate);
+      await settle();
+      snapshot = snap('/', 'a', id: 2);
+      routerSays('/a');
+      await settle();
+      routerSays('/a?step=2'); // go_router's replace keeps the page key: the same route, id 2
+      await settle();
+      snapshot = snap('/', 'b', id: 3);
+      routerSays('/b');
+      await settle();
+      snapshot = snap('/', 'a', id: 2);
+      navigated();
+      await settle();
+      expect(screens(), ['/', '/a', '/a?step=2', '/b', '/a?step=2']);
+    });
+
+    test('a look before the pushed page is built: its location, then kept for the page', () async {
+      snapshot = snap('/', 'home', id: 1);
+      tracker.connected('isolates/1', evaluate: evaluate);
+      await settle();
+      snapshot = snap('/a', 'home', id: 1); // the old page; the router not put back yet
+      routerSays('/a');
+      await settle();
+      expect(store.currentRoute, '/a');
+      snapshot = snap('/', 'a', id: 2); // built and put back; the next navigation event brings the look
+      navigated();
+      await settle();
+      expect((store.currentRoute, store.currentRouteName), ('/a', 'a'));
+      snapshot = snap('/', 'home', id: 1);
+      navigated();
+      await settle();
+      expect(store.currentRoute, '/');
+    });
+
+    test('a push popped before the look is not a screen', () async {
+      snapshot = snap('/', 'home', id: 1);
+      tracker.connected('isolates/1', evaluate: evaluate);
+      await settle();
+      routerSays('/a');
+      navigated(); // within the debounce: one look, at the page from before
+      await settle();
+      expect(screens(), ['/']);
+    });
+
+    test("a go within the page is the router's location; the listener giving that location again is not a push",
+        () async {
+      snapshot = snap('/', 'home', id: 1);
+      tracker.connected('isolates/1', evaluate: evaluate);
+      await settle();
+      snapshot = snap('/?tab=2', 'home', id: 1);
+      routerSays('/?tab=2');
+      await settle();
+      snapshot = snap('/?tab=2', 'a', id: 2);
+      routerSays('/a');
+      await settle();
+      routerSays('/?tab=2'); // a refresh, with the pushed page on top
+      await settle();
+      expect(store.currentRoute, '/a');
+      snapshot = snap('/?tab=2', 'home', id: 1);
+      navigated();
+      await settle();
+      expect(screens(), ['/', '/?tab=2', '/a', '/?tab=2']);
+    });
+
+    test("an expression the app can't compile is one warning a session; other failures say nothing", () async {
+      final warnings = <String>[];
+      Object failure = RPCError.withDetails('evaluate', RPCErrorKind.kExpressionCompilationError.code,
+          'Expression compilation error',
+          details: "org-dartlang-debug:synthetic_debug_expression:1:300: Error: The getter 'isCurrent' isn't defined\n"
+              'for the class ModalRoute');
+      tracker = RouteTracker(store, warn: warnings.add, debounce: const Duration(milliseconds: 5))
+        ..connected('isolates/1', evaluate: (i, l, e) async => throw failure);
+      await settle();
+      navigated();
+      await settle();
+      expect(warnings, [
+        "timeline: screens without Emu.Route can be missing — emu's expression does not compile in this app: "
+            "org-dartlang-debug:synthetic_debug_expression:1:300: Error: The getter 'isCurrent' isn't defined",
+      ]);
+      warnings.clear();
+      for (final other in [StateError('compiling'), RPCError('evaluate', RPCErrorKind.kServerError.code, 'boom')]) {
+        failure = other;
+        navigated();
+        await settle();
+      }
+      expect(warnings, isEmpty);
     });
 
     test("once the app's isolate sends Emu.Route, only that counts — until a hot restart", () async {
