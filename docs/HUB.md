@@ -163,7 +163,8 @@ $ emu ls
 - 허브 연결이 끊기면(5초마다 `/api/status`, 3번 실패) "허브가 꺼졌어요" 화면 + [다시 켜기].
 
 ### 메뉴바
-- 아이콘에 세션 수, 실패한 세션이 있으면 빨간 점. 펼치면 세션 목록(상태 점·이름·기기) → 누르면 창에서
+- 아이콘(에뮤 얼굴 — 라이트 메뉴바는 검정, 다크·선택은 흰 얼굴. `macos/Emu/MenuIcon*.png`, `tool/menu_icon.swift` 로 생성)에
+  세션 수, 실패한 세션이 있으면 빨간 점. 펼치면 세션 목록(상태 점·이름·기기) → 누르면 창에서
   `#/s/<id>`. 최근 프로젝트에서 시작, 모든 세션 종료(확인), 버전·업데이트.
 - 앱이 허브 API(`GET /api/sessions`, `hub.json` 토큰)를 직접 조회한다 — 창이 닫혀 있어도 동작.
 
@@ -181,6 +182,7 @@ $ emu ls
 macos/Emu/main.swift · AppDelegate.swift   메뉴, 생명주기, 알림, 단축키
 macos/Emu/HubWindow.swift                  WKWebView, 이동 정책, 다운로드, 시트, 끊김 화면, 브리지
 macos/Emu/StatusItem.swift                 메뉴바(허브 API 조회)
+macos/Emu/MenuIcon.swift                   메뉴바 아이콘(외형별 마스크, 없으면 SF Symbol) + self-test
 macos/Emu/Policy.swift                     순수 판단(허용 주소, 알림 여부) + --self-test
 lib/src/app_install.dart                   emu app install|uninstall|open
 ```

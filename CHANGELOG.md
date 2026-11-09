@@ -22,6 +22,12 @@
 - `emu open-url` 이 adb·simctl 을 직접 부르지 않고 세션 서버(`/api/open-url`)를 거친다. 보내는 방식과 기다림(최대 10초)은
   같고, `--json` 에 `seq` 가 더해졌다.
 
+## [0.18.1] - 2026-11-08
+
+### Changed
+- macOS 앱 메뉴바 아이콘을 SF Symbol(아이폰) 대신 앱 아이콘의 에뮤 얼굴로 바꿨다. 라이트 메뉴바에서는 검정, 다크·선택 메뉴바에서는
+  흰 얼굴로 그린다(`tool/menu_icon.swift` 로 생성한 18pt 마스크). 마스크가 없으면 예전 아이콘을 쓴다.
+
 ## [0.18.0] - 2026-11-02
 
 ### Added
@@ -554,7 +560,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.18.1...HEAD
+[0.18.1]: https://github.com/HuanSuh/emu/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/HuanSuh/emu/compare/v0.17.4...v0.18.0
 [0.17.4]: https://github.com/HuanSuh/emu/compare/v0.17.3...v0.17.4
 [0.17.3]: https://github.com/HuanSuh/emu/compare/v0.17.2...v0.17.3
