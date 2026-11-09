@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-09
+
 ### Added
 - `emu timeline`: 앱 로그와 목 서버를 지난 요청을 seq 순서 한 목록으로 본다(`--since`·`-n`·`--kind`·`-g`·`-f`·`--json`,
   서버가 없으면 `.emu/run.jsonl`). 로그 엔트리에 선택 필드 `kind`·`route`·`routeName`·`data` 가 생겼고, 목 요청은
@@ -576,7 +578,8 @@ GitHub Issue #2(첫 실사용 후기)에서 나온 제안 중 문서 동기화 1
 - Claude Code 플러그인 패키징(`skills/emu/SKILL.md`, `commands/emu-setup.md`)
   — 셀프 마켓플레이스로 배포.
 
-[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.18.1...HEAD
+[Unreleased]: https://github.com/HuanSuh/emu/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/HuanSuh/emu/compare/v0.18.1...v0.19.0
 [0.18.1]: https://github.com/HuanSuh/emu/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/HuanSuh/emu/compare/v0.17.4...v0.18.0
 [0.17.4]: https://github.com/HuanSuh/emu/compare/v0.17.3...v0.17.4
