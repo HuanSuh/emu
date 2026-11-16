@@ -638,6 +638,22 @@ mocks:
       expect(d.calls.contains('settle 10000'), isFalse);
     });
 
+    test('a re-run over the last run\'s screen: only the top one counts, and a miss says what is underneath', () async {
+      // The device reports the top route only (replay never asks for all
+      // routes), so last run's "Pay" underneath is no second match.
+      var d = _Device()..found = LocateMatches([_match()]);
+      var r = await runReplay(const MockReplay(steps: [ReplayTap(text: 'Pay')]), d);
+      expect(r.first.ok, isTrue);
+      expect(d.calls.where((c) => c.startsWith('tap')), hasLength(1));
+      d = _Device()..found = LocateMatches(const [], covered: 1);
+      r = await runReplay(
+        const MockReplay(steps: [ReplayTap(text: 'Pay')]),
+        d,
+        tapWait: Duration.zero,
+      );
+      expect(replayFailure(r), 'steps[0] tap: no widget matches text "Pay" on the top route (1 on covered routes) (waited 0ms)');
+    });
+
     test('an index past the matches waits too; several with no index stops at once', () async {
       var d = _Device()..found = [_match()];
       var r = await runReplay(

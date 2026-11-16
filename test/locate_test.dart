@@ -75,6 +75,62 @@ void main() {
       expect(locateExpr(text: 'x'), isNot(contains('w.toString()')));
     });
 
+    group('top route only', () {
+      for (final (name, e) in [
+        ('--text', locateExpr(text: 'x')),
+        ('--key', locateExpr(key: 'k')),
+        ('--type', locateExpr(type: 'Text', dump: true)),
+      ]) {
+        test('$name: a match on a covered route is counted, not kept', () {
+          expect(e, contains('bool _emuOnTop(Element e)'));
+          expect(e, contains('if (!_emuOnTop(e)) { hid++; } else try {'));
+          expect(e, contains('if (out.isEmpty && hid > 0) return "!" + hid.toString();'));
+        });
+      }
+
+      test('every route around the match must be current, nested Navigators included', () {
+        final e = locateExpr(text: 'x');
+        expect(e, contains('final r = ModalRoute.of(at);'));
+        expect(e, contains('if (!r.isCurrent) return false;'));
+        // Not just the nearest route: walk out to the route holding its Navigator.
+        expect(e, contains('while (at != null) {'));
+        expect(e, contains('at = box(n.context as Element);'));
+      });
+
+      test('a widget outside every route (builder, OverlayEntry) is kept', () {
+        expect(locateExpr(text: 'x'), contains('if (r == null) return true;'));
+      });
+
+      test('asks ModalRoute.of of a render-object element, never the matched widget', () {
+        final e = locateExpr(text: 'x');
+        expect(e, contains('if (y is RenderObjectElement) { f = y; return; }'));
+        expect(e, contains('var at = box(e);'));
+        expect(e, isNot(contains('ModalRoute.of(e)')));
+      });
+
+      test('uses no private framework names', () {
+        expect(locateExpr(text: 'x'), isNot(contains('_ModalScope')));
+      });
+
+      test('the loose pass keeps the exact pass\'s covered count when it has one', () {
+        final e = locateExpr(text: 'x');
+        expect(e, contains('final exactHid = hid; hid = 0; loose = true; visit(root);'));
+        expect(e, contains('if (exactHid > 0) hid = exactHid;'));
+      });
+
+      test('allRoutes walks the whole tree as before', () {
+        for (final e in [
+          locateExpr(text: 'x', allRoutes: true),
+          locateExpr(key: 'k', allRoutes: true),
+          locateExpr(type: 'Text', allRoutes: true),
+        ]) {
+          expect(e, isNot(contains('_emuOnTop')));
+          expect(e, isNot(contains('ModalRoute')));
+          expect(e, contains('try {final c = ro.localToGlobal'));
+        }
+      });
+    });
+
     test('walks the element tree from the root and converts to physical pixels', () {
       final e = locateExpr(text: 'x');
       expect(e, contains('WidgetsBinding.instance.rootElement'));
@@ -95,6 +151,14 @@ void main() {
 
     test('empty string means no matches', () {
       expect(parseLocateMatches(''), isEmpty);
+      expect(parseLocateMatches('').covered, 0);
+    });
+
+    test('!<n> is no match on top, n on covered routes', () {
+      final m = parseLocateMatches('!2');
+      expect(m, isEmpty);
+      expect(m.covered, 2);
+      expect(parseLocateMatches('1|2|3|4|Text').covered, 0);
     });
 
     test('parses a single record', () {
@@ -160,6 +224,17 @@ void main() {
         throwsA(isA<LocateException>().having(
             (e) => e.message, 'message', contains('--text "닫기"'))),
       );
+    });
+
+    test('zero on top but some on covered routes says so, with the way to reach them', () {
+      expect(
+        () => pickMatch(LocateMatches(const [], covered: 2), null, query: '--text "확인"'),
+        throwsA(isA<LocateException>().having((e) => e.message, 'message',
+            'no widget matches --text "확인" on the top route (2 on covered routes — use --all-routes)')),
+      );
+      expect(noMatchMessage(LocateMatches(const []), '--key "k"'), 'no widget matches --key "k"');
+      expect(noMatchMessage(LocateMatches(const [], covered: 1), 'text "a"', hint: null),
+          'no widget matches text "a" on the top route (1 on covered routes)');
     });
 
     test('several matches without --index throws, naming the count', () {

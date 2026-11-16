@@ -12,7 +12,16 @@
 /// live `Element` tree (`WidgetsBinding.instance.rootElement`) — the same
 /// walk the framework itself performs every frame — and for each match reads
 /// its `RenderBox` geometry directly.
+///
+/// Only the top route's widgets count: a match is kept when every
+/// `ModalRoute` around it is current (nested Navigators included), or when
+/// no route is around it at all (`MaterialApp.builder`, an `OverlayEntry`).
+/// A screen pushed over another, or a dialog over it, hides what's under it —
+/// tapping there would land on the top screen instead. `allRoutes` keeps the
+/// old whole-tree walk.
 library;
+
+import 'dart:collection';
 
 import 'package:vm_service/vm_service.dart';
 import 'package:vm_service/vm_service_io.dart';
@@ -55,6 +64,14 @@ class LocateMatch {
       };
 }
 
+/// What [locate] found: the matches on the top route, plus how many matched
+/// only on routes covered by it ([covered], counted only when nothing on top
+/// matched — that's when it explains a "no widget matches").
+class LocateMatches extends UnmodifiableListView<LocateMatch> {
+  LocateMatches(super.source, {this.covered = 0});
+  final int covered;
+}
+
 /// Find every on-screen widget whose Semantics label, `Text` data (plain or
 /// `Text.rich`), or `Tooltip` message equals [text] — or, when none does,
 /// contains it, whitespace-normalized (marked [LocateMatch.partial]) — or, when [key] is given instead, whose
@@ -62,9 +79,10 @@ class LocateMatch {
 /// type name equals it — and return each match's tap point.
 ///
 /// Exactly one of [text]/[key]/[type] must be given. With [dump], each match
-/// also carries the widget's `toString()`.
-Future<List<LocateMatch>> locate(String wsUri,
-    {String? text, String? key, String? type, bool dump = false}) async {
+/// also carries the widget's `toString()`. Only the top route's widgets count
+/// unless [allRoutes] (see the library doc).
+Future<LocateMatches> locate(String wsUri,
+    {String? text, String? key, String? type, bool dump = false, bool allRoutes = false}) async {
   assert(_exactlyOne(text, key, type), 'locate: give exactly one of text/key/type');
   final service = await vmServiceConnectUri(wsUri);
   try {
@@ -78,7 +96,7 @@ Future<List<LocateMatch>> locate(String wsUri,
     if (lib.id!.isEmpty) throw LocateException('framework library not loaded ($_fwLib)');
 
     final r = await service.evaluate(
-        isoId, lib.id!, locateExpr(text: text, key: key, type: type, dump: dump));
+        isoId, lib.id!, locateExpr(text: text, key: key, type: type, dump: dump, allRoutes: allRoutes));
     if (r is ErrorRef) throw LocateException('evaluate failed: ${r.message}');
     if (r is! InstanceRef) throw LocateException('unexpected evaluate result: ${r.runtimeType}');
     var raw = r.valueAsString ?? '';
@@ -98,7 +116,7 @@ Future<List<LocateMatch>> locate(String wsUri,
 /// message with enough detail (count, `--index` hint) to fix the query.
 LocateMatch pickMatch(List<LocateMatch> matches, int? index, {required String query}) {
   if (matches.isEmpty) {
-    throw LocateException('no widget matches $query');
+    throw LocateException(noMatchMessage(matches, query));
   }
   if (index != null) {
     if (index < 0 || index >= matches.length) {
@@ -114,12 +132,25 @@ LocateMatch pickMatch(List<LocateMatch> matches, int? index, {required String qu
   return matches.single;
 }
 
+/// "no widget matches …", saying so when the query did match on covered
+/// routes — the usual reason a widget that's "right there" isn't found.
+/// [hint] is how to reach them, or null where there's no way (replay).
+String noMatchMessage(List<LocateMatch> matches, String query,
+    {String? hint = 'use --all-routes'}) {
+  final covered = matches is LocateMatches ? matches.covered : 0;
+  if (covered == 0) return 'no widget matches $query';
+  return 'no widget matches $query on the top route '
+      '($covered on covered routes${hint == null ? '' : ' — $hint'})';
+}
+
 // --- expression builder (pure, unit-tested) ---------------------------------
 
-/// The framework library whose scope this evaluates in — same one `input.dart`
-/// uses for tap/swipe, so `WidgetsBinding`/`Element`/`RenderBox`/`Offset`/
-/// `ValueKey` are all already resolvable without extra imports.
-const _fwLib = 'package:flutter/src/widgets/binding.dart';
+/// The framework library whose scope this evaluates in — the one the
+/// timeline's route watch uses (`route_watch.dart`): `binding.dart` doesn't
+/// import `routes.dart`, so `ModalRoute` isn't visible there, while
+/// `navigator.dart` has it next to `WidgetsBinding`/`Element`/`RenderBox`/
+/// `Offset`/`ValueKey`.
+const _fwLib = 'package:flutter/src/widgets/navigator.dart';
 
 bool _exactlyOne(String? a, String? b, String? c) =>
     [a, b, c].where((v) => v != null).length == 1;
@@ -130,12 +161,17 @@ bool _exactlyOne(String? a, String? b, String? c) =>
 /// set (with `|`, `;` and newlines squashed to spaces so free text can't break
 /// the record framing).
 ///
+/// Unless [allRoutes], a match counts only on the top route (see the library
+/// doc); when none does, the result is `!<n>` for the n that matched on
+/// covered routes (empty when n is 0).
+///
 /// Built as an immediately-invoked closure — `evaluate` compiles a single
 /// expression, not a statement list, and a closure literal called on the spot
 /// is itself one expression. String concatenation (not interpolation) is used
 /// throughout the on-device body so nothing here collides with this
 /// function's own `${...}` host-side interpolation.
-String locateExpr({String? text, String? key, String? type, bool dump = false}) {
+String locateExpr(
+    {String? text, String? key, String? type, bool dump = false, bool allRoutes = false}) {
   assert(_exactlyOne(text, key, type), 'locateExpr: give exactly one of text/key/type');
   final matchCall = text != null
       ? '_emuMatchText(w, ${dartStringLiteral(text)}, loose)'
@@ -170,13 +206,16 @@ String locateExpr({String? text, String? key, String? type, bool dump = false}) 
       'bool _emuMatchType(Widget w, String want) {'
       'return w.runtimeType.toString() == want;'
       '}'
+      '${allRoutes ? '' : _onTopSrc}'
       'final out = StringBuffer();'
       'var loose = false;'
+      'var hid = 0;'
       'void visit(Element e) {'
       'final w = e.widget;'
       'if ($matchCall) {'
       'final ro = e.renderObject;'
       'if (ro is RenderBox && ro.attached && ro.hasSize) {'
+      '${allRoutes ? '' : 'if (!_emuOnTop(e)) { hid++; } else '}'
       'try {'
       'final c = ro.localToGlobal(ro.size.center(Offset.zero));'
       'final dpr = WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio;'
@@ -202,10 +241,48 @@ String locateExpr({String? text, String? key, String? type, bool dump = false}) 
       '}'
       'final root = WidgetsBinding.instance.rootElement;'
       'if (root != null) visit(root);'
-      '${text != null ? 'if (out.isEmpty && root != null) { loose = true; visit(root); if (out.isNotEmpty) return "~" + out.toString(); }' : ''}'
+      // The loose pass counts its own covered matches, but an exact count
+      // from the first pass is the better hint, so it wins.
+      '${text != null ? 'if (out.isEmpty && root != null) { final exactHid = hid; hid = 0; loose = true; visit(root); if (out.isNotEmpty) return "~" + out.toString(); if (exactHid > 0) hid = exactHid; }' : ''}'
+      'if (out.isEmpty && hid > 0) return "!" + hid.toString();'
       'return out.toString();'
       '})()';
 }
+
+/// `_emuOnTop(e)`: is every `ModalRoute` around [e] current? Starts at the
+/// route nearest [e], then the route around that route's Navigator, and so
+/// on out — an inner route can be its Navigator's current while the screen
+/// holding that Navigator is covered. No route at all (an `OverlayEntry`,
+/// `MaterialApp.builder`) is on top.
+///
+/// Public API only (`ModalRoute.of`, `isCurrent`, `navigator`) — no private
+/// widget names. `ModalRoute.of` registers its context as a dependent of the
+/// route, so it's asked of the render-object element under the context (the
+/// one `Element.renderObject` would find, still inside the same route): when
+/// the route later changes, that element just re-applies its own widget to
+/// its render object — no user `build()`, no `didChangeDependencies`.
+const _onTopSrc = 'bool _emuOnTop(Element e) {'
+    'Element? box(Element x) {'
+    'Element? f;'
+    'void down(Element y) {'
+    'if (f != null) return;'
+    'if (y is RenderObjectElement) { f = y; return; }'
+    'y.visitChildren(down);'
+    '}'
+    'down(x);'
+    'return f;'
+    '}'
+    'var at = box(e);'
+    'while (at != null) {'
+    'final r = ModalRoute.of(at);'
+    'if (r == null) return true;'
+    'if (!r.isCurrent) return false;'
+    'final n = r.navigator;'
+    'if (n == null || !n.mounted) return true;'
+    'at = box(n.context as Element);'
+    '}'
+    'return true;'
+    '}';
 
 /// Evaluates `w.toString()` into a local var, under `--dump`, before any part
 /// of the match record is written — so a throwing `toString()` override is
@@ -228,11 +305,15 @@ const _dumpFieldSrc = 'out.write("|");'
 /// Parse the `x|y|width|height|widgetType[|dump]` records `locateExpr` returns.
 /// Pure, unit-tested against malformed/empty input separately from any live
 /// VM Service connection.
-/// A leading `~` marks matches from the substring fallback.
-List<LocateMatch> parseLocateMatches(String raw) {
+/// A leading `~` marks matches from the substring fallback; `!<n>` is no match
+/// on the top route but n on covered ones.
+LocateMatches parseLocateMatches(String raw) {
+  if (raw.startsWith('!')) {
+    return LocateMatches(const [], covered: int.tryParse(raw.substring(1)) ?? 0);
+  }
   final partial = raw.startsWith('~');
   if (partial) raw = raw.substring(1);
-  if (raw.isEmpty) return const [];
+  if (raw.isEmpty) return LocateMatches(const []);
   final out = <LocateMatch>[];
   for (final rec in raw.split(';')) {
     final f = rec.split('|');
@@ -245,5 +326,5 @@ List<LocateMatch> parseLocateMatches(String raw) {
     out.add(LocateMatch(
         x.round(), y.round(), w, h, f[4], f.length == 6 ? f[5] : null, partial));
   }
-  return out;
+  return LocateMatches(out);
 }

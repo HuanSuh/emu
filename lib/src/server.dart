@@ -1155,6 +1155,9 @@ class EmuServer {
 
   /// The running app's VM Service URI, or null with a 409 response — input goes
   /// through the framework, so it needs a live VM Service (as `probe` does).
+  /// A `1`/`true` query flag (`dump`, `allRoutes`).
+  static bool _flag(String? v) => v == '1' || v == 'true';
+
   String? _vmOr409(void Function(Response) sink) {
     final uri = engine.status.vmServiceUri;
     if (uri == null) {
@@ -1175,7 +1178,7 @@ class EmuServer {
       final index = int.tryParse(q['index'] ?? '');
       final query = text != null ? '--text "$text"' : '--key "$key"';
       try {
-        final matches = await locate(uri, text: text, key: key);
+        final matches = await locate(uri, text: text, key: key, allRoutes: _flag(q['allRoutes']));
         final m = pickMatch(matches, index, query: query);
         return await _inject(
           () => input.tap(uri, m.x, m.y),
@@ -1216,7 +1219,7 @@ class EmuServer {
     if (given != 1) {
       return _json({'ok': false, 'error': 'give exactly one of text/key/type'}, status: 400);
     }
-    final dump = q['dump'] == '1' || q['dump'] == 'true';
+    final dump = _flag(q['dump']);
     final index = int.tryParse(q['index'] ?? '');
     final query = text != null
         ? '--text "$text"'
@@ -1229,11 +1232,17 @@ class EmuServer {
     if (uri == null) return early!;
 
     try {
-      final matches = await locate(uri, text: text, key: key, type: type, dump: dump);
+      final matches = await locate(uri,
+          text: text, key: key, type: type, dump: dump, allRoutes: _flag(q['allRoutes']));
       // No `--index` means "report whatever matched", zero included — only an
       // explicit index can be wrong (out of range), and that's the 422 below.
       final result = index == null ? matches : [pickMatch(matches, index, query: query)];
-      return _json({'ok': true, 'matches': result.map((m) => m.toJson()).toList()});
+      return _json({
+        'ok': true,
+        'matches': result.map((m) => m.toJson()).toList(),
+        // Nothing on the top route, but this many on routes it covers.
+        if (matches.covered > 0) 'covered': matches.covered,
+      });
     } on LocateException catch (e) {
       return _json({'ok': false, 'error': e.message}, status: 422);
     } catch (e) {

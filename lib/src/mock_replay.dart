@@ -312,8 +312,10 @@ Future<String> _tap(ReplayTap step, ReplayDevice device, Duration wait, Duration
     String why;
     try {
       matches = await device.locate(text: step.text, key: step.key).timeout(_callLimit);
+      // Top route only, always: a re-run in the same session leaves the last
+      // run's screens under this one, and their widgets must not match.
       why = matches.isEmpty
-          ? 'no widget matches ${step.query}'
+          ? noMatchMessage(matches, step.query, hint: null)
           : 'index $index out of range: ${step.query} matched ${matches.length} widget(s)';
     } catch (e) {
       why = '$e'; // the app may be mid-restart; it counts as not there yet

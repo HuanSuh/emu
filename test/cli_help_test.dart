@@ -32,6 +32,14 @@ void main() {
     }
   });
 
+  test('tap and find offer --all-routes (the top screen is the default)', () async {
+    for (final cmd in ['tap', 'find']) {
+      final (code, out) = await _run([cmd, '--help']);
+      expect(code, 0);
+      expect(out, contains('--all-routes'), reason: cmd);
+    }
+  });
+
   group('an unknown flag never crashes and exits 2', () {
     // Usage on this path goes to stderr, which isn't routed through the
     // print() zone capture above — only the exit code is asserted here.

@@ -190,8 +190,8 @@ What this loop gives an agent:
 | `emu open-url <url> [--no-settle]` | Send a deep link to the connected device (`adb shell am start` / `xcrun simctl openurl`). No escaping to get wrong — emu quotes the URL for you. Waits for the resulting navigation to finish before returning by default |
 | `emu shot [path] [--no-settle]` | Save a screenshot (default `.emu/`). Relative paths resolve to the project root. Waits for animations/rebuilds to stop first by default |
 | `emu tap <x> <y> [--no-settle]` | Tap a coordinate (physical pixels — same space as `shot`). Android & iOS. Waits for the resulting transition to finish before returning by default |
-| `emu tap --text <label> \| --key <key> [--index <n>] [--no-settle]` | Tap the widget whose Semantics/Text/Tooltip label (incl. `Text.rich`), or `ValueKey`, matches — no screenshot/pixel math needed. `--text` falls back to a whitespace-normalized substring match when nothing equals it (reported as partial). `--index` picks one when several match |
-| `emu find --text <label> \| --key <key> \| --type <Widget> [--index <n>] [--dump]` | List the on-screen widgets matching that query, with their tap points — the same lookup `tap --text` does, without tapping. `--dump` also prints each widget's `toString()` |
+| `emu tap --text <label> \| --key <key> [--index <n>] [--all-routes] [--no-settle]` | Tap the widget whose Semantics/Text/Tooltip label (incl. `Text.rich`), or `ValueKey`, matches — no screenshot/pixel math needed. Only the top screen counts: screens pushed over, or under a dialog, are skipped unless `--all-routes`. `--text` falls back to a whitespace-normalized substring match when nothing equals it (reported as partial). `--index` picks one when several match |
+| `emu find --text <label> \| --key <key> \| --type <Widget> [--index <n>] [--dump] [--all-routes]` | List the widgets on the top screen matching that query, with their tap points — the same lookup `tap --text` does, without tapping. `--dump` also prints each widget's `toString()`; `--all-routes` also looks on covered screens |
 | `emu eval <dart-expr>` | Evaluate a Dart expression against the running app now, in its root library's scope — no breakpoint, no pause (unlike `probe`) |
 | `emu swipe <x1> <y1> <x2> <y2>` | Swipe/scroll. `--duration <ms>`. Android & iOS |
 | `emu text <string> [--append]` | Type into the focused field (unicode OK). Android & iOS |
@@ -635,6 +635,16 @@ count; pick one with `--index`:
 emu tap --text "삭제" --index 1   # the 2nd widget labeled "삭제" (0-based)
 ```
 
+Only the top screen's widgets count. A match is kept when every route around
+it is the current one (nested Navigators included) or when no route is around
+it at all (`MaterialApp.builder`, an `OverlayEntry`); a screen pushed over it,
+or a dialog or bottom sheet in front of it, hides it — tapping there would
+land on the top screen instead. When nothing on top matches but something
+underneath does, the error says how many (`no widget matches --text "OK" on
+the top route (1 on covered routes — use --all-routes)`); `--all-routes` walks
+the whole tree as before. Widgets hidden within the same screen (another tab of
+an `IndexedStack`, `Offstage`) still count.
+
 Layout changes that move a widget don't break `--text`/`--key` taps the way
 they break hardcoded coordinates — the tree walk finds wherever the widget is
 now. It's still a static-config match, not the merged accessibility tree a
@@ -755,7 +765,7 @@ normally even when settle times out.
 ### find — see what's on screen, without tapping it
 
 ```bash
-emu find --text <label> | --key <key> | --type <Widget> [--index <n>] [--dump]
+emu find --text <label> | --key <key> | --type <Widget> [--index <n>] [--dump] [--all-routes]
 ```
 
 `find` runs exactly the widget lookup `tap --text/--key` runs, and reports the
@@ -774,6 +784,9 @@ emu tap --text "삭제" --index 1          # …then tap the one you meant
 
 Matching zero widgets is an ordinary answer (`(no match)`, exit 0), not a
 failure — only a bad request, such as an `--index` past the last match, exits 1.
+Like `tap`, it looks at the top screen only; when the query matches only on
+covered screens it says so (`(no match on the top route — 1 on covered routes,
+use --all-routes)`, and `covered` in `--json`).
 
 ### eval — evaluate an expression right now
 
