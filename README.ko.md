@@ -180,8 +180,8 @@ emu assert --since "$SEQ" --deny "Exception" --expect "checkout done" --timeout 
 | `emu open-url <url> [--no-settle]` | 연결된 기기로 딥링크 전송(`adb shell am start` / `xcrun simctl openurl`). 이스케이프는 emu가 처리. 기본적으로 전환이 끝나길 기다렸다가 반환 |
 | `emu shot [path] [--no-settle]` | 스크린샷 저장(기본 `.emu/`). 상대 경로는 프로젝트 루트 기준. 기본적으로 먼저 애니메이션/리빌드가 멈추길 기다림 |
 | `emu tap <x> <y> [--no-settle]` | 좌표 탭 (물리 픽셀 — `shot`과 같은 좌표계). Android·iOS. 기본적으로 탭이 유발한 전환이 끝날 때까지 기다렸다가 반환 |
-| `emu tap --text <label> \| --key <key> [--index <n>] [--no-settle]` | Semantics/Text/Tooltip 라벨(`Text.rich` 포함) 또는 `ValueKey` 로 위젯을 찾아 탭 — 스크린샷·픽셀 계산 불필요. `--text` 는 정확히 일치하는 게 없으면 공백 정규화한 부분 일치로 다시 찾는다(partial 표시). 여러 개 매칭되면 `--index` 로 선택 |
-| `emu find --text <label> \| --key <key> \| --type <Widget> [--index <n>] [--dump]` | 질의에 매칭되는 화면 위젯 목록 + 탭 좌표 — `tap --text` 와 같은 탐색을 탭 없이 수행. `--dump` 면 각 위젯의 `toString()` 도 출력 |
+| `emu tap --text <label> \| --key <key> [--index <n>] [--all-routes] [--no-settle]` | Semantics/Text/Tooltip 라벨(`Text.rich` 포함) 또는 `ValueKey` 로 위젯을 찾아 탭 — 스크린샷·픽셀 계산 불필요. 맨 위 화면만 본다: 위에 push 된 화면·다이얼로그에 덮인 화면은 `--all-routes` 가 아니면 건너뛴다. `--text` 는 정확히 일치하는 게 없으면 공백 정규화한 부분 일치로 다시 찾는다(partial 표시). 여러 개 매칭되면 `--index` 로 선택 |
+| `emu find --text <label> \| --key <key> \| --type <Widget> [--index <n>] [--dump] [--all-routes]` | 질의에 매칭되는 맨 위 화면의 위젯 목록 + 탭 좌표 — `tap --text` 와 같은 탐색을 탭 없이 수행. `--dump` 면 각 위젯의 `toString()` 도 출력, `--all-routes` 면 덮인 화면도 본다 |
 | `emu eval <dart-expr>` | 실행 중인 앱의 루트 라이브러리 스코프에서 Dart 표현식을 지금 즉시 평가 — 브레이크포인트도 일시정지도 없음(`probe` 와 다름) |
 | `emu swipe <x1> <y1> <x2> <y2>` | 스와이프/스크롤. `--duration <ms>`. Android·iOS |
 | `emu text <string> [--append]` | 포커스된 필드에 입력(유니코드 OK). Android·iOS |
@@ -581,6 +581,14 @@ emu tap --key myButtonKey    # ValueKey 가 "myButtonKey"로 렌더되는 위젯
 emu tap --text "삭제" --index 1   # "삭제"라는 라벨의 두 번째 위젯 (0부터 시작)
 ```
 
+맨 위 화면의 위젯만 센다. 위젯을 감싼 라우트가 모두 현재(current) 라우트이거나(중첩
+Navigator 포함), 감싼 라우트가 아예 없을 때(`MaterialApp.builder`, `OverlayEntry`)만
+남긴다. 위에 push 된 화면이나 앞에 뜬 다이얼로그·바텀시트에 덮인 위젯은 빠진다 — 그 좌표를
+탭하면 실제로는 맨 위 화면이 눌리기 때문이다. 맨 위에는 없고 아래 화면에만 있으면 에러가
+몇 개인지 알려 준다(`no widget matches --text "확인" on the top route (1 on covered routes —
+use --all-routes)`). `--all-routes` 면 예전처럼 트리 전체를 본다. 같은 화면 안에서 가려진
+위젯(`IndexedStack` 의 다른 탭, `Offstage`)은 여전히 센다.
+
 레이아웃이 바뀌어 위젯 위치가 이동해도 `--text`/`--key` 탭은 하드코딩된 좌표처럼 깨지지
 않는다 — 트리 순회가 지금 위치를 다시 찾아준다. 다만 실제 스크린 리더가 보는(여러 위젯의
 semantics 가 합쳐진) 접근성 트리가 아니라 정적 위젯 설정 매칭이라, `Semantics`/`Text`/
@@ -688,7 +696,7 @@ emu shot ui.png --no-settle
 ### find — 탭하지 않고 화면에 뭐가 있는지 보기
 
 ```bash
-emu find --text <label> | --key <key> | --type <Widget> [--index <n>] [--dump]
+emu find --text <label> | --key <key> | --type <Widget> [--index <n>] [--dump] [--all-routes]
 ```
 
 `find` 는 `tap --text/--key` 와 똑같은 위젯 탐색을 수행하되, 하나를 탭하는 대신 매칭된
@@ -704,7 +712,9 @@ emu tap --text "삭제" --index 1          # …그 다음 원하는 걸 탭
 ```
 
 0개 매칭은 실패가 아니라 그냥 답이다(`(no match)`, exit 0). 마지막 매치를 넘어선
-`--index` 같은 잘못된 요청만 exit 1 이다.
+`--index` 같은 잘못된 요청만 exit 1 이다. `tap` 처럼 맨 위 화면만 보며, 덮인 화면에만
+매칭되면 그렇다고 알려 준다(`(no match on the top route — 1 on covered routes, use
+--all-routes)`, `--json` 에선 `covered`).
 
 ### eval — 지금 이 순간의 표현식 평가
 

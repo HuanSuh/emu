@@ -83,6 +83,18 @@ flutter run --machine  ◄─JSON-RPC─►  engine  ──►  server (127.0.0.
 쓰고 emu는 그 위에 로그·변수 검증을 더한다는 것도 변하지 않았다 — 달라진 건 셀렉터 기반 UI
 *조회*까지는 emu 안으로 들어왔다는 것뿐이다.
 
+**조회 범위는 맨 위 화면**(2026-11-16). 조회 결과는 곧 탭 좌표라서, push 로 덮인 화면이나
+다이얼로그 뒤 화면의 위젯이 매칭되면 그 좌표를 탭했을 때 맨 위 화면의 엉뚱한 곳이 눌린다.
+그래서 매칭된 위젯을 감싼 `ModalRoute` 가 **모두** `isCurrent` 일 때만 남긴다(가장 가까운
+라우트에서 그 Navigator 를 감싼 라우트로 바깥까지 — 중첩 Navigator 의 안쪽 라우트가 current
+여도 바깥 화면이 덮였을 수 있다). 감싼 라우트가 없는 위젯(`MaterialApp.builder`,
+`OverlayEntry`)은 남긴다. 공개 API(`ModalRoute.of`·`isCurrent`·`navigator`)만 쓰고
+`_ModalScope` 같은 비공개 이름엔 기대지 않는다. `ModalRoute.of` 는 물은 컨텍스트를 라우트의
+의존자로 등록하므로, 매칭된 위젯 대신 그 아래 렌더 객체 element 에 묻는다 — 나중에 라우트가
+바뀌어도 그 element 는 자기 위젯을 렌더 객체에 다시 적용할 뿐 사용자 `build()`·
+`didChangeDependencies` 가 돌지 않는다. 같은 라우트 안에서 가려진 것(`IndexedStack` 의 다른
+탭, `Offstage`)은 판정하지 않는다. 예전 동작(트리 전체)은 `--all-routes`, replay 는 항상 맨 위만.
+
 ### B2. Flutter 위젯 한정
 입력은 프레임워크 레벨(VM Service 합성 이벤트 / `updateEditingValue`)이라 네이티브 뷰·웹뷰
 텍스트 필드엔 닿지 않는다. emu의 대상은 Flutter 앱이므로 이는 타협이 아니라 범위 정의다.

@@ -1273,6 +1273,9 @@ Future<int> _assert(List<String> args) async {
 // find / eval — query widgets and evaluate expressions without tapping/pausing
 // --------------------------------------------------------------------------
 
+const _allRoutesHelp = 'also match widgets on screens covered by the top one '
+    '(pushed over, or under a dialog) — by default only the top screen counts';
+
 /// `emu find --text|--key|--type <q>` — the same on-device query `tap --text`
 /// runs, but reporting the matches instead of tapping one. Use it to check
 /// what's on screen, to disambiguate before `tap --index`, or (with `--dump`)
@@ -1284,10 +1287,11 @@ Future<int> _find(List<String> args) async {
     ..addOption('type', help: 'match widget runtime type name, e.g. ElevatedButton')
     ..addOption('index', help: '0-based match to report when several match')
     ..addFlag('dump', negatable: false, help: "also print each widget's toString()")
+    ..addFlag('all-routes', negatable: false, help: _allRoutesHelp)
     ..addFlag('json', negatable: false)
     ..addFlag('help', abbr: 'h', negatable: false);
   const usage = 'usage: emu find --text <label> | --key <key> | --type <Widget> '
-      '[--index <n>] [--dump]';
+      '[--index <n>] [--dump] [--all-routes]';
   final (res, code) = _parseOrUsage(parser, args, usage);
   if (res == null) return code!;
   final text = res.option('text');
@@ -1311,6 +1315,7 @@ Future<int> _find(List<String> args) async {
           : 'type=${Uri.encodeQueryComponent(type!)}');
   if (index != null) q.write('&index=$index');
   if (res.flag('dump')) q.write('&dump=1');
+  if (res.flag('all-routes')) q.write('&allRoutes=1');
 
   final info = _requireServer();
   // POSTed like `/api/tap`'s label query (the server routes on path, not
@@ -1331,7 +1336,10 @@ Future<int> _find(List<String> args) async {
   final matches = (r['matches'] as List).cast<Map<String, dynamic>>();
   if (matches.isEmpty) {
     // Not an error: "nothing on screen matches" is a legitimate answer.
-    print('(no match)');
+    final covered = r['covered'];
+    print(covered is int && covered > 0
+        ? '(no match on the top route — $covered on covered routes, use --all-routes)'
+        : '(no match)');
     return 0;
   }
   for (var i = 0; i < matches.length; i++) {
@@ -1943,12 +1951,13 @@ Future<int> _tap(List<String> args) async {
             '(else contains it, whitespace-normalized)')
     ..addOption('key', help: 'tap the widget whose ValueKey matches this')
     ..addOption('index', help: '0-based match to tap when --text/--key matches more than one')
+    ..addFlag('all-routes', negatable: false, help: _allRoutesHelp)
     ..addFlag('json', negatable: false)
     ..addFlag('no-settle', negatable: false, help: 'skip the post-tap settle wait')
     ..addFlag('help', abbr: 'h', negatable: false);
   const usage = 'usage: emu tap <x> <y> [--no-settle]   # physical pixels, as seen in `emu shot`\n'
-      '   or: emu tap --text <label> [--index <n>] [--no-settle]\n'
-      '   or: emu tap --key <key> [--index <n>] [--no-settle]';
+      '   or: emu tap --text <label> [--index <n>] [--all-routes] [--no-settle]\n'
+      '   or: emu tap --key <key> [--index <n>] [--all-routes] [--no-settle]';
   final (res, parseExit) = _parseOrUsage(parser, args, usage);
   if (res == null) return parseExit!;
   final json = res.flag('json');
@@ -1973,6 +1982,7 @@ Future<int> _tap(List<String> args) async {
         ? 'text=${Uri.encodeQueryComponent(text)}'
         : 'key=${Uri.encodeQueryComponent(key!)}');
     if (index != null) q.write('&index=$index');
+    if (res.flag('all-routes')) q.write('&allRoutes=1');
     path = '/api/tap?$q';
     label = text != null ? 'tap --text "$text"' : 'tap --key "$key"';
   } else {
@@ -3918,7 +3928,8 @@ COMMANDS
                          their tap points — like `tap --text`, without tapping
      --index <n>           report only this match (0-based)
      --dump                also show each widget's toString()
-  eval <dart-expr>       Evaluate a Dart expression now, in the app's root
+     --all-routes          also match screens covered by the top one
+  eval <dart-expr>      Evaluate a Dart expression now, in the app's root
                          library scope — no breakpoint needed (unlike probe)
   probe <file:line>      Capture variable values at a line (VM Service logpoint)
      -c, --capture <e,e>   expressions to evaluate when the line is hit
@@ -3935,8 +3946,9 @@ COMMANDS
                          Waits for the resulting transition to finish (skip with --no-settle)
   tap --text <label> | --key <key> [--index <n>] [--no-settle]
                          Tap the widget whose Semantics/Text/Tooltip label, or
-                         ValueKey, matches — no pixel math needed
+                         ValueKey, matches on the top screen — no pixel math needed
                          --index <n>   pick one when several widgets match
+                         --all-routes  also match screens covered by the top one
   swipe <x1> <y1> <x2> <y2>
                          Swipe/scroll between two points
      --duration <ms>       swipe duration (default 300)

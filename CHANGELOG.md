@@ -6,6 +6,17 @@
 
 ## [Unreleased]
 
+### Changed
+- 위치 찾기(`emu tap --text/--key`, `emu find`, replay 의 tap 단계)는 맨 위 화면의 위젯만 본다.
+  push 로 덮인 화면이나 다이얼로그·바텀시트 뒤 화면의 위젯은 매칭되지 않는다 — 예전엔 아래 화면에만
+  있는 위젯이 매칭돼 그 좌표를 탭하면 맨 위 화면의 엉뚱한 곳이 눌렸다. 맨 위에 없고 덮인 화면에만 있으면
+  `no widget matches … on the top route (N on covered routes — use --all-routes)` 로 알려 준다.
+  예전 동작(트리 전체)은 `emu tap`·`emu find` 의 `--all-routes`.
+
+### Fixed
+- replay 를 같은 세션에서 다시 돌리면 덮인 화면 위젯이 매칭되던 문제(지난 실행이 남긴 화면의 같은 라벨이
+  "matched 2 widgets" 로 실패시켰다).
+
 ## [0.19.0] - 2026-11-09
 
 ### Added

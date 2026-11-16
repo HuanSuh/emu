@@ -70,13 +70,15 @@ ln -sf "$PWD/emu" /usr/local/bin/emu
    기본적으로 애니메이션/리빌드가 멈추길 먼저 기다린다.
 3. 조작 — 좌표계는 `shot` 과 동일:
    - `emu tap <x> <y> [--no-settle]`
-   - `emu tap --text <라벨> | --key <key> [--index <n>] [--no-settle]` — 좌표 대신
+   - `emu tap --text <라벨> | --key <key> [--index <n>] [--all-routes] [--no-settle]` — 좌표 대신
      위젯의 Semantics/Text/Tooltip 라벨이나 `ValueKey` 로 탭. 레이아웃이 바뀌어도
      안 깨지므로 라벨/키를 아는 위젯이면 좌표 산출보다 이걸 우선 쓴다. 여러 개
      매칭되면 에러가 나며 개수를 알려주니 `--index` 로 선택. 정확히 일치하는 게
      없으면 부분 일치로 다시 찾고 결과에 partial 로 표시한다(`Row(Checkbox, Text)` 처럼
-     라벨이 합쳐진 경우).
-   - `emu find --text <라벨> | --key <key> | --type <위젯타입> [--index <n>] [--dump]`
+     라벨이 합쳐진 경우). **맨 위 화면만 본다** — push 로 덮인 화면이나 다이얼로그 뒤
+     화면의 위젯은 매칭되지 않는다(탭하면 맨 위 화면이 눌리므로). 덮인 화면에만 있으면
+     에러에 `N on covered routes` 로 알려 준다. 정말 덮인 화면을 봐야 하면 `--all-routes`.
+   - `emu find --text <라벨> | --key <key> | --type <위젯타입> [--index <n>] [--dump] [--all-routes]`
      — `tap --text` 와 같은 탐색을 탭 없이 수행해 매칭 위젯 목록과 탭 좌표를 출력.
      화면 검증이나, 여러 개 매칭될 때 `--index` 를 정하기 전 확인용. `--type` 은
      위젯 런타임 타입명 매칭, `--dump` 는 각 위젯의 `toString()` 도 출력.

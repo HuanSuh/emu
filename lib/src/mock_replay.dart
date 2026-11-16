@@ -200,7 +200,8 @@ ReplayStep? _parseStep(Object? raw, String at, List<String> problems) {
 abstract interface class ReplayDevice {
   /// Open the deep link; the reason it couldn't, or null.
   Future<String?> openUrl(String url);
-  Future<List<LocateMatch>> locate({String? text, String? key});
+  /// Top route only, with the covered-route count for a miss's message.
+  Future<LocateMatches> locate({String? text, String? key});
   Future<void> tap(int x, int y);
   Future<void> enterText(String text, {required bool append});
 
@@ -308,12 +309,14 @@ Future<String> _tap(ReplayTap step, ReplayDevice device, Duration wait, Duration
   final clock = Stopwatch()..start();
   final index = step.index;
   while (true) {
-    List<LocateMatch>? matches;
+    LocateMatches? matches;
     String why;
     try {
       matches = await device.locate(text: step.text, key: step.key).timeout(_callLimit);
+      // Top route only, always: a re-run in the same session leaves the last
+      // run's screens under this one, and their widgets must not match.
       why = matches.isEmpty
-          ? 'no widget matches ${step.query}'
+          ? noMatchMessage(matches, step.query, hint: null)
           : 'index $index out of range: ${step.query} matched ${matches.length} widget(s)';
     } catch (e) {
       why = '$e'; // the app may be mid-restart; it counts as not there yet
