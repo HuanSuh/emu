@@ -846,7 +846,7 @@ pages:
             {'text': 'secret'},
           ],
         });
-        fake.found = [LocateMatch(1, 2, 10, 10, 'Text')];
+        fake.found = LocateMatches([LocateMatch(1, 2, 10, 10, 'Text')]);
         final r = await _call(s, 'POST', '/api/mock/replay/x');
         expect(r.status, 200, reason: '${r.body}');
         final actions = s.logStore.query(kinds: {LogKind.action});
@@ -861,7 +861,7 @@ pages:
 
       test('turns the scenario on before opening the link, then runs the steps', () async {
         final s = await ready();
-        fake.found = [LocateMatch(1, 2, 10, 10, 'Text')];
+        fake.found = LocateMatches([LocateMatch(1, 2, 10, 10, 'Text')]);
         final before = s.logStore.lastSeq;
         final r = await _call(s, 'POST', '/api/mock/replay/x');
         expect(r.status, 200, reason: '${r.body}');
@@ -918,7 +918,7 @@ pages:
         await _until(() => fake.calls.isNotEmpty);
         final second = await _call(s, 'POST', '/api/mock/replay/x');
         expect((second.status, second.body['error']), (409, 'a replay is already running'));
-        fake.found = [LocateMatch(1, 2, 10, 10, 'Text')];
+        fake.found = LocateMatches([LocateMatch(1, 2, 10, 10, 'Text')]);
         fake.openGate!.complete();
         expect((await first).status, 200);
       });
@@ -948,7 +948,7 @@ pages:
 class _Replay implements ReplayDevice {
   EmuServer? server;
   final calls = <String>[];
-  List<LocateMatch> found = const [];
+  LocateMatches found = LocateMatches(const []);
   Object? textError;
   Completer<void>? openGate;
 
@@ -960,7 +960,7 @@ class _Replay implements ReplayDevice {
   }
 
   @override
-  Future<List<LocateMatch>> locate({String? text, String? key}) async {
+  Future<LocateMatches> locate({String? text, String? key}) async {
     calls.add('locate ${text ?? key}');
     return found;
   }

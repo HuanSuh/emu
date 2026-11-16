@@ -1836,7 +1836,7 @@ class _AppReplayDevice implements ReplayDevice {
   }
 
   @override
-  Future<List<LocateMatch>> locate({String? text, String? key}) => loc.locate(uri, text: text, key: key);
+  Future<LocateMatches> locate({String? text, String? key}) => loc.locate(uri, text: text, key: key);
   @override
   Future<void> tap(int x, int y) => server.input.tap(uri, x, y);
   @override
@@ -1852,7 +1852,7 @@ class _RecordingReplayDevice implements ReplayDevice {
   _RecordingReplayDevice(this.server, this.inner);
   final EmuServer server;
   final ReplayDevice inner;
-  ({String? text, String? key, List<LocateMatch> found})? _located;
+  ({String? text, String? key, LocateMatches found})? _located;
 
   Future<T> _record<T>(String label, Map<String, dynamic> data, Future<T> Function() run) async {
     final full = {...data, 'via': 'replay'};
@@ -1875,7 +1875,7 @@ class _RecordingReplayDevice implements ReplayDevice {
   }
 
   @override
-  Future<List<LocateMatch>> locate({String? text, String? key}) async {
+  Future<LocateMatches> locate({String? text, String? key}) async {
     final found = await inner.locate(text: text, key: key);
     _located = (text: text, key: key, found: found);
     return found;

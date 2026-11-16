@@ -208,19 +208,19 @@ void main() {
   });
 
   group('pickMatch', () {
-    final matches = [
+    final matches = LocateMatches([
       LocateMatch(1, 1, 1, 1, 'Text'),
       LocateMatch(2, 2, 1, 1, 'Semantics'),
-    ];
+    ]);
 
     test('a single match is picked with no index', () {
-      final m = pickMatch([matches[0]], null, query: '--text "x"');
+      final m = pickMatch(LocateMatches([matches[0]]), null, query: '--text "x"');
       expect(m.x, 1);
     });
 
     test('zero matches throws with the query in the message', () {
       expect(
-        () => pickMatch(const [], null, query: '--text "닫기"'),
+        () => pickMatch(LocateMatches(const []), null, query: '--text "닫기"'),
         throwsA(isA<LocateException>().having(
             (e) => e.message, 'message', contains('--text "닫기"'))),
       );

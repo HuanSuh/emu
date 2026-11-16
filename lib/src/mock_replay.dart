@@ -200,7 +200,8 @@ ReplayStep? _parseStep(Object? raw, String at, List<String> problems) {
 abstract interface class ReplayDevice {
   /// Open the deep link; the reason it couldn't, or null.
   Future<String?> openUrl(String url);
-  Future<List<LocateMatch>> locate({String? text, String? key});
+  /// Top route only, with the covered-route count for a miss's message.
+  Future<LocateMatches> locate({String? text, String? key});
   Future<void> tap(int x, int y);
   Future<void> enterText(String text, {required bool append});
 
@@ -308,7 +309,7 @@ Future<String> _tap(ReplayTap step, ReplayDevice device, Duration wait, Duration
   final clock = Stopwatch()..start();
   final index = step.index;
   while (true) {
-    List<LocateMatch>? matches;
+    LocateMatches? matches;
     String why;
     try {
       matches = await device.locate(text: step.text, key: step.key).timeout(_callLimit);

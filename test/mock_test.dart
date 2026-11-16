@@ -584,7 +584,7 @@ mocks:
 
   group('runReplay', () {
     test('entry, then steps in order, then a settle', () async {
-      final d = _Device()..found = [_match()];
+      final d = _Device()..found = LocateMatches([_match()]);
       final r = await runReplay(
         const MockReplay(url: 'a://b', steps: [
           ReplayTap(text: 'Pay'),
@@ -655,14 +655,14 @@ mocks:
     });
 
     test('an index past the matches waits too; several with no index stops at once', () async {
-      var d = _Device()..found = [_match()];
+      var d = _Device()..found = LocateMatches([_match()]);
       var r = await runReplay(
         const MockReplay(steps: [ReplayTap(text: 'a', index: 1)]),
         d,
         tapWait: Duration.zero,
       );
       expect(r.single.detail, contains('index 1 out of range'));
-      d = _Device()..found = [_match(), _match()];
+      d = _Device()..found = LocateMatches([_match(), _match()]);
       r = await runReplay(const MockReplay(steps: [ReplayTap(text: 'a')]), d);
       expect(r.single.detail, contains('matched 2 widgets'));
       expect(d.calls.where((c) => c.startsWith('locate')), hasLength(1));
@@ -716,7 +716,7 @@ LocateMatch _match() => LocateMatch(1, 2, 10, 10, 'Text');
 
 class _Device implements ReplayDevice {
   final calls = <String>[];
-  List<LocateMatch> found = const [];
+  LocateMatches found = LocateMatches(const []);
   List<LocateMatch> Function()? onLocate;
   String? openError;
   Object? tapError;
@@ -729,9 +729,10 @@ class _Device implements ReplayDevice {
   }
 
   @override
-  Future<List<LocateMatch>> locate({String? text, String? key}) async {
+  Future<LocateMatches> locate({String? text, String? key}) async {
     calls.add('locate ${text ?? key}');
-    return onLocate?.call() ?? found;
+    final looked = onLocate?.call();
+    return looked == null ? found : LocateMatches(looked);
   }
 
   @override

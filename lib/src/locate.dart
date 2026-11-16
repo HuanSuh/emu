@@ -114,7 +114,7 @@ Future<LocateMatches> locate(String wsUri,
 
 /// Pick the match to tap: the sole match, or [index] into several. Throws a
 /// message with enough detail (count, `--index` hint) to fix the query.
-LocateMatch pickMatch(List<LocateMatch> matches, int? index, {required String query}) {
+LocateMatch pickMatch(LocateMatches matches, int? index, {required String query}) {
   if (matches.isEmpty) {
     throw LocateException(noMatchMessage(matches, query));
   }
@@ -135,9 +135,9 @@ LocateMatch pickMatch(List<LocateMatch> matches, int? index, {required String qu
 /// "no widget matches …", saying so when the query did match on covered
 /// routes — the usual reason a widget that's "right there" isn't found.
 /// [hint] is how to reach them, or null where there's no way (replay).
-String noMatchMessage(List<LocateMatch> matches, String query,
+String noMatchMessage(LocateMatches matches, String query,
     {String? hint = 'use --all-routes'}) {
-  final covered = matches is LocateMatches ? matches.covered : 0;
+  final covered = matches.covered;
   if (covered == 0) return 'no widget matches $query';
   return 'no widget matches $query on the top route '
       '($covered on covered routes${hint == null ? '' : ' — $hint'})';
